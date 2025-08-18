@@ -1,4 +1,3 @@
-cat > requirements.txt << 'EOF'
 streamlit>=1.28.0,<2.0.0
 pandas>=2.1.0
 numpy>=1.26.0
@@ -12,7 +11,3 @@ matplotlib>=3.8.0
 seaborn>=0.13.0
 fpdf2>=2.8.0
 icalendar>=5.0.0
-
-# Training module dependencies (already included above)
-# streamlit, pandas, openpyxl, pytz are covered
-EOF
