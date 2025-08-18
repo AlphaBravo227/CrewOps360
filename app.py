@@ -245,8 +245,10 @@ def display_module_selection():
             else:
                 st.error("Training modules are not properly configured. Please check the training folder setup.")
 
+# Fix for app.py - Replace the display_training_events_app function
+
 def display_training_events_app():
-    """Display the full Training & Events application with admin functionality"""
+    """Display the full Training & Events application with user and admin functionality"""
     # Back button
     if st.button("← Back to CrewOps360", key="back_from_training"):
         st.session_state.selected_module = None
@@ -313,12 +315,14 @@ def display_training_events_app():
         st.error(f"Error initializing training components: {str(e)}")
         return
 
-    # Show admin access in sidebar
+    # Show admin access in sidebar (for administrators only)
     st.session_state.training_admin_access.show_admin_access_button()
     
-    # Check if admin function page should be displayed
-    if st.session_state.training_admin_access.show_admin_function_page():
+    # Check if admin function page should be displayed - ONLY block if admin is authenticated AND viewing admin page
+    if (st.session_state.training_admin_access.is_admin_authenticated() and 
+        st.session_state.get('training_admin_show_function', False)):
         # Admin dashboard is being displayed, don't show regular content
+        st.session_state.training_admin_access.show_admin_function_page()
         return
 
     # Add track database status to sidebar
@@ -334,7 +338,7 @@ def display_training_events_app():
         else:
             st.warning("⚠️ No track database found")
 
-    # Regular staff interface (existing code continues...)
+    # USER INTERFACE - This should be accessible to all authenticated users
     # Staff selection
     staff_list = st.session_state.training_excel_handler.get_staff_list()
     selected_staff = st.selectbox(
@@ -361,11 +365,135 @@ def display_training_events_app():
         
         st.markdown("---")
         
-        # Tabs for different views
+        # Tabs for different views - THIS IS THE MAIN USER INTERFACE
         tab1, tab2, tab3, tab4 = st.tabs(["📝 Enroll in Classes", "📋 My Enrollments", "📊 Class Details", "📅 Track Schedule"])
         
-        # Rest of the existing tab content remains the same...
-        # (The existing tab1, tab2, tab3, tab4 content from your original code)
+        with tab1:
+            # Enroll in Classes Tab
+            st.header("📝 Enroll in Classes")
+            
+            if not assigned_classes:
+                st.info("You have no classes assigned at this time.")
+            else:
+                # Display classes available for enrollment
+                for class_name in assigned_classes:
+                    if class_name not in enrolled_classes:
+                        # Get enrollment status for this class
+                        enrollment_status = TrainingUIComponents.get_class_enrollment_status(
+                            st.session_state.training_enrollment_manager, 
+                            selected_staff, 
+                            class_name, 
+                            st.session_state.training_excel_handler
+                        )
+                        
+                        # Show class in expander
+                        with st.expander(f"**{class_name}** {enrollment_status}", expanded=False):
+                            class_details = st.session_state.training_excel_handler.get_class_details(class_name)
+                            
+                            if class_details:
+                                # Display class information
+                                TrainingUIComponents.display_class_info(class_details)
+                                
+                                # Get available dates for this class
+                                available_dates = st.session_state.training_excel_handler.get_class_dates(class_name)
+                                
+                                if available_dates:
+                                    st.markdown("### Available Sessions")
+                                    
+                                    # Show enrollment options with track conflict checking
+                                    TrainingUIComponents.display_session_enrollment_options_with_tracks(
+                                        st.session_state.training_enrollment_manager,
+                                        class_name,
+                                        available_dates,
+                                        selected_staff,
+                                        st.session_state.training_track_manager
+                                    )
+                                else:
+                                    st.warning("No available dates found for this class.")
+                            else:
+                                st.error("Class details not found.")
+        
+        with tab2:
+            # My Enrollments Tab
+            st.header("📋 My Enrollments")
+            
+            enrollments = st.session_state.training_enrollment_manager.get_staff_enrollments(selected_staff)
+            
+            if not enrollments:
+                st.info("You are not currently enrolled in any classes.")
+            else:
+                st.write(f"**You are enrolled in {len(enrollments)} class session(s):**")
+                
+                for enrollment in enrollments:
+                    with st.container():
+                        # Display enrollment with cancel option
+                        if TrainingUIComponents.display_enrollment_row(
+                            enrollment, 
+                            st.session_state.training_excel_handler, 
+                            st.session_state.training_enrollment_manager
+                        ):
+                            # Handle cancellation
+                            if st.session_state.training_enrollment_manager.cancel_enrollment(enrollment['id']):
+                                st.success("Enrollment cancelled successfully!")
+                                st.rerun()
+                            else:
+                                st.error("Error cancelling enrollment.")
+        
+        with tab3:
+            # Class Details Tab
+            st.header("📊 Class Details")
+            
+            if assigned_classes:
+                # Class selector
+                selected_class = st.selectbox(
+                    "Select a class to view details:",
+                    options=assigned_classes,
+                    key="class_details_selector"
+                )
+                
+                if selected_class:
+                    class_details = st.session_state.training_excel_handler.get_class_details(selected_class)
+                    
+                    if class_details:
+                        # Display detailed class information
+                        TrainingUIComponents.display_class_info(class_details)
+                        
+                        # Show enrollment summary
+                        enrollment_summary = st.session_state.training_enrollment_manager.get_class_enrollment_summary(selected_class)
+                        TrainingUIComponents.display_enrollment_summary(enrollment_summary, class_details)
+                        
+                        # Show track conflicts if available
+                        if st.session_state.training_track_manager.tracks_db_path:
+                            try:
+                                # For now, just show that track conflict checking is available
+                                st.write("**Track Schedule Integration:**")
+                                st.info("✅ Track database connected - schedule conflicts will be checked during enrollment")
+                                
+                                # Optional: Show number of staff with track data
+                                all_staff_with_tracks = st.session_state.training_track_manager.get_all_staff_with_tracks()
+                                if all_staff_with_tracks:
+                                    st.write(f"📊 Track data available for {len(all_staff_with_tracks)} staff members")
+                                else:
+                                    st.warning("⚠️ No track data found in database")
+                                    
+                            except Exception as e:
+                                st.error(f"Error accessing track data: {str(e)}")
+                        else:
+                            st.warning("⚠️ Track database not available - schedule conflicts cannot be checked")
+            else:
+                st.info("You have no classes assigned at this time.")
+        
+        with tab4:
+            # Track Schedule Tab
+            st.header("📅 Track Schedule")
+            
+            if st.session_state.training_track_manager.tracks_db_path:
+                if st.session_state.training_track_manager.has_track_data(selected_staff):
+                    st.info("Track schedule integration coming soon - will show your work schedule alongside training commitments.")
+                else:
+                    st.warning("No track schedule found for your profile.")
+            else:
+                st.warning("Track database not available.")
         
     else:
         st.info("Please select your name from the dropdown above to get started.")

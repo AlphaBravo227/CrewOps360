@@ -291,6 +291,21 @@ class ExcelHandler:
             default_details = DEFAULT_CLASS_DETAILS.copy()
             default_details['class_name'] = class_name
             return default_details
+
+    def get_class_dates(self, class_name):
+        """Get all available dates for a specific class"""
+        class_details = self.get_class_details(class_name)
+        if not class_details:
+            return []
+            
+        dates = []
+        
+        for i in range(1, 9):
+            date_key = f'date_{i}'
+            if date_key in class_details and class_details[date_key]:
+                dates.append(class_details[date_key])
+        
+        return dates
     
     def get_available_dates_with_options(self, class_name):
         """Get available dates with LIVE/Virtual options for staff meetings"""

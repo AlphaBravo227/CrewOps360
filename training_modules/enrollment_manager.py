@@ -47,7 +47,53 @@ class EnrollmentManager:
             return success, "Enrollment successful" if success else "Enrollment failed"
         
         return False, "No available slots"
-    
+
+    def get_class_track_conflicts(self, class_name):
+        """Get track conflicts summary for all dates of a class - wrapper for UI compatibility"""
+        if not self.track_manager:
+            return None
+        
+        class_details = self.excel.get_class_details(class_name)
+        if not class_details:
+            return None
+        
+        # Get all available dates for this class
+        dates = []
+        can_work_n_prior_list = []
+        
+        for i in range(1, 9):
+            date_key = f'date_{i}'
+            if date_key in class_details and class_details[date_key]:
+                dates.append(class_details[date_key])
+                can_work_n_prior_list.append(class_details.get(f'date_{i}_can_work_n_prior', False))
+        
+        if not dates:
+            return None
+        
+        # Get all staff assigned to this class
+        all_staff = self.excel.get_staff_list()
+        assigned_staff = []
+        
+        for staff_name in all_staff:
+            assigned_classes = self.excel.get_assigned_classes(staff_name)
+            if class_name in assigned_classes:
+                assigned_staff.append(staff_name)
+        
+        # Collect conflicts for all assigned staff
+        class_conflicts = {}
+        is_two_day = class_details.get('is_two_day_class', 'No').lower() == 'yes'
+        
+        for staff_name in assigned_staff:
+            if self.track_manager.has_track_data(staff_name):
+                staff_conflicts = self.track_manager.get_class_date_conflicts(
+                    staff_name, dates, is_two_day, can_work_n_prior_list
+                )
+                
+                if staff_conflicts:
+                    class_conflicts[staff_name] = staff_conflicts
+        
+        return class_conflicts
+
     def check_enrollment_conflict(self, staff_name, class_name, class_date):
         """Check if there's a schedule conflict for enrollment"""
         if not self.track_manager:

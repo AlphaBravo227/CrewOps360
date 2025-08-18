@@ -236,7 +236,7 @@ class TrackManager:
                 }
         
         return conflicts
-    
+
     def get_conflict_summary(self, conflicts_dict):
         """
         Generate a summary of conflicts for a class.
@@ -250,8 +250,21 @@ class TrackManager:
         if not conflicts_dict:
             return "No schedule data available"
         
+        # Handle case where conflicts_dict is not in expected format
+        if not isinstance(conflicts_dict, dict):
+            return "No schedule data available"
+        
+        # Check if the conflicts_dict has the expected structure
+        if not conflicts_dict or all(not isinstance(v, dict) for v in conflicts_dict.values()):
+            return "No schedule data available"
+        
         total_dates = len(conflicts_dict)
-        conflict_count = sum(1 for c in conflicts_dict.values() if c['has_conflict'])
+        
+        # Safely count conflicts by checking if 'has_conflict' key exists
+        conflict_count = 0
+        for conflict_info in conflicts_dict.values():
+            if isinstance(conflict_info, dict) and conflict_info.get('has_conflict', False):
+                conflict_count += 1
         
         if conflict_count == 0:
             return f"✅ All {total_dates} dates available"
@@ -259,7 +272,7 @@ class TrackManager:
             return f"⚠️ Conflicts on all {total_dates} dates"
         else:
             return f"⚠️ {conflict_count} of {total_dates} dates have conflicts"
-    
+
     def format_shift_display(self, date, shift_info):
         """
         Format shift information for display.
