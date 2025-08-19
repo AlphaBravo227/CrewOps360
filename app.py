@@ -62,7 +62,7 @@ try:
     from training_modules.excel_handler import ExcelHandler
     from training_modules.enrollment_manager import EnrollmentManager
     from training_modules.ui_components import UIComponents as TrainingUIComponents
-    from training_modules.track_manager import TrackManager as TrainingTrackManager
+    from training_modules.track_manager import TrainingTrackManager
     from training_modules.admin_access import AdminAccess
     from training_modules.admin_excel_functions import ExcelAdminFunctions, enhance_admin_reports
     TRAINING_MODULES_AVAILABLE = True
@@ -294,6 +294,13 @@ def display_training_events_app():
                 st.session_state.training_excel_handler,
                 st.session_state.training_track_manager
             )
+
+        # Integrate CCEMT schedules after both components are initialized
+        if hasattr(st.session_state.training_track_manager, 'set_excel_handler'):
+            st.session_state.training_track_manager.set_excel_handler(
+                st.session_state.training_excel_handler
+            )
+            print("CCEMT schedule integration completed")
 
         # Initialize admin access
         if 'training_admin_access' not in st.session_state:
@@ -617,7 +624,7 @@ def display_clinical_track_hub():
 def run_clinical_track_hub():
     """Run the original Clinical Track Hub functionality"""
     # Create wrapper classes for compatibility with new app structure
-    class TrackManager:
+    class TrainingTrackManager:
         """Track manager wrapper using existing functionality"""
         
         def __init__(self):
@@ -1137,7 +1144,7 @@ def run_clinical_track_hub():
 
     # Initialize session state for the Clinical Track Hub
     if 'track_manager' not in st.session_state:
-        st.session_state.track_manager = TrackManager()
+        st.session_state.track_manager = TrainingTrackManager()
 
     if 'master_df' not in st.session_state:
         st.session_state.master_df = None

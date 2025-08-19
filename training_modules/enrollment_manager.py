@@ -12,7 +12,7 @@ class EnrollmentManager:
         Args:
             unified_database: UnifiedDatabase instance
             excel_handler: ExcelHandler instance
-            track_manager: TrackManager instance (optional)
+            track_manager: TrainingTrackManager instance (optional)
         """
         self.db = unified_database
         self.excel = excel_handler
