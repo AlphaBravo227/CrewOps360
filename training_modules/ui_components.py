@@ -1,3 +1,4 @@
+# training_modules/ui_components.py
 import streamlit as st
 from datetime import datetime
 
@@ -55,11 +56,24 @@ class UIComponents:
                 elif live_meeting_count == 1:
                     st.warning("⚠️ Need 1 more LIVE meeting")
                 else:
-                    st.error("❗ Need 2 LIVE meetings")
+                    st.error("❌ Need 2 LIVE meetings")
     
     @staticmethod
     def display_class_info(class_details):
         """Display basic class information with location"""
+        from .config import DEFAULT_CLASS_DETAILS
+        
+        # Check if this is missing class data (returns default values)
+        is_missing_data = (class_details.get('_missing_sheet') or 
+                          class_details.get('_missing_dates') or 
+                          class_details.get('_error') or
+                          not any(class_details.get(f'date_{i}') for i in range(1, 9)))
+        
+        if is_missing_data:
+            st.warning("⚠️ **Class data not configured** - No schedule information available for this class.")
+            st.info("This class appears in the assignment roster but does not have a corresponding configuration sheet with dates and details.")
+            return
+        
         col1, col2 = st.columns(2)
         
         with col1:
@@ -104,6 +118,24 @@ class UIComponents:
     def display_session_enrollment_options_with_tracks(enrollment_manager, class_name, available_dates, 
                                                        selected_staff, track_manager):
         """Display session enrollment options with track conflict information"""
+        
+        # Check if class has no available dates
+        if not available_dates:
+            # Check if the class exists but has no data configured
+            class_details = enrollment_manager.excel.get_class_details(class_name)
+            
+            # Check if this returns default values (indicating missing sheet/data)
+            is_missing_data = (not class_details or 
+                             class_details.get('class_name') == class_name and 
+                             not any(class_details.get(f'date_{i}') for i in range(1, 9)))
+            
+            if is_missing_data:
+                st.error("📅 **Class data not configured**")
+                st.info("This class appears in your assignment list but does not have a corresponding configuration sheet with scheduled dates. Please contact the training administrator to have dates added for this class.")
+            else:
+                st.warning("No available dates found for this class.")
+            return []
+        
         enrolled_sessions = []
         
         for date in available_dates:
@@ -453,6 +485,16 @@ class UIComponents:
     @staticmethod
     def display_class_details_full(class_details):
         """Display full class details with location information"""
+        
+        # Check if this is missing class data (returns default values)
+        is_missing_data = (not class_details or 
+                          not any(class_details.get(f'date_{i}') for i in range(1, 9)))
+        
+        if is_missing_data:
+            st.error("📅 **Class data not configured**")
+            st.info("This class appears in the assignment roster but does not have a corresponding configuration sheet with dates and details. Please contact the training administrator to set up the class schedule.")
+            return
+        
         st.write("**📅 Available Dates:**")
         dates_found = False
         date_cols = st.columns(4)
@@ -680,4 +722,3 @@ class UIComponents:
         
         with col5:
             return st.button("Cancel", key=f"cancel_{enrollment['id']}")
-                        

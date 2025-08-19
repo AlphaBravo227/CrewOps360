@@ -1,9 +1,11 @@
 # Configuration settings for the Education Class Enrollment System
 
 # Columns in the Class_Enrollment sheet that are NOT classes
-# Only STAFF NAME is not a class - all other columns are classes
+# These columns will be excluded from class assignments
 NON_CLASS_COLUMNS = [
     'STAFF NAME',
+    'Role',
+    'Educator AT',  # This is a designation, not a class
     # All other columns (CRM, STABLE, Wed SM Q1, etc.) are classes
 ]
 
