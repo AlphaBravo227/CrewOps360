@@ -154,7 +154,8 @@ if 'show_main_landing' not in st.session_state:
     st.session_state.show_main_landing = False
 
 def display_crewops360_header():
-    """Display the CrewOps360 header"""
+    st.markdown("")
+    st.markdown("")
     st.markdown("""
     <div class="crewops-header">
         <h1 style="color: #1E88E5; font-size: 3.5rem; font-weight: 700; margin-bottom: 0.5rem;">
@@ -246,7 +247,9 @@ def display_module_selection():
 # Fix for app.py - Replace the display_training_events_app function
 
 def display_training_events_app():
-    """Display the full Training & Events application with user and admin functionality"""
+    st.markdown("")
+    st.markdown("")
+    
     # Back button
     if st.button("← Back to CrewOps360", key="back_from_training"):
         st.session_state.selected_module = None
@@ -592,30 +595,24 @@ def initialize_training_admin_components():
         return False
 
 def display_clinical_track_hub():
-    """Display the Clinical Track Hub with back navigation"""
-    # Back button - fixed position
-    st.markdown("""
-    <button class="back-button" onclick="window.location.reload()">
-        ← Back to CrewOps360
-    </button>
-    """, unsafe_allow_html=True)
+    """Display the Clinical Track Hub with back navigation - FIXED spacing and button issues"""
     
-    # Add some top padding to account for the fixed back button
-    st.markdown("<div style='padding-top: 60px;'></div>", unsafe_allow_html=True)
+    # Add minimal top margin to prevent button cutoff
+    st.markdown("")
+    st.markdown("")
     
-    # Use a regular button as backup
+    # Simple back button that works properly
     if st.button("← Back to CrewOps360", key="back_from_clinical"):
         st.session_state.selected_module = None
         st.rerun()
     
-    # Original Clinical Track Hub content
+    # Original Clinical Track Hub content with proper spacing
     st.markdown("""
     # <span style='color:#1E88E5'>Clinical Track Hub</span>
     """, unsafe_allow_html=True)
     
     # All the existing Clinical Track Hub functionality goes here
     run_clinical_track_hub()
-
 
 def run_clinical_track_hub():
     """Run the original Clinical Track Hub functionality"""

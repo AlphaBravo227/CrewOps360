@@ -7,7 +7,7 @@ Minimal integration with existing Streamlit app
 import streamlit as st
 
 def inject_custom_css():
-    """Inject custom CSS for enhanced styling"""
+    """Inject custom CSS for enhanced styling - FIXED block-container padding"""
     st.markdown("""
     <style>
     /* Enhanced button styling */
@@ -33,9 +33,9 @@ def inject_custom_css():
         border-radius: 6px;
     }
     
-    /* Column spacing */
+    /* FIXED: Reduced column spacing to prevent button cutoff */
     .block-container {
-        padding-top: 1rem;
+        padding-top: 0.5rem !important;  /* Reduced from 1rem */
     }
     
     /* Info box styling */
