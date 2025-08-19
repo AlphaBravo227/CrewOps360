@@ -193,15 +193,17 @@ class ExcelHandler:
                         
             if sheet is None:
                 print(f"Warning: Sheet '{class_name}' not found in workbook")
-                # Return default values with the class name
+                # Return default values with the class name and a flag indicating missing data
                 default_details = DEFAULT_CLASS_DETAILS.copy()
                 default_details['class_name'] = class_name
+                default_details['_missing_sheet'] = True  # Flag to indicate missing data
                 return default_details
                 
             details = {}
             
             # Extract dates (rows 1-8, column B), LIVE options (column C), 
             # Can work N prior (column D), and Location (column E)
+            has_any_dates = False
             for i in range(1, 9):
                 date_value = sheet.cell(row=i, column=2).value
                 live_option = sheet.cell(row=i, column=3).value
@@ -209,6 +211,7 @@ class ExcelHandler:
                 location = sheet.cell(row=i, column=5).value
                 
                 if date_value:
+                    has_any_dates = True
                     # Handle different date formats
                     if isinstance(date_value, datetime):
                         details[f'date_{i}'] = date_value.strftime('%m/%d/%Y')
@@ -241,6 +244,14 @@ class ExcelHandler:
                     details[f'date_{i}_has_live'] = False
                     details[f'date_{i}_can_work_n_prior'] = False
                     details[f'date_{i}_location'] = ""
+            
+            # If no dates were found, mark as missing data
+            if not has_any_dates:
+                print(f"Warning: No dates found for class '{class_name}' sheet")
+                default_details = DEFAULT_CLASS_DETAILS.copy()
+                default_details['class_name'] = class_name
+                default_details['_missing_dates'] = True  # Flag to indicate missing dates
+                return default_details
             
             # Extract other details with defaults
             details['students_per_class'] = sheet.cell(row=9, column=2).value or 21
@@ -287,15 +298,30 @@ class ExcelHandler:
             print(f"Error getting class details for {class_name}: {e}")
             import traceback
             traceback.print_exc()
-            # Return default values with the class name
+            # Return default values with the class name and error flag
             default_details = DEFAULT_CLASS_DETAILS.copy()
             default_details['class_name'] = class_name
+            default_details['_error'] = str(e)  # Flag to indicate error
             return default_details
+
+    def has_class_data(self, class_name):
+        """Check if a class has proper configuration data"""
+        class_details = self.get_class_details(class_name)
+        
+        # Check for flags indicating missing or problematic data
+        if (class_details.get('_missing_sheet') or 
+            class_details.get('_missing_dates') or 
+            class_details.get('_error')):
+            return False
+        
+        # Check if any dates are actually configured
+        has_dates = any(class_details.get(f'date_{i}') for i in range(1, 9))
+        return has_dates
 
     def get_class_dates(self, class_name):
         """Get all available dates for a specific class"""
         class_details = self.get_class_details(class_name)
-        if not class_details:
+        if not class_details or not self.has_class_data(class_name):
             return []
             
         dates = []
@@ -310,7 +336,7 @@ class ExcelHandler:
     def get_available_dates_with_options(self, class_name):
         """Get available dates with LIVE/Virtual options for staff meetings"""
         class_details = self.get_class_details(class_name)
-        if not class_details:
+        if not class_details or not self.has_class_data(class_name):
             return []
             
         date_options = []
