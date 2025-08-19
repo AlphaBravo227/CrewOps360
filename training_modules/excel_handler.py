@@ -238,7 +238,6 @@ class ExcelHandler:
                     # Store location
                     details[f'date_{i}_location'] = location if location else ""
                     
-                    print(f"DEBUG: Date {i} - {details[f'date_{i}']} - LIVE: {has_live} - N prior OK: {can_n_prior} - Location: {location}")
                 else:
                     details[f'date_{i}'] = None
                     details[f'date_{i}_has_live'] = False
@@ -264,7 +263,6 @@ class ExcelHandler:
                          'time_3_start', 'time_3_end', 'time_4_start', 'time_4_end']
             
             # Debug: Let's see what we're getting from the cells
-            print(f"\nDEBUG: Reading times for class '{class_name}':")
             
             for idx, label in enumerate(time_labels):
                 row_num = 13 + idx
@@ -288,7 +286,6 @@ class ExcelHandler:
             # Add class name to details
             details['class_name'] = class_name
             
-            print(f"\nDEBUG: Final time values for {class_name}:")
             print(f"  time_1_start: {details.get('time_1_start')}")
             print(f"  time_1_end: {details.get('time_1_end')}")
             
