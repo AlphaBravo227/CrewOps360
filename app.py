@@ -159,7 +159,7 @@ def display_crewops360_header():
     st.markdown("""
     <div class="crewops-header">
         <h1 style="color: #1E88E5; font-size: 3.5rem; font-weight: 700; margin-bottom: 0.5rem;">
-            🚁 CrewOps360
+            🚁 CrewOps360 🚑
         </h1>
         <p style="color: #666; font-size: 1.3rem; margin-bottom: 0;">
             Comprehensive Crew Operations Management Platform

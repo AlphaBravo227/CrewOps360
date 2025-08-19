@@ -60,41 +60,54 @@ class UIComponents:
     
     @staticmethod
     def display_class_info(class_details):
-        """Display basic class information with location"""
-        from .config import DEFAULT_CLASS_DETAILS
-        
-        # Check if this is missing class data (returns default values)
-        is_missing_data = (class_details.get('_missing_sheet') or 
-                          class_details.get('_missing_dates') or 
-                          class_details.get('_error') or
-                          not any(class_details.get(f'date_{i}') for i in range(1, 9)))
-        
-        if is_missing_data:
-            st.warning("⚠️ **Class data not configured** - No schedule information available for this class.")
-            st.info("This class appears in the assignment roster but does not have a corresponding configuration sheet with dates and details.")
-            return
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("**Class Information:**")
-            st.write(f"• Students per class: {class_details.get('students_per_class', 21)}")
-            st.write(f"• Classes per day: {class_details.get('classes_per_day', 1)}")
+            """Display basic class information with location"""
+            from .config import DEFAULT_CLASS_DETAILS
             
-            if class_details.get('nurses_medic_separate', 'No').lower() == 'yes':
-                st.write("• **Nurses and Medics have separate slots**")
+            # Check if this is missing class data (returns default values)
+            is_missing_data = (class_details.get('_missing_sheet') or 
+                            class_details.get('_missing_dates') or 
+                            class_details.get('_error') or
+                            not any(class_details.get(f'date_{i}') for i in range(1, 9)))
+            
+            if is_missing_data:
+                st.warning("⚠️ **Class data not configured** - No schedule information available for this class.")
+                st.info("This class appears in the assignment roster but does not have a corresponding configuration sheet with dates and details.")
+                return
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Class Information:**")
+                st.write(f"• Students per class: {class_details.get('students_per_class', 21)}")
+                st.write(f"• Classes per day: {class_details.get('classes_per_day', 1)}")
                 
-        with col2:
-            st.write("**Schedule:**")
-            is_two_day = class_details.get('is_two_day_class', 'No').lower() == 'yes'
-            if is_two_day:
-                st.write("• This is a two-day class")
-            
-            # Display class times
-            times = UIComponents.get_class_times(class_details)
-            if times:
-                st.write(f"• Time: {times}")
-    
+                if class_details.get('nurses_medic_separate', 'No').lower() == 'yes':
+                    st.write("• **Nurses and Medics have separate slots**")
+                    
+            with col2:
+                st.write("**Schedule:**")
+                
+                # Get all available dates and format them
+                available_dates = []
+                for i in range(1, 9):
+                    date_key = f'date_{i}'
+                    if date_key in class_details and class_details[date_key]:
+                        available_dates.append(class_details[date_key])
+                
+                # Display available dates
+                if available_dates:
+                    dates_str = ", ".join(available_dates)
+                    st.write(f"• Available dates: {dates_str}")
+                
+                is_two_day = class_details.get('is_two_day_class', 'No').lower() == 'yes'
+                if is_two_day:
+                    st.write("• This is a two-day class")
+                
+                # Display class times
+                times = UIComponents.get_class_times(class_details)
+                if times:
+                    st.write(f"• Time: {times}")
+
     @staticmethod
     def display_track_conflict_summary(conflicts_summary, track_manager):
         """Display a summary of track conflicts for a class"""

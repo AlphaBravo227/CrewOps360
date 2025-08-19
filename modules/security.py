@@ -190,7 +190,7 @@ def display_user_login():
     # Display login interface
     st.markdown("""
     <div style="text-align: center; padding: 2rem;">
-        <h1>🚁 CrewOps 360 🚁</h1>
+        <h1>🚁 CrewOps 360 🚑</h1>
         <p>Enter the 4-digit access code to continue (same as duty phone unlock)</p>
     </div>
     """, unsafe_allow_html=True)
