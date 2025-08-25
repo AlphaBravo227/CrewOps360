@@ -1,8 +1,31 @@
-# training_modules/ui_components.py
+# training_modules/ui_components.py - Updated sections for duplicate enrollment handling
+
 import streamlit as st
 from datetime import datetime
 
 class UIComponents:
+    
+    @staticmethod
+    def display_enrollment_metrics(assigned_classes, enrolled_classes, live_meeting_count, excel_handler):
+        """Display enrollment metrics including LIVE staff meeting count"""
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Assigned Classes", len(assigned_classes))
+        with col2:
+            st.metric("Classes Enrolled", len(enrolled_classes))
+        with col3:
+            st.metric("Classes Remaining", len(assigned_classes) - len(enrolled_classes))
+        with col4:
+            # Check if user has any staff meetings assigned
+            has_staff_meetings = any(excel_handler.is_staff_meeting(cls) for cls in assigned_classes)
+            if has_staff_meetings:
+                st.metric("LIVE Staff Meetings", f"{live_meeting_count}/2")
+                if live_meeting_count >= 2:
+                    st.success("✅ LIVE meeting requirement met!")
+                else:
+                    st.info(f"📝 Need {2 - live_meeting_count} more LIVE meeting(s)")
+
     @staticmethod
     def get_class_enrollment_status(enrollment_manager, staff_name, class_name, excel_handler):
         """Get enrollment status for display in collapsed expander"""
@@ -34,99 +57,182 @@ class UIComponents:
             status += " ⚠️"
         
         return status
-    
-    @staticmethod
-    def display_enrollment_metrics(assigned_classes, enrolled_classes, live_meeting_count, excel_handler):
-        """Display enrollment metrics including LIVE staff meeting count"""
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Total Assigned Classes", len(assigned_classes))
-        with col2:
-            st.metric("Classes Enrolled", len(enrolled_classes))
-        with col3:
-            st.metric("Classes Remaining", len(assigned_classes) - len(enrolled_classes))
-        with col4:
-            # Check if user has any staff meetings assigned
-            has_staff_meetings = any(excel_handler.is_staff_meeting(cls) for cls in assigned_classes)
-            if has_staff_meetings:
-                st.metric("LIVE Staff Meetings", f"{live_meeting_count}/2")
-                if live_meeting_count >= 2:
-                    st.success("✅ LIVE meeting requirement met!")
-                elif live_meeting_count == 1:
-                    st.warning("⚠️ Need 1 more LIVE meeting")
-                else:
-                    st.error("❌ Need 2 LIVE meetings")
-    
-    @staticmethod
-    def display_class_info(class_details):
-            """Display basic class information with location"""
-            from .config import DEFAULT_CLASS_DETAILS
-            
-            # Check if this is missing class data (returns default values)
-            is_missing_data = (class_details.get('_missing_sheet') or 
-                            class_details.get('_missing_dates') or 
-                            class_details.get('_error') or
-                            not any(class_details.get(f'date_{i}') for i in range(1, 9)))
-            
-            if is_missing_data:
-                st.warning("⚠️ **Class data not configured** - No schedule information available for this class.")
-                st.info("This class appears in the assignment roster but does not have a corresponding configuration sheet with dates and details.")
-                return
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write("**Class Information:**")
-                st.write(f"• Students per class: {class_details.get('students_per_class', 21)}")
-                st.write(f"• Classes per day: {class_details.get('classes_per_day', 1)}")
-                
-                if class_details.get('nurses_medic_separate', 'No').lower() == 'yes':
-                    st.write("• **Nurses and Medics have separate slots**")
-                    
-            with col2:
-                st.write("**Schedule:**")
-                
-                # Get all available dates and format them
-                available_dates = []
-                for i in range(1, 9):
-                    date_key = f'date_{i}'
-                    if date_key in class_details and class_details[date_key]:
-                        available_dates.append(class_details[date_key])
-                
-                # Display available dates
-                if available_dates:
-                    dates_str = ", ".join(available_dates)
-                    st.write(f"• Available dates: {dates_str}")
-                
-                is_two_day = class_details.get('is_two_day_class', 'No').lower() == 'yes'
-                if is_two_day:
-                    st.write("• This is a two-day class")
-                
-                # Display class times
-                times = UIComponents.get_class_times(class_details)
-                if times:
-                    st.write(f"• Time: {times}")
 
     @staticmethod
-    def display_track_conflict_summary(conflicts_summary, track_manager):
-        """Display a summary of track conflicts for a class"""
-        if not conflicts_summary:
-            if not track_manager or not track_manager.tracks_db_path:
-                st.info("📊 Track data not available - unable to check for schedule conflicts")
+    def display_enrollment_row(enrollment, excel_handler, enrollment_manager):
+        """Display a single enrollment row with conflict indicator"""
+        col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 1])
+        
+        with col1:
+            class_name = enrollment['class_name']
+            display_name = f"**{class_name}**"
+            
+            # Add meeting type indicator for staff meetings
+            if excel_handler.is_staff_meeting(class_name):
+                meeting_type = enrollment.get('meeting_type', 'Virtual')
+                if meeting_type == 'LIVE':
+                    display_name += " 🔴 LIVE"
+                else:
+                    display_name += " 💻 Virtual"
+            
+            # Add conflict indicator
+            if enrollment.get('conflict_override'):
+                display_name += " ⚠️"
+            
+            st.write(display_name)
+        
+        with col2:
+            st.write(f"**Date:** {enrollment['class_date']}")
+            
+            # Show session time if applicable
+            if enrollment.get('session_time'):
+                st.write(f"**Session:** {enrollment['session_time']}")
+        
+        with col3:
+            if enrollment['role'] != 'General':
+                st.write(f"**Role:** {enrollment['role']}")
+            else:
+                # Show class times
+                class_details = excel_handler.get_class_details(enrollment['class_name'])
+                if class_details:
+                    times = UIComponents.get_class_times(class_details)
+                    if times and times != "Time not specified":
+                        st.write(f"**Time:** {times}")
+            
+            # Show conflict details if override
+            if enrollment.get('conflict_override'):
+                st.write("**⚠️ Swap Required**")
+        
+        with col4:
+            # Show colleagues in the same session
+            colleagues = enrollment_manager.get_session_colleagues(
+                enrollment['staff_name'],
+                enrollment['class_name'],
+                enrollment['class_date'],
+                enrollment.get('session_time'),
+                enrollment.get('meeting_type')
+            )
+            
+            if colleagues:
+                st.write("**Also enrolled:**")
+                for colleague in colleagues:
+                    name_display = colleague['name']
+                    if colleague['role'] != 'General':
+                        name_display += f" ({colleague['role']})"
+                    st.write(f"• {name_display}")
+            else:
+                st.write("*No one else enrolled*")
+        
+        with col5:
+            return st.button("Cancel", key=f"cancel_{enrollment['id']}")
+
+    @staticmethod
+    def display_class_info(class_details):
+        """Display class information in a formatted way"""
+        if not class_details:
+            st.error("No class details available")
             return
         
-        # Get summary text
-        summary = track_manager.get_conflict_summary(conflicts_summary)
+        # Check if this is missing class data
+        is_missing_data = (not class_details or 
+                          not any(class_details.get(f'date_{i}') for i in range(1, 9)))
         
-        # Display with appropriate styling
-        if "All" in summary and "available" in summary:
-            st.success(summary)
-        elif "all" in summary and "Conflicts" in summary:
-            st.error(summary)
+        if is_missing_data:
+            st.error("📅 **Class data not configured**")
+            st.info("This class appears in the assignment roster but does not have a corresponding configuration sheet with dates and details. Please contact the training administrator to set up the class schedule.")
+            return
+        
+        # Display basic class information
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write(f"**📚 Class:** {class_details.get('class_name', 'Unknown')}")
+            st.write(f"**👥 Max Students:** {class_details.get('students_per_class', '21')}")
+            st.write(f"**📅 Sessions per Day:** {class_details.get('classes_per_day', '1')}")
+        
+        with col2:
+            if class_details.get('nurses_medic_separate', 'No').lower() == 'yes':
+                st.write("• **Separate slots for Nurses and Medics**")
+            if class_details.get('is_two_day_class', 'No').lower() == 'yes':
+                st.write("• **Two-day class format**")
+            if class_details.get('is_staff_meeting', False):
+                st.write("• **Staff Meeting (LIVE/Virtual options)**")
+        
+        # Display available dates
+        st.write("**📅 Available Dates:**")
+        dates = []
+        for i in range(1, 9):
+            date_key = f'date_{i}'
+            if date_key in class_details and class_details[date_key]:
+                date = class_details[date_key]
+                location = class_details.get(f'date_{i}_location', '')
+                can_work_n_prior = class_details.get(f'date_{i}_can_work_n_prior', False)
+                
+                date_info = f"• {date}"
+                if location:
+                    date_info += f" - Location: {location}"
+                if can_work_n_prior:
+                    date_info += " 🌙"
+                    
+                dates.append(date_info)
+        
+        if dates:
+            for date_info in dates:
+                st.write(date_info)
         else:
-            st.warning(summary)
-    
+            st.warning("No dates configured for this class")
+        
+        # Display class times
+        st.write("**🕐 Class Times:**")
+        times = UIComponents.get_detailed_times(class_details)
+        for time_slot in times:
+            st.write(f"• {time_slot}")
+        
+        # Legend
+        st.write("")
+        st.write("**Legend:** 🌙 = Night shift prior OK")
+
+    @staticmethod
+    def get_detailed_times(class_details):
+        """Get detailed time information"""
+        times = []
+        classes_per_day = int(class_details.get('classes_per_day', 1))
+        
+        for i in range(1, min(classes_per_day + 1, 5)):  # Max 4 time slots
+            start_key = f'time_{i}_start'
+            end_key = f'time_{i}_end'
+            
+            if start_key in class_details and end_key in class_details:
+                start_time = class_details[start_key]
+                end_time = class_details[end_key]
+                
+                if start_time and end_time:
+                    if classes_per_day > 1:
+                        times.append(f"Session {i}: {start_time} - {end_time}")
+                    else:
+                        times.append(f"{start_time} - {end_time}")
+        
+        return times if times else ["Time not specified"]
+
+    @staticmethod
+    def get_class_times(class_details):
+        """Format class times for display (simple format)"""
+        times = []
+        classes_per_day = int(class_details.get('classes_per_day', 1))
+        
+        for i in range(1, classes_per_day + 1):
+            start_key = f'time_{i}_start'
+            end_key = f'time_{i}_end'
+            
+            if start_key in class_details and end_key in class_details:
+                start_time = class_details[start_key]
+                end_time = class_details[end_key]
+                
+                if start_time and end_time:
+                    times.append(f"{start_time} - {end_time}")
+        
+        return ", ".join(times) if times else "Time not specified"
+
     @staticmethod
     def display_session_enrollment_options_with_tracks(enrollment_manager, class_name, available_dates, 
                                                        selected_staff, track_manager):
@@ -151,44 +257,19 @@ class UIComponents:
         
         enrolled_sessions = []
         
+        # Iterate through available dates and show enrollment options
         for date in available_dates:
-            st.write(f"### 📅 {date}")
+            st.subheader(f"📅 {date}")
             
-            # Check for conflicts with this date
+            # Check for track conflicts if available
             conflict_info = None
             if track_manager and track_manager.has_track_data(selected_staff):
                 has_conflict, conflict_details = enrollment_manager.check_enrollment_conflict(
                     selected_staff, class_name, date
                 )
-                
-                # Get shift info for display
-                shift = track_manager.get_staff_shift(selected_staff, date)
-                shift_desc = track_manager.shift_descriptions.get(shift, 'Off' if shift == '' else shift)
-                
-                # Display shift and conflict info
-                if shift:
-                    shift_display = f"**Your shift:** {shift} ({shift_desc})"
-                    if has_conflict:
-                        st.error(f"{shift_display} - ⚠️ CONFLICT: {conflict_details}")
-                    else:
-                        st.info(shift_display)
-                else:
-                    st.success("**Your shift:** Off - Available for training")
-                
                 conflict_info = (has_conflict, conflict_details)
             
-            # Get location for this date
-            class_details = enrollment_manager.excel.get_class_details(class_name)
-            location = ""
-            for i in range(1, 9):
-                if class_details.get(f'date_{i}') == date:
-                    location = class_details.get(f'date_{i}_location', '')
-                    break
-            
-            if location:
-                st.write(f"**Location:** {location}")
-            
-            # Get available session options for this date
+            # Get session options for this date
             session_options = enrollment_manager.get_available_session_options(class_name, date)
             
             if not session_options:
@@ -207,7 +288,188 @@ class UIComponents:
             st.markdown("---")
         
         return enrolled_sessions
-    
+
+    @staticmethod
+    def display_enrollment_summary(enrollment_summary, class_details):
+        """Display enrollment summary for a class with conflict indicators"""
+        st.write("")
+        st.write("**📊 Current Enrollment Status:**")
+        
+        max_students = int(class_details.get('students_per_class', 21))
+        is_staff_meeting = class_details.get('is_staff_meeting', False)
+        nurses_medic_separate = class_details.get('nurses_medic_separate', 'No').lower() == 'yes'
+        
+        if not enrollment_summary:
+            st.info("No enrollments found for this class.")
+            return
+        
+        # Display enrollment by date
+        for date, summary in enrollment_summary.items():
+            st.write(f"**📅 {date}:**")
+            
+            total_enrolled = summary.get('total', 0)
+            conflicts = summary.get('conflicts', 0)
+            
+            # Basic enrollment info
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if is_staff_meeting:
+                    # For staff meetings, show LIVE/Virtual breakdown
+                    meeting_types = summary.get('meeting_types', {})
+                    live_count = meeting_types.get('LIVE', 0)
+                    virtual_count = meeting_types.get('Virtual', 0)
+                    
+                    st.write(f"🔴 LIVE: {live_count}")
+                    st.write(f"💻 Virtual: {virtual_count}")
+                    st.write(f"**Total: {total_enrolled}/{max_students}**")
+                
+                elif nurses_medic_separate:
+                    # For nurse/medic separate classes
+                    roles = summary.get('roles', {})
+                    nurses = roles.get('Nurse', 0)
+                    medics = roles.get('Medic', 0)
+                    general = roles.get('General', 0)
+                    
+                    st.write(f"👩‍⚕️ Nurses: {nurses}")
+                    st.write(f"🚑 Medics: {medics}")
+                    if general > 0:
+                        st.write(f"👤 General: {general}")
+                    st.write(f"**Total: {total_enrolled}/{max_students}**")
+                
+                else:
+                    # Regular classes
+                    st.write(f"👤 Enrolled: {total_enrolled}/{max_students}")
+                    
+                    # Show sessions if multiple per day
+                    sessions = summary.get('sessions', {})
+                    if sessions:
+                        st.write("**Sessions:**")
+                        for session_time, staff_list in sessions.items():
+                            st.write(f"  • {session_time}: {len(staff_list)}")
+            
+            with col2:
+                # Show utilization
+                utilization = (total_enrolled / max_students * 100) if max_students > 0 else 0
+                if utilization >= 90:
+                    st.error(f"🔴 {utilization:.0f}% Full")
+                elif utilization >= 70:
+                    st.warning(f"🟡 {utilization:.0f}% Full")
+                elif utilization >= 40:
+                    st.info(f"🟠 {utilization:.0f}% Full")
+                else:
+                    st.success(f"🟢 {utilization:.0f}% Full")
+                
+                # Available slots
+                available = max_students - total_enrolled
+                st.write(f"Available: {available}")
+            
+            with col3:
+                # Show conflicts if any
+                if conflicts > 0:
+                    st.warning(f"⚠️ {conflicts} conflict(s)")
+                else:
+                    st.success("✅ No conflicts")
+                
+                # Show staff names if not too many
+                staff_names = summary.get('staff_names', [])
+                if len(staff_names) <= 5:
+                    st.write("**Enrolled:**")
+                    for name in staff_names:
+                        st.write(f"• {name}")
+                elif len(staff_names) > 5:
+                    st.write(f"**{len(staff_names)} staff enrolled**")
+            
+            st.markdown("---")
+
+    @staticmethod
+    def display_track_conflict_summary(conflicts_summary, track_manager):
+        """Display a summary of track conflicts for a class"""
+        if not conflicts_summary:
+            if not track_manager or not track_manager.tracks_db_path:
+                st.info("📊 Track data not available - unable to check for schedule conflicts")
+            return
+        
+        # Get summary text
+        summary = track_manager.get_conflict_summary(conflicts_summary)
+        
+        # Display with appropriate styling
+        if "All" in summary and "available" in summary:
+            st.success(summary)
+        elif "all" in summary and "Conflicts" in summary:
+            st.error(summary)
+        else:
+            st.warning(summary)
+
+    @staticmethod
+    def display_class_details_full(class_details):
+        """Display full class details with location information"""
+        
+        # Check if this is missing class data (returns default values)
+        is_missing_data = (not class_details or 
+                          not any(class_details.get(f'date_{i}') for i in range(1, 9)))
+        
+        if is_missing_data:
+            st.error("📅 **Class data not configured**")
+            st.info("This class appears in the assignment roster but does not have a corresponding configuration sheet with dates and details. Please contact the training administrator to set up the class schedule.")
+            return
+        
+        # Display comprehensive class details
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write(f"**📚 Class:** {class_details.get('class_name', 'Unknown')}")
+            st.write(f"**👥 Max Students:** {class_details.get('students_per_class', '21')}")
+            st.write(f"**📅 Sessions per Day:** {class_details.get('classes_per_day', '1')}")
+        
+        with col2:
+            if class_details.get('nurses_medic_separate', 'No').lower() == 'yes':
+                st.write("• **Separate slots for Nurses and Medics**")
+            if class_details.get('is_two_day_class', 'No').lower() == 'yes':
+                st.write("• **Two-day class format**")
+            if class_details.get('is_staff_meeting', False):
+                st.write("• **Staff Meeting (LIVE/Virtual options)**")
+        
+        st.write("")
+        st.write("**🕐 Class Times:**")
+        times = UIComponents.get_detailed_times(class_details)
+        for time_slot in times:
+            st.write(f"• {time_slot}")
+        
+        # Display available dates with full details
+        st.write("")
+        st.write("**📅 Available Dates:**")
+        dates = []
+        for i in range(1, 9):
+            date_key = f'date_{i}'
+            if date_key in class_details and class_details[date_key]:
+                date = class_details[date_key]
+                location = class_details.get(f'date_{i}_location', '')
+                can_work_n_prior = class_details.get(f'date_{i}_can_work_n_prior', False)
+                
+                date_info = f"• {date}"
+                if location:
+                    date_info += f" - Location: {location}"
+                if can_work_n_prior:
+                    date_info += " 🌙"
+                    
+                dates.append(date_info)
+        
+        if dates:
+            dates_str = "\n".join(dates)
+            st.write(dates_str)
+        else:
+            st.warning("No dates configured for this class")
+        
+        # Additional class information
+        is_two_day = class_details.get('is_two_day_class', 'No').lower() == 'yes'
+        if is_two_day:
+            st.write("• This is a two-day class")
+        
+        st.write("")
+        st.write("**Legend:**")
+        st.write("🔴 = LIVE option available | 💻 = Virtual only | 🌙 = Night shift prior OK")
+
     @staticmethod
     def _display_session_option_with_conflict(option, option_key, enrollment_manager, 
                                              selected_staff, class_name, date, conflict_info):
@@ -266,7 +528,7 @@ class UIComponents:
             # Multiple regular sessions
             with st.container():
                 st.write(f"**{option['display_time']}**")
-                st.write(f"**Currently enrolled ({len(option['enrolled'])}/{21 - option['available_slots']}):**")
+                st.write(f"**Currently enrolled ({len(option['enrolled'])}):**")
                 
                 if option['enrolled']:
                     for person in option['enrolled']:
@@ -320,69 +582,7 @@ class UIComponents:
                 option, option_key, enrollment_manager, selected_staff,
                 class_name, date, has_conflict, conflict_details
             )
-    
-    @staticmethod
-    def _handle_enrollment_button(button_label, button_key, has_conflict, conflict_details,
-                                 enrollment_manager, staff_name, class_name, date,
-                                 role="General", session_time=None, meeting_type=None):
-        """Handle enrollment button with conflict override dialog"""
-        
-        if has_conflict:
-            # Show button with warning color
-            col1, col2 = st.columns([3, 2])
-            with col1:
-                st.warning(f"⚠️ Enrollment blocked: {conflict_details}")
-            with col2:
-                if st.button("Override", key=f"override_{button_key}"):
-                    st.session_state[f"show_override_{button_key}"] = True
-            
-            # Show override dialog if triggered
-            if st.session_state.get(f"show_override_{button_key}", False):
-                with st.container():
-                    st.error("**⚠️ Schedule Conflict Override**")
-                    st.write(f"**Conflict:** {conflict_details}")
-                    st.write("By proceeding, you acknowledge that:")
-                    st.write("• You are responsible for arranging a shift swap to attend this class. Alternate coverage will not be solicited or guaranteed")
-                    st.write("• You should discuss any extenuating circumstances with your manager to help resolve the conflict")
-                    
-                    acknowledge = st.checkbox(
-                        "I acknowledge and will arrange for a schedule swap",
-                        key=f"ack_{button_key}"
-                    )
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("Confirm Override", key=f"confirm_{button_key}", disabled=not acknowledge):
-                            success, message = enrollment_manager.enroll_staff(
-                                staff_name, class_name, date, role,
-                                meeting_type, session_time, override_conflict=True
-                            )
-                            if success:
-                                st.success("Enrolled with conflict override!")
-                                del st.session_state[f"show_override_{button_key}"]
-                                return True
-                            else:
-                                st.error(f"Enrollment failed: {message}")
-                    
-                    with col2:
-                        if st.button("Cancel", key=f"cancel_{button_key}"):
-                            del st.session_state[f"show_override_{button_key}"]
-            
-            return False
-        else:
-            # Normal enrollment without conflict
-            if st.button(button_label, key=button_key):
-                success, message = enrollment_manager.enroll_staff(
-                    staff_name, class_name, date, role,
-                    meeting_type, session_time, override_conflict=False
-                )
-                if success:
-                    st.success("Successfully enrolled!")
-                    return True
-                else:
-                    st.error(f"Enrollment failed: {message}")
-            return False
-    
+
     @staticmethod
     def _display_single_session_option(option, option_key, enrollment_manager, selected_staff,
                                       class_name, date, has_conflict, conflict_details):
@@ -452,7 +652,7 @@ class UIComponents:
                     date, "General"
                 ):
                     st.rerun()
-    
+
     @staticmethod
     def display_session_enrollment_options(enrollment_manager, class_name, available_dates, selected_staff):
         """Wrapper for backward compatibility - redirects to track-aware version"""
@@ -468,270 +668,227 @@ class UIComponents:
             return UIComponents._display_session_enrollment_options_original(
                 enrollment_manager, class_name, available_dates, selected_staff
             )
-    
+
     @staticmethod
     def _display_session_enrollment_options_original(enrollment_manager, class_name, available_dates, selected_staff):
         """Original implementation without track conflict checking"""
-        # [Original implementation code here - omitted for brevity]
-        # This would contain the original display_session_enrollment_options code
-        pass
-    
-    @staticmethod
-    def get_class_times(class_details):
-        """Format class times for display"""
-        times = []
-        classes_per_day = int(class_details.get('classes_per_day', 1))
+        # Simple fallback implementation
+        enrolled_sessions = []
         
-        for i in range(1, classes_per_day + 1):
-            start_key = f'time_{i}_start'
-            end_key = f'time_{i}_end'
+        for date in available_dates:
+            st.subheader(f"📅 {date}")
             
-            if start_key in class_details and end_key in class_details:
-                start_time = class_details[start_key]
-                end_time = class_details[end_key]
+            session_options = enrollment_manager.get_available_session_options(class_name, date)
+            
+            if not session_options:
+                st.warning(f"No available slots for {date}")
+                continue
+            
+            for idx, option in enumerate(session_options):
+                option_key = f"{class_name}_{date}_{idx}"
                 
-                if start_time and end_time:
-                    times.append(f"{start_time} - {end_time}")
+                # Display without conflict checking
+                UIComponents._display_session_option_with_conflict(
+                    option, option_key, enrollment_manager, selected_staff, 
+                    class_name, date, None  # No conflict info
+                )
+            
+            st.markdown("---")
         
-        return ", ".join(times) if times else "Time not specified"
+        return enrolled_sessions
+    
+    # ... existing methods stay the same ...
     
     @staticmethod
-    def display_class_details_full(class_details):
-        """Display full class details with location information"""
+    def _handle_enrollment_button(button_label, button_key, has_conflict, conflict_details,
+                            enrollment_manager, staff_name, class_name, date,
+                            role="General", session_time=None, meeting_type=None):
+        """Handle enrollment button with conflict override dialog and duplicate checking"""
         
-        # Check if this is missing class data (returns default values)
-        is_missing_data = (not class_details or 
-                          not any(class_details.get(f'date_{i}') for i in range(1, 9)))
+        # Check if we're in the middle of handling a duplicate for this button
+        duplicate_dialog_key = f"duplicate_dialog_{button_key}"
+        duplicate_data_key = f"duplicate_data_{button_key}"
         
-        if is_missing_data:
-            st.error("📅 **Class data not configured**")
-            st.info("This class appears in the assignment roster but does not have a corresponding configuration sheet with dates and details. Please contact the training administrator to set up the class schedule.")
-            return
-        
-        st.write("**📅 Available Dates:**")
-        dates_found = False
-        date_cols = st.columns(4)
-        
-        for i in range(1, 9):
-            date_key = f'date_{i}'
-            if date_key in class_details and class_details[date_key]:
-                col_idx = (i - 1) % 4
-                with date_cols[col_idx]:
-                    date_str = class_details[date_key]
-                    location = class_details.get(f'date_{i}_location', '')
-                    can_work_n = class_details.get(f'date_{i}_can_work_n_prior', False)
-                    
-                    # Build display string
-                    display_str = f"• {date_str}"
-                    
-                    # Add location if available
-                    if location:
-                        display_str += f" ({location})"
-                    
-                    # Add indicators for special conditions
-                    if class_details.get('class_name') and 'SM' in class_details['class_name'].upper():
-                        has_live_key = f'date_{i}_has_live'
-                        if class_details.get(has_live_key, False):
-                            display_str += " 🔴"
-                        else:
-                            display_str += " 💻"
-                    
-                    if can_work_n:
-                        display_str += " 🌙"  # Moon icon for night shift OK
-                    
-                    st.write(display_str)
-                dates_found = True
-        
-        if not dates_found:
-            st.write("No dates scheduled")
-        
-        st.write("")
-        st.write("**⚙️ Class Configuration:**")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write(f"• Max students: {class_details.get('students_per_class', 21)}")
-            st.write(f"• Classes per day: {class_details.get('classes_per_day', 1)}")
-        
-        with col2:
-            if class_details.get('nurses_medic_separate', 'No').lower() == 'yes':
-                st.write("• **Separate slots for Nurses and Medics**")
-            if class_details.get('is_two_day_class', 'No').lower() == 'yes':
-                st.write("• **Two-day class format**")
-        
-        st.write("")
-        st.write("**🕐 Class Times:**")
-        times = UIComponents.get_detailed_times(class_details)
-        for time_slot in times:
-            st.write(f"• {time_slot}")
-        
-        st.write("")
-        st.write("**Legend:**")
-        st.write("🔴 = LIVE option available | 💻 = Virtual only | 🌙 = Night shift prior OK")
-    
-    @staticmethod
-    def get_detailed_times(class_details):
-        """Get detailed time information"""
-        times = []
-        classes_per_day = int(class_details.get('classes_per_day', 1))
-        
-        for i in range(1, min(classes_per_day + 1, 5)):  # Max 4 time slots
-            start_key = f'time_{i}_start'
-            end_key = f'time_{i}_end'
+        # If we have stored duplicate data, show the dialog
+        if duplicate_dialog_key in st.session_state and st.session_state[duplicate_dialog_key]:
+            existing_enrollments = st.session_state.get(duplicate_data_key, [])
             
-            if start_key in class_details and end_key in class_details:
-                start_time = class_details[start_key]
-                end_time = class_details[end_key]
-                
-                if start_time and end_time:
-                    if classes_per_day > 1:
-                        times.append(f"Session {i}: {start_time} - {end_time}")
-                    else:
-                        times.append(f"{start_time} - {end_time}")
-        
-        return times if times else ["Time not specified"]
-    
-    @staticmethod
-    def display_enrollment_summary(enrollment_summary, class_details):
-        """Display enrollment summary for a class with conflict indicators"""
-        st.write("")
-        st.write("**📊 Current Enrollment Status:**")
-        
-        max_students = int(class_details.get('students_per_class', 21))
-        nurses_medic_separate = class_details.get('nurses_medic_separate', 'No').lower() == 'yes'
-        is_staff_meeting = class_details.get('class_name') and 'SM' in class_details['class_name'].upper()
-        classes_per_day = int(class_details.get('classes_per_day', 1))
-        
-        if enrollment_summary:
-            for date, data in enrollment_summary.items():
-                with st.container():
-                    st.write(f"**📅 {date}**")
-                    
-                    # Get location for this date
-                    location = ""
-                    for i in range(1, 9):
-                        if class_details.get(f'date_{i}') == date:
-                            location = class_details.get(f'date_{i}_location', '')
-                            break
-                    
-                    if location:
-                        st.write(f"**Location:** {location}")
-                    
-                    if classes_per_day > 1 and data.get('sessions'):
-                        # Show session-based enrollment
-                        for session_time, enrolled_names in data['sessions'].items():
-                            st.write(f"  **{session_time}:**")
-                            for name in enrolled_names:
-                                st.write(f"    • {name}")
-                            st.write(f"    Enrolled: {len(enrolled_names)}/{max_students}")
-                    
-                    elif is_staff_meeting:
-                        # Show LIVE vs Virtual breakdown for staff meetings
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            st.write(f"Total: {data['total']}/{max_students}")
-                        with col2:
-                            live_count = data['meeting_types'].get('LIVE', 0)
-                            st.write(f"🔴 LIVE: {live_count}")
-                        with col3:
-                            virtual_count = data['meeting_types'].get('Virtual', 0)
-                            st.write(f"💻 Virtual: {virtual_count}")
-                        with col4:
-                            if data.get('conflicts', 0) > 0:
-                                st.write(f"⚠️ Conflicts: {data['conflicts']}")
-                    
-                    elif nurses_medic_separate:
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            st.write(f"Total: {data['total']}/{max_students}")
-                        with col2:
-                            nurse_count = data['roles'].get('Nurse', 0)
-                            st.write(f"👩‍⚕️ Nurses: {nurse_count}/{max_students//2}")
-                        with col3:
-                            medic_count = data['roles'].get('Medic', 0)
-                            st.write(f"🚑 Medics: {medic_count}/{max_students//2}")
-                        with col4:
-                            if data.get('conflicts', 0) > 0:
-                                st.write(f"⚠️ Conflicts: {data['conflicts']}")
-                    else:
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write(f"Enrolled: {data['total']}/{max_students}")
-                        with col2:
-                            if data.get('conflicts', 0) > 0:
-                                st.write(f"⚠️ Conflicts: {data['conflicts']}")
-                    
-                    # Progress bar
-                    progress = data['total'] / max_students
-                    st.progress(progress)
-                    st.markdown("---")
-        else:
-            st.info("No enrollments yet for this class.")
-    
-    @staticmethod
-    def display_enrollment_row(enrollment, excel_handler, enrollment_manager):
-        """Display a single enrollment row with conflict indicator"""
-        col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 1])
-        
-        with col1:
-            class_name = enrollment['class_name']
-            display_name = f"**{class_name}**"
-            
-            # Add meeting type indicator for staff meetings
-            if excel_handler.is_staff_meeting(class_name):
-                meeting_type = enrollment.get('meeting_type', 'Virtual')
-                if meeting_type == 'LIVE':
-                    display_name += " 🔴 LIVE"
-                else:
-                    display_name += " 💻 Virtual"
-            
-            # Add conflict indicator
-            if enrollment.get('conflict_override'):
-                display_name += " ⚠️"
-            
-            st.write(display_name)
-        
-        with col2:
-            st.write(f"**Date:** {enrollment['class_date']}")
-            
-            # Show session time if applicable
-            if enrollment.get('session_time'):
-                st.write(f"**Session:** {enrollment['session_time']}")
-        
-        with col3:
-            if enrollment['role'] != 'General':
-                st.write(f"**Role:** {enrollment['role']}")
-            else:
-                # Show class times
-                class_details = excel_handler.get_class_details(enrollment['class_name'])
-                if class_details:
-                    times = UIComponents.get_class_times(class_details)
-                    if times and times != "Time not specified":
-                        st.write(f"**Time:** {times}")
-            
-            # Show conflict details if override
-            if enrollment.get('conflict_override'):
-                st.write("**⚠️ Swap Required**")
-        
-        with col4:
-            # Show colleagues in the same session
-            colleagues = enrollment_manager.get_session_colleagues(
-                enrollment['staff_name'],
-                enrollment['class_name'],
-                enrollment['class_date'],
-                enrollment.get('session_time'),
-                enrollment.get('meeting_type')
+            result = UIComponents._show_duplicate_enrollment_dialog(
+                button_key, existing_enrollments, enrollment_manager, staff_name,
+                class_name, date, role, meeting_type, session_time
             )
             
-            if colleagues:
-                st.write("**Also enrolled:**")
-                for colleague in colleagues:
-                    name_display = colleague['name']
-                    if colleague['role'] != 'General':
-                        name_display += f" ({colleague['role']})"
-                    st.write(f"• {name_display}")
-            else:
-                st.write("*No one else enrolled*")
+            # If dialog completed successfully, clean up and return
+            if result:
+                if duplicate_dialog_key in st.session_state:
+                    del st.session_state[duplicate_dialog_key]
+                if duplicate_data_key in st.session_state:
+                    del st.session_state[duplicate_data_key]
+                return True
+            
+            # Dialog is still active, don't process normal button
+            return False
         
-        with col5:
-            return st.button("Cancel", key=f"cancel_{enrollment['id']}")
+        if has_conflict:
+            # Show button with warning color
+            col1, col2 = st.columns([3, 2])
+            with col1:
+                st.warning(f"⚠️ Enrollment blocked: {conflict_details}")
+            with col2:
+                if st.button("Override", key=f"override_{button_key}"):
+                    st.session_state[f"show_override_{button_key}"] = True
+            
+            # Show override dialog if triggered
+            if st.session_state.get(f"show_override_{button_key}", False):
+                with st.container():
+                    st.error("**⚠️ Schedule Conflict Override**")
+                    st.write(f"**Conflict:** {conflict_details}")
+                    st.write("By proceeding, you acknowledge that:")
+                    st.write("• You are responsible for arranging a shift swap to attend this class")
+                    st.write("• You should discuss any extenuating circumstances with your manager")
+                    
+                    acknowledge = st.checkbox(
+                        "I acknowledge and will arrange for a schedule swap",
+                        key=f"ack_{button_key}"
+                    )
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("Confirm Override", key=f"confirm_{button_key}", disabled=not acknowledge):
+                            result, data = enrollment_manager.enroll_staff(
+                                staff_name, class_name, date, role,
+                                meeting_type, session_time, override_conflict=True
+                            )
+                            
+                            if result == "duplicate_found":
+                                # Store duplicate data in session state
+                                st.session_state[duplicate_dialog_key] = True
+                                st.session_state[duplicate_data_key] = data
+                                st.rerun()
+                            elif result:
+                                st.success("Enrolled with conflict override!")
+                                del st.session_state[f"show_override_{button_key}"]
+                                return True
+                            else:
+                                st.error(f"Enrollment failed: {data}")
+                    
+                    with col2:
+                        if st.button("Cancel", key=f"cancel_{button_key}"):
+                            del st.session_state[f"show_override_{button_key}"]
+            
+            return False
+        else:
+            # Normal enrollment without conflict
+            if st.button(button_label, key=button_key):
+                result, data = enrollment_manager.enroll_staff(
+                    staff_name, class_name, date, role,
+                    meeting_type, session_time, override_conflict=False
+                )
+                
+                if result == "duplicate_found":
+                    # Store duplicate data in session state and trigger dialog
+                    st.session_state[duplicate_dialog_key] = True
+                    st.session_state[duplicate_data_key] = data
+                    st.rerun()  # Refresh to show dialog
+                elif result:
+                    st.success("Successfully enrolled!")
+                    return True
+                else:
+                    st.error(f"Enrollment failed: {data}")
+            return False
+        
+    @staticmethod
+    def _show_duplicate_enrollment_dialog(button_key, existing_enrollments, enrollment_manager, 
+                                        staff_name, class_name, date, role, meeting_type, 
+                                        session_time, override_conflict=False):
+        """Show dialog for handling duplicate enrollment"""
+        
+        duplicate_dialog_key = f"duplicate_dialog_{button_key}"
+        duplicate_data_key = f"duplicate_data_{button_key}"
+        
+        with st.container():
+            st.warning("**⚠️ Already Enrolled in This Class**")
+            st.write("You are already enrolled in the following session(s) for this class:")
+            
+            for enrollment in existing_enrollments:
+                details = enrollment_manager.get_enrollment_details_for_display(enrollment)
+                st.info(f"• {details}")
+            
+            st.write("**Would you like to:**")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if st.button("Keep Current Enrollment", key=f"keep_{button_key}"):
+                    st.info("No changes made. Your current enrollment remains active.")
+                    # Clean up session state
+                    if duplicate_dialog_key in st.session_state:
+                        del st.session_state[duplicate_dialog_key]
+                    if duplicate_data_key in st.session_state:
+                        del st.session_state[duplicate_data_key]
+                    return False
+            
+            with col2:
+                if st.button("Replace with New Session", key=f"replace_{button_key}"):
+                    # Handle replacement logic immediately
+                    if len(existing_enrollments) == 1:
+                        existing_id = existing_enrollments[0]['id']
+                        
+                        try:
+                            success, message = enrollment_manager.enroll_staff_with_replacement(
+                                staff_name, class_name, date, role, meeting_type, 
+                                session_time, override_conflict, existing_id
+                            )
+                            
+                            if success:
+                                st.success(f"Successfully switched sessions: {message}")
+                                # Clean up session state
+                                if duplicate_dialog_key in st.session_state:
+                                    del st.session_state[duplicate_dialog_key]
+                                if duplicate_data_key in st.session_state:
+                                    del st.session_state[duplicate_data_key]
+                                # Force page refresh to update UI
+                                import time
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error(f"Failed to switch sessions: {message}")
+                        
+                        except Exception as e:
+                            st.error(f"Error during replacement: {str(e)}")
+                    
+                    else:
+                        # Multiple enrollments - show selection UI
+                        st.write("Choose which enrollment to replace:")
+                        for i, enrollment in enumerate(existing_enrollments):
+                            details = enrollment_manager.get_enrollment_details_for_display(enrollment)
+                            if st.button(f"Replace: {details}", key=f"replace_specific_{button_key}_{i}"):
+                                try:
+                                    success, message = enrollment_manager.enroll_staff_with_replacement(
+                                        staff_name, class_name, date, role, meeting_type,
+                                        session_time, override_conflict, enrollment['id']
+                                    )
+                                    
+                                    if success:
+                                        st.success(message)
+                                        # Clean up session state
+                                        if duplicate_dialog_key in st.session_state:
+                                            del st.session_state[duplicate_dialog_key]
+                                        if duplicate_data_key in st.session_state:
+                                            del st.session_state[duplicate_data_key]
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Failed to switch sessions: {message}")
+                                except Exception as e:
+                                    st.error(f"Error: {str(e)}")
+            
+            with col3:
+                if st.button("Cancel", key=f"cancel_duplicate_{button_key}"):
+                    # Clean up session state
+                    if duplicate_dialog_key in st.session_state:
+                        del st.session_state[duplicate_dialog_key]
+                    if duplicate_data_key in st.session_state:
+                        del st.session_state[duplicate_data_key]
+                    return False
+        
+        return False

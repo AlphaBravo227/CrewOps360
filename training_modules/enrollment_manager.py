@@ -1,6 +1,7 @@
 # training_modules/enrollment_manager.py
 """
 Updated Enrollment Manager for the training module that uses the unified database.
+Includes duplicate enrollment prevention logic.
 """
 from datetime import datetime
 
@@ -18,9 +19,29 @@ class EnrollmentManager:
         self.excel = excel_handler
         self.track_manager = track_manager
         
+    def check_existing_enrollment(self, staff_name, class_name):
+        """Check if staff member is already enrolled in any session of this class"""
+        enrollments = self.get_staff_enrollments(staff_name)
+        existing_enrollments = [e for e in enrollments if e['class_name'] == class_name]
+        return existing_enrollments
+
     def enroll_staff(self, staff_name, class_name, class_date, role='General', 
-                     meeting_type=None, session_time=None, override_conflict=False):
-        """Enroll a staff member in a class with conflict checking"""
+                    meeting_type=None, session_time=None, override_conflict=False,
+                    replace_existing=False, existing_enrollment_id=None):
+        """Enroll a staff member in a class with conflict and duplicate checking"""
+        
+        # Check for existing enrollments in this class (unless we're doing a replacement)
+        if not replace_existing:
+            existing_enrollments = self.check_existing_enrollment(staff_name, class_name)
+            if existing_enrollments:
+                # Return special status indicating duplicate enrollment found
+                return "duplicate_found", existing_enrollments
+        
+        # If replacing existing enrollment, cancel it first
+        if replace_existing and existing_enrollment_id:
+            cancel_success = self.cancel_enrollment(existing_enrollment_id)
+            if not cancel_success:
+                return False, "Failed to cancel existing enrollment"
         
         # Check for conflicts if track manager is available
         conflict_details = None
@@ -44,9 +65,50 @@ class EnrollmentManager:
                 staff_name, class_name, class_date, role, 
                 meeting_type, session_time, override_conflict, conflict_details
             )
-            return success, "Enrollment successful" if success else "Enrollment failed"
+            if success:
+                message = "Enrollment successful"
+                if replace_existing:
+                    message += " (existing enrollment replaced)"
+                return success, message
+            else:
+                return False, "Enrollment failed"
         
         return False, "No available slots"
+
+    def enroll_staff_with_replacement(self, staff_name, class_name, class_date, role='General',
+                                    meeting_type=None, session_time=None, override_conflict=False,
+                                    existing_enrollment_id=None):
+        """Convenience method for enrolling with replacement of existing enrollment"""
+        return self.enroll_staff(
+            staff_name, class_name, class_date, role, meeting_type, 
+            session_time, override_conflict, replace_existing=True, 
+            existing_enrollment_id=existing_enrollment_id
+        )
+
+    def get_enrollment_details_for_display(self, enrollment):
+        """Format enrollment details for user-friendly display"""
+        details = []
+        
+        # Add date
+        details.append(f"Date: {enrollment['class_date']}")
+        
+        # Add session time if available
+        if enrollment.get('session_time'):
+            details.append(f"Session: {enrollment['session_time']}")
+        
+        # Add meeting type if available  
+        if enrollment.get('meeting_type'):
+            details.append(f"Type: {enrollment['meeting_type']}")
+            
+        # Add role if not General
+        if enrollment.get('role') and enrollment['role'] != 'General':
+            details.append(f"Role: {enrollment['role']}")
+        
+        # Add conflict indicator if applicable
+        if enrollment.get('conflict_override'):
+            details.append("⚠️ Conflict Override")
+            
+        return " | ".join(details)
 
     def get_class_track_conflicts(self, class_name):
         """Get track conflicts summary for all dates of a class - wrapper for UI compatibility"""
@@ -255,7 +317,7 @@ class EnrollmentManager:
                                     'type': 'nurse_medic_separate'
                                 })
                         else:
-                            # Regular session
+                            # Regular multiple sessions
                             enrollments = self.get_session_enrollments(class_name, class_date, session_time)
                             available_slots = max_students - len(enrollments)
                             
@@ -267,57 +329,95 @@ class EnrollmentManager:
                                     'available_slots': available_slots,
                                     'type': 'regular'
                                 })
+        
+        elif is_staff_meeting:
+            # Staff meeting with LIVE/Virtual options
+            for meeting_type in ['LIVE', 'Virtual']:
+                enrollments = self.get_session_enrollments(class_name, class_date, None, meeting_type)
+                available_slots = max_students - len(enrollments)
+                
+                if available_slots > 0:
+                    session_options.append({
+                        'meeting_type': meeting_type,
+                        'enrolled': [e['staff_name'] for e in enrollments],
+                        'available_slots': available_slots,
+                        'type': 'staff_meeting'
+                    })
+        
         else:
-            # Single session per day
-            if is_staff_meeting:
-                # Staff meeting with LIVE/Virtual options
-                date_options = self.excel.get_available_dates_with_options(class_name)
-                for date_str, meeting_type, display_text in date_options:
-                    if date_str == class_date:
-                        enrollments = self.get_session_enrollments(class_name, class_date, None, meeting_type)
-                        available_slots = max_students - len(enrollments)
-                        
-                        if available_slots > 0:
-                            session_options.append({
-                                'meeting_type': meeting_type,
-                                'display_text': display_text,
-                                'enrolled': [e['staff_name'] for e in enrollments],
-                                'available_slots': available_slots,
-                                'type': 'staff_meeting'
-                            })
+            # Single session
+            if nurses_medic_separate:
+                # Single session with nurse/medic separation
+                nurse_enrollments = self.get_session_enrollments(class_name, class_date)
+                medic_enrollments = self.get_session_enrollments(class_name, class_date)
+                
+                nurses = [e for e in nurse_enrollments if e.get('role') == 'Nurse']
+                medics = [e for e in medic_enrollments if e.get('role') == 'Medic']
+                
+                nurse_available = len(nurses) < (max_students // 2)
+                medic_available = len(medics) < (max_students // 2)
+                
+                if nurse_available or medic_available:
+                    session_options.append({
+                        'nurses': [e['staff_name'] for e in nurses],
+                        'medics': [e['staff_name'] for e in medics],
+                        'nurse_available': nurse_available,
+                        'medic_available': medic_available,
+                        'type': 'nurse_medic_separate_single'
+                    })
             else:
-                # Regular single session
+                # Single regular session
                 enrollments = self.get_session_enrollments(class_name, class_date)
                 available_slots = max_students - len(enrollments)
                 
                 if available_slots > 0:
-                    if nurses_medic_separate:
-                        nurses = [e for e in enrollments if e.get('role') == 'Nurse']
-                        medics = [e for e in enrollments if e.get('role') == 'Medic']
-                        
-                        nurse_available = len(nurses) < (max_students // 2)
-                        medic_available = len(medics) < (max_students // 2)
-                        
-                        if nurse_available or medic_available:
-                            session_options.append({
-                                'nurses': [e['staff_name'] for e in nurses],
-                                'medics': [e['staff_name'] for e in medics],
-                                'nurse_available': nurse_available,
-                                'medic_available': medic_available,
-                                'type': 'nurse_medic_separate_single'
-                            })
-                    else:
-                        session_options.append({
-                            'enrolled': [e['staff_name'] for e in enrollments],
-                            'available_slots': available_slots,
-                            'type': 'regular_single'
-                        })
+                    session_options.append({
+                        'enrolled': [e['staff_name'] for e in enrollments],
+                        'available_slots': available_slots,
+                        'type': 'regular_single'
+                    })
         
         return session_options
         
+    def get_enrollment_summary(self, class_name):
+        """Get enrollment summary for all dates of a class"""
+        class_details = self.excel.get_class_details(class_name)
+        if not class_details:
+            return {}
+        
+        summary = {}
+        
+        for i in range(1, 9):
+            date_key = f'date_{i}'
+            if date_key in class_details and class_details[date_key]:
+                date = class_details[date_key]
+                enrollments = self.get_session_enrollments(class_name, date)
+                summary[date] = len(enrollments)
+        
+        # Also include staff names for detailed view
+        detailed_summary = {}
+        for date, count in summary.items():
+            enrollments = self.get_session_enrollments(class_name, date)
+            detailed_summary[date] = {
+                'count': count,
+                'enrolled_staff': [e['staff_name'] for e in enrollments]
+            }
+        
+        # Add total unique staff across all dates
+        all_enrollments = []
+        for date in summary.keys():
+            enrollments = self.get_session_enrollments(class_name, date)
+            all_enrollments.extend(enrollments)
+        
+        unique_staff = set()
+        for enrollment in all_enrollments:
+            unique_staff.add(enrollment['staff_name'])
+            
+        return summary
+    
     def get_class_enrollment_summary(self, class_name):
-        """Get enrollment summary for a class"""
-        enrollments = self.db.get_class_enrollments(class_name)
+        """Get enrollment summary for a class with detailed breakdown"""
+        enrollments = self.get_staff_enrollments_for_class(class_name)
         
         # Group by date
         summary = {}
@@ -329,16 +429,18 @@ class EnrollmentManager:
                     'roles': {},
                     'meeting_types': {},
                     'sessions': {},
-                    'conflicts': 0
+                    'conflicts': 0,
+                    'staff_names': []
                 }
             summary[date]['total'] += 1
+            summary[date]['staff_names'].append(enrollment['staff_name'])
             
             # Track conflicts
             if enrollment.get('conflict_override'):
                 summary[date]['conflicts'] += 1
             
             # Track roles for nurse/medic separate classes
-            role = enrollment['role']
+            role = enrollment.get('role', 'General')
             if role not in summary[date]['roles']:
                 summary[date]['roles'][role] = 0
             summary[date]['roles'][role] += 1
@@ -356,8 +458,27 @@ class EnrollmentManager:
                 if session_time not in summary[date]['sessions']:
                     summary[date]['sessions'][session_time] = []
                 summary[date]['sessions'][session_time].append(enrollment['staff_name'])
-            
+        
         return summary
+    
+    def get_staff_enrollments_for_class(self, class_name):
+        """Get all enrollments for a specific class"""
+        # This is a helper method to get all enrollments for a class
+        # We'll use the database method if available, otherwise iterate through staff
+        try:
+            # Try to use a direct database method if it exists
+            return self.db.get_class_enrollments(class_name)
+        except AttributeError:
+            # Fallback: get all staff and filter their enrollments
+            all_staff = self.excel.get_staff_list()
+            all_enrollments = []
+            
+            for staff_name in all_staff:
+                staff_enrollments = self.get_staff_enrollments(staff_name)
+                class_enrollments = [e for e in staff_enrollments if e['class_name'] == class_name]
+                all_enrollments.extend(class_enrollments)
+            
+            return all_enrollments
         
     def get_available_slots(self, class_name, class_date, role='General', meeting_type=None, session_time=None):
         """Get number of available slots for a class date"""

@@ -12,3 +12,6 @@
 /modules/__pycache__
 *.pyc
 *.pyc
+*.pyc
+/modules/__pycache__
+*.pyc
