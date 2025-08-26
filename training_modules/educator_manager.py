@@ -1,9 +1,9 @@
-# training_modules/educator_manager.py
+# training_modules/educator_manager.py - FIXED for 2-day class support
 """
 Educator Signup Manager for the training module that handles educator signups
-with track conflict checking (ignoring AT shifts).
+with track conflict checking and proper 2-day class support.
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 
 class EducatorManager:
     def __init__(self, unified_database, excel_handler, track_manager=None):
@@ -20,7 +20,7 @@ class EducatorManager:
         self.track_manager = track_manager
         
     def get_educator_opportunities(self):
-        """Get all classes that need educators (non-zero instructor count)"""
+        """Get all classes that need educators (non-zero instructor count) with expanded 2-day support"""
         all_classes = self.excel.get_all_classes()
         opportunities = []
         
@@ -43,20 +43,43 @@ class EducatorManager:
             
             # Only include classes that need instructors
             if instructor_count > 0:
+                # Check if this is a two-day class
+                is_two_day = class_details.get('is_two_day_class', 'No').lower() == 'yes'
+                
                 # Get all available dates for this class
-                dates = []
+                base_dates = []
                 for i in range(1, 9):
                     date_key = f'date_{i}'
                     if date_key in class_details and class_details[date_key]:
-                        dates.append(class_details[date_key])
+                        base_dates.append(class_details[date_key])
                 
-                if dates:  # Only include if there are actual dates
+                # Expand dates for 2-day classes
+                expanded_dates = []
+                if is_two_day:
+                    for base_date in base_dates:
+                        try:
+                            # Parse the date and add both days
+                            date_obj = datetime.strptime(base_date, '%m/%d/%Y')
+                            day_1 = date_obj.strftime('%m/%d/%Y')
+                            day_2 = (date_obj + timedelta(days=1)).strftime('%m/%d/%Y')
+                            
+                            expanded_dates.extend([day_1, day_2])
+                            print(f"DEBUG: Expanded 2-day class {class_name} date {base_date} to [{day_1}, {day_2}]")
+                        except ValueError as e:
+                            print(f"Warning: Could not parse date {base_date} for class {class_name}: {e}")
+                            expanded_dates.append(base_date)  # Add original if parsing fails
+                else:
+                    expanded_dates = base_dates
+                
+                if expanded_dates:  # Only include if there are actual dates
                     opportunities.append({
                         'class_name': class_name,
                         'instructor_count': instructor_count,
-                        'available_dates': dates,
-                        'class_details': class_details
+                        'available_dates': expanded_dates,
+                        'class_details': class_details,
+                        'is_two_day': is_two_day
                     })
+                    print(f"DEBUG: Added opportunity for {class_name} with {len(expanded_dates)} dates (2-day: {is_two_day})")
                 else:
                     print(f"Warning: Class {class_name} needs {instructor_count} instructors but has no available dates")
         
@@ -129,7 +152,7 @@ class EducatorManager:
         return roster_data
     
     def get_classes_needing_educators(self):
-        """Get classes that still need educator signups"""
+        """Get classes that still need educator signups with proper 2-day support"""
         opportunities = self.get_educator_opportunities()
         needs_educators = []
         
@@ -146,7 +169,8 @@ class EducatorManager:
                         'class_date': date,
                         'needed': instructor_count - current_signups,
                         'current': current_signups,
-                        'required': instructor_count
+                        'required': instructor_count,
+                        'is_two_day': opportunity['is_two_day']
                     })
         
         return needs_educators
@@ -155,6 +179,7 @@ class EducatorManager:
         """
         Check if there's a schedule conflict for educator signup.
         AT shifts are ignored for educators as they are placeholders.
+        For 2-day classes, we check conflicts for the specific date only.
         """
         if not self.track_manager:
             return False, "No track data available"
@@ -164,22 +189,45 @@ class EducatorManager:
         is_two_day = class_details.get('is_two_day_class', 'No').lower() == 'yes'
         
         # Find which date index this is to get the can_work_n_prior setting
+        # For 2-day classes, we need to map the specific date back to the base date
         can_work_n_prior = False
-        for i in range(1, 9):
-            date_key = f'date_{i}'
-            if date_key in class_details and class_details[date_key] == class_date:
-                can_work_n_prior = class_details.get(f'date_{i}_can_work_n_prior', False)
-                break
+        
+        if is_two_day:
+            # For 2-day classes, find the base date that this specific date belongs to
+            try:
+                current_date_obj = datetime.strptime(class_date, '%m/%d/%Y')
+                
+                for i in range(1, 9):
+                    date_key = f'date_{i}'
+                    if date_key in class_details and class_details[date_key]:
+                        base_date_obj = datetime.strptime(class_details[date_key], '%m/%d/%Y')
+                        day_2_obj = base_date_obj + timedelta(days=1)
+                        
+                        # Check if current_date matches either day 1 or day 2 of this base date
+                        if (current_date_obj == base_date_obj or current_date_obj == day_2_obj):
+                            can_work_n_prior = class_details.get(f'date_{i}_can_work_n_prior', False)
+                            print(f"DEBUG: Found matching base date {class_details[date_key]} for {class_date}, can_work_n_prior: {can_work_n_prior}")
+                            break
+            except ValueError as e:
+                print(f"Warning: Could not parse date {class_date}: {e}")
+        else:
+            # For single-day classes, find the matching date directly
+            for i in range(1, 9):
+                date_key = f'date_{i}'
+                if date_key in class_details and class_details[date_key] == class_date:
+                    can_work_n_prior = class_details.get(f'date_{i}_can_work_n_prior', False)
+                    break
         
         # Check for conflicts using modified logic for educators
+        # For 2-day classes, we only check the specific date, not both days
         has_conflict, conflict_details = self.track_manager.check_class_conflict(
-            staff_name, class_date, is_two_day, can_work_n_prior
+            staff_name, class_date, False, can_work_n_prior  # Set is_two_day to False for individual date checking
         )
         
         # For educators, filter out AT conflicts but keep them for information
         if has_conflict and 'AT' in conflict_details:
             # Check if the conflict is ONLY AT shifts
-            at_only_conflict = self._is_at_only_conflict(staff_name, class_date, is_two_day)
+            at_only_conflict = self._is_at_only_conflict_for_date(staff_name, class_date)
             
             if at_only_conflict:
                 # AT only - no real conflict for educators, but show as info
@@ -195,8 +243,8 @@ class EducatorManager:
         
         return has_conflict, conflict_details
     
-    def _is_at_only_conflict(self, staff_name, class_date, is_two_day):
-        """Check if conflicts are only due to AT shifts"""
+    def _is_at_only_conflict_for_date(self, staff_name, class_date):
+        """Check if conflicts are only due to AT shifts for a specific date"""
         if not self.track_manager:
             return False
         
@@ -213,11 +261,6 @@ class EducatorManager:
         # Check shifts around the class date
         day_before = class_date_obj - timedelta(days=1)
         
-        shifts_to_check = [class_date_obj]
-        if is_two_day:
-            day_two = class_date_obj + timedelta(days=1)
-            shifts_to_check.append(day_two)
-        
         non_at_conflicts = False
         
         # Check day before
@@ -225,11 +268,10 @@ class EducatorManager:
         if shift_before and shift_before in ['D', 'N']:  # Exclude AT
             non_at_conflicts = True
         
-        # Check class days
-        for check_date in shifts_to_check:
-            shift = self.track_manager.get_staff_shift(staff_name, check_date)
-            if shift and shift in ['D', 'N']:  # Exclude AT
-                non_at_conflicts = True
+        # Check class day only
+        shift = self.track_manager.get_staff_shift(staff_name, class_date_obj)
+        if shift and shift in ['D', 'N']:  # Exclude AT
+            non_at_conflicts = True
         
         return not non_at_conflicts
     
@@ -366,43 +408,3 @@ class EducatorManager:
             opportunity['date_status'] = date_status
         
         return opportunities
-    
-    def get_educator_class_roster(self, class_name, class_date=None):
-        """Get educator roster for a specific class/date"""
-        signups = self.db.get_educator_signups_for_class(class_name, class_date)
-        
-        roster_data = []
-        for signup in signups:
-            roster_data.append({
-                'staff_name': signup['staff_name'],
-                'class_date': signup['class_date'],
-                'signup_date': signup.get('signup_date_display', ''),
-                'has_conflict': signup.get('conflict_override', False),
-                'conflict_details': signup.get('conflict_details', ''),
-                'status': signup.get('status', 'active')
-            })
-        
-        return roster_data
-    
-    def get_classes_needing_educators(self):
-        """Get classes that still need educator signups"""
-        opportunities = self.get_educator_opportunities()
-        needs_educators = []
-        
-        for opportunity in opportunities:
-            class_name = opportunity['class_name']
-            instructor_count = opportunity['instructor_count']
-            
-            for date in opportunity['available_dates']:
-                current_signups = self.db.get_educator_signup_count(class_name, date)
-                
-                if current_signups < instructor_count:
-                    needs_educators.append({
-                        'class_name': class_name,
-                        'class_date': date,
-                        'needed': instructor_count - current_signups,
-                        'current': current_signups,
-                        'required': instructor_count
-                    })
-        
-        return needs_educators
