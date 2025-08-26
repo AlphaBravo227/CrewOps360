@@ -16,3 +16,4 @@
 /modules/__pycache__
 *.pyc
 training/upload/~$MASTER Education Classes Roster.xlsx
+*.pyc
