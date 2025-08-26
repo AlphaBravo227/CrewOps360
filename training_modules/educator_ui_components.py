@@ -1,6 +1,7 @@
 # training_modules/educator_ui_components.py
 """
-UI Components specifically for educator signup functionality
+Enhanced UI Components specifically for educator signup functionality
+Now shows the names of staff members who have signed up when multiple educators are needed
 """
 import streamlit as st
 from datetime import datetime
@@ -41,6 +42,10 @@ class EducatorUIComponents:
                     is_full = date_info['is_full']
                     conflict_info = date_info['conflict_info']
                     
+                    # Get the list of educators who have signed up for this date
+                    educator_roster = educator_manager.get_class_educator_roster(class_name, date)
+                    signed_up_educators = [e['staff_name'] for e in educator_roster if e['status'] == 'active']
+                    
                     # Create columns for date display
                     col1, col2, col3, col4 = st.columns([3, 2, 2, 2])
                     
@@ -63,6 +68,17 @@ class EducatorUIComponents:
                             st.warning(f"🟡 {signup_status}")
                         else:
                             st.success(f"🟢 {signup_status}")
+                        
+                        # NEW: Show the names of educators who have signed up (if multiple educators needed)
+                        if max_signups > 1 and signed_up_educators:
+                            st.write("**👨‍🏫 Signed up:**")
+                            for educator_name in signed_up_educators:
+                                if educator_name == staff_name:
+                                    st.write(f"• **{educator_name}** (You)")
+                                else:
+                                    st.write(f"• {educator_name}")
+                        elif max_signups > 1 and not signed_up_educators:
+                            st.write("**👨‍🏫 Signed up:** *None yet*")
                     
                     with col3:
                         if is_signed_up:
@@ -134,6 +150,7 @@ class EducatorUIComponents:
         with col2:
             if class_details.get('is_two_day_class', 'No').lower() == 'yes':
                 st.write("• **Two-day class format**")
+                st.info("⚠️ 2-Day Class: Each day requires separate educator signup. You can sign up for one or both days.")
             if class_details.get('is_staff_meeting', False):
                 st.write("• **Staff Meeting**")
         
@@ -212,7 +229,7 @@ class EducatorUIComponents:
     
     @staticmethod
     def display_staff_educator_enrollments(educator_manager, staff_name):
-        """Display staff member's educator signups"""
+        """Display staff member's educator signups with enhanced colleague info"""
         signups = educator_manager.get_staff_educator_signups(staff_name)
         
         if not signups:
@@ -243,19 +260,36 @@ class EducatorUIComponents:
                     if signup.get('conflict_override') and signup.get('conflict_details'):
                         st.warning(f"**Conflict:** {signup['conflict_details']}")
                     
-                    # Show other educators for this date
+                    # Show other educators for this date - ENHANCED
                     other_educators = educator_manager.get_class_educator_roster(
                         class_name, signup['class_date']
                     )
                     other_names = [e['staff_name'] for e in other_educators 
                                  if e['staff_name'] != staff_name and e['status'] == 'active']
                     
-                    if other_names:
-                        st.write("**Other educators:**")
-                        for name in other_names:
-                            st.write(f"• {name}")
+                    # Get class details to show how many educators are needed
+                    class_details = educator_manager.excel.get_class_details(class_name)
+                    instructors_needed = class_details.get('instructors_per_day', 0) if class_details else 0
+                    total_signups = len(other_educators)
+                    
+                    if instructors_needed > 1:
+                        st.write(f"**Educators ({total_signups}/{instructors_needed}):**")
+                        if other_names:
+                            for name in other_names:
+                                st.write(f"• {name}")
+                            st.write(f"• **{staff_name}** (You)")
+                        else:
+                            st.write(f"• **{staff_name}** (You)")
+                            if total_signups < instructors_needed:
+                                still_needed = instructors_needed - total_signups
+                                st.write(f"*Still need {still_needed} more educator{'s' if still_needed != 1 else ''}*")
                     else:
-                        st.write("*Only educator signed up*")
+                        if other_names:
+                            st.write("**Other educators:**")
+                            for name in other_names:
+                                st.write(f"• {name}")
+                        else:
+                            st.write("*Only educator signed up*")
                 
                 with col4:
                     if st.button("Cancel", key=f"cancel_educator_{signup['id']}"):
@@ -295,7 +329,7 @@ class EducatorUIComponents:
     
     @staticmethod
     def display_class_educator_summary(educator_manager, class_name):
-        """Display educator summary for a specific class"""
+        """Display educator summary for a specific class with enhanced name display"""
         class_details = educator_manager.excel.get_class_details(class_name)
         instructor_requirement = class_details.get('instructors_per_day', 0)
         
@@ -333,6 +367,8 @@ class EducatorUIComponents:
                 needed = max(0, instructor_requirement - total_signed_up)
                 if needed > 0:
                     st.write(f"**Need {needed} more educator{'s' if needed != 1 else ''}**")
+                else:
+                    st.success("**Fully staffed!**")
             
             with col2:
                 # Show conflicts if any
@@ -342,11 +378,11 @@ class EducatorUIComponents:
                     st.success("✅ No conflicts")
             
             with col3:
-                # Show educator names
+                # Show educator names - ENHANCED with better formatting
                 if staff_names:
-                    st.write("**Signed up:**")
-                    for name in staff_names:
-                        st.write(f"• {name}")
+                    st.write("**👨‍🏫 Signed up:**")
+                    for i, name in enumerate(staff_names, 1):
+                        st.write(f"{i}. {name}")
                 else:
                     st.write("*No educators signed up*")
             
