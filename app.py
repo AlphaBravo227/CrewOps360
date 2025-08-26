@@ -244,7 +244,8 @@ def display_module_selection():
             else:
                 st.error("Training modules are not properly configured. Please check the training folder setup.")
 
-# Fix for app.py - Replace the display_training_events_app function
+# Enhanced Training Events App Section with Educator Signup
+# This replaces the display_training_events_app() function in app.py
 
 def display_training_events_app():
     st.markdown("")
@@ -295,6 +296,15 @@ def display_training_events_app():
                 st.session_state.training_track_manager
             )
 
+        # Initialize educator manager - NEW
+        if 'training_educator_manager' not in st.session_state:
+            from training_modules.educator_manager import EducatorManager
+            st.session_state.training_educator_manager = EducatorManager(
+                st.session_state.unified_db,
+                st.session_state.training_excel_handler,
+                st.session_state.training_track_manager
+            )
+
         # Integrate CCEMT schedules after both components are initialized
         if hasattr(st.session_state.training_track_manager, 'set_excel_handler'):
             st.session_state.training_track_manager.set_excel_handler(
@@ -306,12 +316,13 @@ def display_training_events_app():
         if 'training_admin_access' not in st.session_state:
             st.session_state.training_admin_access = AdminAccess()
 
-        # Initialize enhanced admin functions
+        # Initialize enhanced admin functions with educator manager
         if 'training_excel_admin_functions' not in st.session_state:
             st.session_state.training_excel_admin_functions = ExcelAdminFunctions(
                 st.session_state.training_excel_handler,
                 st.session_state.training_enrollment_manager,
-                st.session_state.unified_db
+                st.session_state.unified_db,
+                st.session_state.training_educator_manager  # Pass educator manager
             )
             
             # Connect admin functions to admin access
@@ -366,137 +377,156 @@ def display_training_events_app():
         enrolled_classes = st.session_state.training_enrollment_manager.get_enrolled_classes(selected_staff)
         live_meeting_count = st.session_state.training_enrollment_manager.get_live_staff_meeting_count(selected_staff)
         
-        # Display enrollment summary with LIVE meeting metric
-        TrainingUIComponents.display_enrollment_metrics(
-            assigned_classes, enrolled_classes, live_meeting_count, st.session_state.training_excel_handler
-        )
+        # Get educator signup metrics - NEW
+        educator_signups = st.session_state.training_educator_manager.get_staff_educator_signups(selected_staff)
+        
+        # Display enrollment summary with LIVE meeting metric and educator metrics
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            st.metric("Total Assigned Classes", len(assigned_classes))
+        with col2:
+            st.metric("Classes Enrolled", len(enrolled_classes))
+        with col3:
+            st.metric("Classes Remaining", len(assigned_classes) - len(enrolled_classes))
+        with col4:
+            # Check if user has any staff meetings assigned
+            has_staff_meetings = any(st.session_state.training_excel_handler.is_staff_meeting(cls) for cls in assigned_classes)
+            if has_staff_meetings:
+                st.metric("FY26 LIVE Staff Meetings", f"{live_meeting_count}/2")
+                if live_meeting_count >= 2:
+                    st.success("✅ LIVE meeting requirement met!")
+                else:
+                    st.info(f"📝 Need {2 - live_meeting_count} more LIVE meeting(s)")
+            else:
+                st.metric("LIVE Meetings", "N/A")
+        with col5:
+            st.metric("Educator Signups", len(educator_signups))
         
         st.markdown("---")
         
-        # Tabs for different views - THIS IS THE MAIN USER INTERFACE
-        tab1, tab2, tab3, tab4 = st.tabs(["📝 Enroll in Classes", "📋 My Enrollments", "📊 Class Details", "📅 Track Schedule"])
+        # Tabs for different views - ENHANCED WITH EDUCATOR TAB
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Enroll in Classes", "📋 My Enrollments", "📊 Class Details", "📚 Educator Signup", "📅 Track Schedule"])
         
-# Updated section for display_training_events_app function
-# Replace the "Enroll in Classes" tab section (tab1) with this code:
-
         with tab1:
-                    # Enroll in Classes Tab
-                    st.header("📝 Enroll in Classes")
+            # Enroll in Classes Tab (existing functionality)
+            st.header("📝 Enroll in Classes")
+            
+            if not assigned_classes:
+                st.info("You have no classes assigned at this time.")
+            else:
+                # Display ALL assigned classes with enrollment status
+                for class_name in assigned_classes:
+                    # Get enrollment status for this class
+                    from training_modules.ui_components import UIComponents as TrainingUIComponents
+                    enrollment_status = TrainingUIComponents.get_class_enrollment_status(
+                        st.session_state.training_enrollment_manager, 
+                        selected_staff, 
+                        class_name, 
+                        st.session_state.training_excel_handler
+                    )
                     
-                    if not assigned_classes:
-                        st.info("You have no classes assigned at this time.")
+                    # Determine if class is enrolled and create appropriate display
+                    is_enrolled = class_name in enrolled_classes
+                    
+                    # Create the display text with enrollment status
+                    if is_enrolled:
+                        if enrollment_status:
+                            display_text = f"**{class_name}** {enrollment_status}"
+                        else:
+                            display_text = f"**{class_name}** ✅ Enrolled"
+                        expanded_default = False  # Collapsed for enrolled classes
                     else:
-                        # Display ALL assigned classes with enrollment status
-                        for class_name in assigned_classes:
-                            # Get enrollment status for this class
-                            enrollment_status = TrainingUIComponents.get_class_enrollment_status(
-                                st.session_state.training_enrollment_manager, 
-                                selected_staff, 
-                                class_name, 
-                                st.session_state.training_excel_handler
-                            )
+                        display_text = f"**{class_name}**"
+                        expanded_default = False  # Keep collapsed by default
+                    
+                    # Show class in expander
+                    with st.expander(display_text, expanded=expanded_default):
+                        
+                        # SHOW ENROLLMENT STATUS FIRST - PRIORITY INFORMATION
+                        if is_enrolled:
+                            # Show current enrollment details at the top
+                            st.markdown("### 📋 Your Current Enrollment")
+                            enrollments = st.session_state.training_enrollment_manager.get_staff_enrollments(selected_staff)
+                            class_enrollments = [e for e in enrollments if e['class_name'] == class_name]
                             
-                            # Determine if class is enrolled and create appropriate display
-                            is_enrolled = class_name in enrolled_classes
-                            
-                            # Create the display text with enrollment status
-                            if is_enrolled:
-                                if enrollment_status:
-                                    display_text = f"**{class_name}** {enrollment_status}"
-                                else:
-                                    display_text = f"**{class_name}** ✅ Enrolled"
-                                expanded_default = False  # Collapsed for enrolled classes
+                            if class_enrollments:
+                                for enrollment in class_enrollments:
+                                    col1, col2, col3 = st.columns([2, 2, 1])
+                                    
+                                    with col1:
+                                        st.write(f"**Date:** {enrollment['class_date']}")
+                                        if enrollment.get('session_time'):
+                                            st.write(f"**Session:** {enrollment['session_time']}")
+                                    
+                                    with col2:
+                                        if enrollment['role'] != 'General':
+                                            st.write(f"**Role:** {enrollment['role']}")
+                                        
+                                        # Show meeting type for staff meetings
+                                        if st.session_state.training_excel_handler.is_staff_meeting(class_name):
+                                            meeting_type = enrollment.get('meeting_type', 'Virtual')
+                                            if meeting_type == 'LIVE':
+                                                st.write("**Type:** 🔴 LIVE")
+                                            else:
+                                                st.write("**Type:** 💻 Virtual")
+                                        
+                                        # Show conflict indicator
+                                        if enrollment.get('conflict_override'):
+                                            st.warning("⚠️ Schedule conflict - swap required")
+                                    
+                                    with col3:
+                                        if st.button("Cancel", key=f"cancel_enroll_{enrollment['id']}"):
+                                            if st.session_state.training_enrollment_manager.cancel_enrollment(enrollment['id']):
+                                                st.success("Enrollment cancelled!")
+                                                st.rerun()
+                                            else:
+                                                st.error("Error cancelling enrollment")
+                                    
+                                    st.markdown("---")
                             else:
-                                display_text = f"**{class_name}**"
-                                expanded_default = False  # Keep collapsed by default
+                                st.error("Error: Enrollment status inconsistent")
+                        
+                        # CLASS DETAILS SECTION - SECONDARY INFORMATION
+                        class_details = st.session_state.training_excel_handler.get_class_details(class_name)
+                        
+                        if class_details:
+                            # Show class details in a collapsible section to reduce visual clutter
+                            with st.expander("📚 Class Details & Information", expanded=False):
+                                TrainingUIComponents.display_class_info(class_details)
                             
-                            # Show class in expander
-                            with st.expander(display_text, expanded=expanded_default):
-                                
-                                # SHOW ENROLLMENT STATUS FIRST - PRIORITY INFORMATION
+                            # Get available dates for this class
+                            available_dates = st.session_state.training_excel_handler.get_class_dates(class_name)
+                            
+                            if available_dates:
                                 if is_enrolled:
-                                    # Show current enrollment details at the top
-                                    st.markdown("### 📋 Your Current Enrollment")
-                                    enrollments = st.session_state.training_enrollment_manager.get_staff_enrollments(selected_staff)
-                                    class_enrollments = [e for e in enrollments if e['class_name'] == class_name]
-                                    
-                                    if class_enrollments:
-                                        for enrollment in class_enrollments:
-                                            col1, col2, col3 = st.columns([2, 2, 1])
-                                            
-                                            with col1:
-                                                st.write(f"**Date:** {enrollment['class_date']}")
-                                                if enrollment.get('session_time'):
-                                                    st.write(f"**Session:** {enrollment['session_time']}")
-                                            
-                                            with col2:
-                                                if enrollment['role'] != 'General':
-                                                    st.write(f"**Role:** {enrollment['role']}")
-                                                
-                                                # Show meeting type for staff meetings
-                                                if st.session_state.training_excel_handler.is_staff_meeting(class_name):
-                                                    meeting_type = enrollment.get('meeting_type', 'Virtual')
-                                                    if meeting_type == 'LIVE':
-                                                        st.write("**Type:** 🔴 LIVE")
-                                                    else:
-                                                        st.write("**Type:** 💻 Virtual")
-                                                
-                                                # Show conflict indicator
-                                                if enrollment.get('conflict_override'):
-                                                    st.warning("⚠️ Schedule conflict - swap required")
-                                            
-                                            with col3:
-                                                if st.button("Cancel", key=f"cancel_enroll_{enrollment['id']}"):
-                                                    if st.session_state.training_enrollment_manager.cancel_enrollment(enrollment['id']):
-                                                        st.success("Enrollment cancelled!")
-                                                        st.rerun()
-                                                    else:
-                                                        st.error("Error cancelling enrollment")
-                                            
-                                            st.markdown("---")
-                                    else:
-                                        st.error("Error: Enrollment status inconsistent")
-                                    
-                                # CLASS DETAILS SECTION - SECONDARY INFORMATION
-                                class_details = st.session_state.training_excel_handler.get_class_details(class_name)
-                                
-                                if class_details:
-                                    # Show class details in a collapsible section to reduce visual clutter
-                                    with st.expander("📚 Class Details & Information", expanded=False):
-                                        TrainingUIComponents.display_class_info(class_details)
-                                    
-                                    # Get available dates for this class
-                                    available_dates = st.session_state.training_excel_handler.get_class_dates(class_name)
-                                    
-                                    if available_dates:
-                                        if is_enrolled:
-                                            # Show additional enrollment options for enrolled users
-                                            st.markdown("### Sessions Available")
-                                            TrainingUIComponents.display_session_enrollment_options_with_tracks(
-                                                st.session_state.training_enrollment_manager,
-                                                class_name,
-                                                available_dates,
-                                                selected_staff,
-                                                st.session_state.training_track_manager
-                                            )
-                                        else:
-                                            # Show enrollment options for unenrolled classes
-                                            st.markdown("### 📅 Available Sessions")
-                                            st.info("Select a session to enroll in this class.")
-                                            TrainingUIComponents.display_session_enrollment_options_with_tracks(
-                                                st.session_state.training_enrollment_manager,
-                                                class_name,
-                                                available_dates,
-                                                selected_staff,
-                                                st.session_state.training_track_manager
-                                            )
-                                    else:
-                                        st.warning("No available dates found for this class.")
+                                    # Show additional enrollment options for enrolled users
+                                    st.markdown("### Sessions Available")
+                                    TrainingUIComponents.display_session_enrollment_options_with_tracks(
+                                        st.session_state.training_enrollment_manager,
+                                        class_name,
+                                        available_dates,
+                                        selected_staff,
+                                        st.session_state.training_track_manager
+                                    )
                                 else:
-                                    st.error("Class details not found.")        
+                                    # Show enrollment options for unenrolled classes
+                                    st.markdown("### 📅 Available Sessions")
+                                    st.info("Select a session to enroll in this class.")
+                                    TrainingUIComponents.display_session_enrollment_options_with_tracks(
+                                        st.session_state.training_enrollment_manager,
+                                        class_name,
+                                        available_dates,
+                                        selected_staff,
+                                        st.session_state.training_track_manager
+                                    )
+                            else:
+                                st.warning("No available dates found for this class.")
+                        else:
+                            st.error("Class details not found.")
 
         with tab2:
-            # My Enrollments Tab
+            # My Enrollments Tab (existing functionality)
             st.header("📋 My Enrollments")
             
             enrollments = st.session_state.training_enrollment_manager.get_staff_enrollments(selected_staff)
@@ -520,9 +550,19 @@ def display_training_events_app():
                                 st.rerun()
                             else:
                                 st.error("Error cancelling enrollment.")
+            
+            # NEW: Add educator enrollments section
+            st.markdown("---")
+            st.markdown("### 👨‍🏫 Your Educator Signups")
+            
+            from training_modules.educator_ui_components import EducatorUIComponents
+            EducatorUIComponents.display_staff_educator_enrollments(
+                st.session_state.training_educator_manager,
+                selected_staff
+            )
         
         with tab3:
-            # Class Details Tab
+            # Class Details Tab (existing functionality enhanced)
             st.header("📊 Class Details")
             
             if assigned_classes:
@@ -543,6 +583,15 @@ def display_training_events_app():
                         # Show enrollment summary
                         enrollment_summary = st.session_state.training_enrollment_manager.get_class_enrollment_summary(selected_class)
                         TrainingUIComponents.display_enrollment_summary(enrollment_summary, class_details)
+                        
+                        # NEW: Show educator summary if class needs educators
+                        if st.session_state.training_excel_handler.needs_educators(selected_class):
+                            st.markdown("---")
+                            st.write("### 👨‍🏫 Educator Coverage")
+                            EducatorUIComponents.display_class_educator_summary(
+                                st.session_state.training_educator_manager,
+                                selected_class
+                            )
                         
                         # Show track conflicts if available
                         if st.session_state.training_track_manager.tracks_db_path:
@@ -566,7 +615,26 @@ def display_training_events_app():
                 st.info("You have no classes assigned at this time.")
         
         with tab4:
-            # Track Schedule Tab
+            # NEW: Educator Signup Tab
+            st.header("📚 Educator Signup")
+            st.caption("Sign up to be part of the education staff for classes")
+            
+            # Display educator metrics
+            EducatorUIComponents.display_educator_metrics(
+                st.session_state.training_educator_manager,
+                selected_staff
+            )
+            
+            st.markdown("---")
+            
+            # Display available educator opportunities
+            EducatorUIComponents.display_educator_opportunities(
+                st.session_state.training_educator_manager,
+                selected_staff
+            )
+        
+        with tab5:
+            # Track Schedule Tab (existing functionality)
             st.header("📅 Track Schedule")
             
             if st.session_state.training_track_manager.tracks_db_path:

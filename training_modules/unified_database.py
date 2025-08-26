@@ -1,7 +1,7 @@
 # training_modules/unified_database.py
 """
-Complete unified database module that consolidates both training enrollment data
-and track data into a single medflight_tracks.db database.
+Enhanced unified database module that includes educator signup functionality
+along with existing training enrollment data and track data.
 """
 import sqlite3
 from datetime import datetime
@@ -69,6 +69,22 @@ class UnifiedDatabase:
             )
         ''')
         
+        # Create educator signups table
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS training_educator_signups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                staff_name TEXT NOT NULL,
+                class_name TEXT NOT NULL,
+                class_date TEXT NOT NULL,
+                conflict_override BOOLEAN DEFAULT 0,
+                conflict_details TEXT DEFAULT NULL,
+                override_acknowledged TEXT DEFAULT NULL,
+                signup_date TEXT DEFAULT NULL,
+                status TEXT DEFAULT 'active',
+                UNIQUE(staff_name, class_name, class_date)
+            )
+        ''')
+        
         # Check if conflict fields exist in existing table (for migration)
         self.cursor.execute("PRAGMA table_info(training_enrollments)")
         columns = [column[1] for column in self.cursor.fetchall()]
@@ -97,6 +113,21 @@ class UnifiedDatabase:
                 role TEXT,
                 meeting_type TEXT,
                 session_time TEXT,
+                conflict_override BOOLEAN DEFAULT 0,
+                conflict_details TEXT,
+                action_date TEXT DEFAULT NULL,
+                details TEXT
+            )
+        ''')
+        
+        # Create educator signup audit log table
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS training_educator_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                staff_name TEXT NOT NULL,
+                class_name TEXT NOT NULL,
+                class_date TEXT NOT NULL,
                 conflict_override BOOLEAN DEFAULT 0,
                 conflict_details TEXT,
                 action_date TEXT DEFAULT NULL,
@@ -202,7 +233,8 @@ class UnifiedDatabase:
         finally:
             old_conn.close()
             self.disconnect()
-            
+    
+    # STUDENT ENROLLMENT METHODS (existing)
     def add_enrollment(self, staff_name, class_name, class_date, role='General', 
                       meeting_type=None, session_time=None, conflict_override=False, 
                       conflict_details=None):
@@ -237,7 +269,7 @@ class UnifiedDatabase:
             return False
         finally:
             self.disconnect()
-            
+    
     def cancel_enrollment(self, enrollment_id):
         """Cancel a training enrollment"""
         self.connect()
@@ -278,7 +310,142 @@ class UnifiedDatabase:
             return False
         finally:
             self.disconnect()
+    
+    # EDUCATOR SIGNUP METHODS (new)
+    def add_educator_signup(self, staff_name, class_name, class_date, 
+                           conflict_override=False, conflict_details=None):
+        """Add a new educator signup with optional conflict override"""
+        self.connect()
+        try:
+            current_time = self._get_eastern_time()
+            signup_timestamp = self._format_eastern_timestamp(current_time)
+            override_timestamp = self._format_eastern_timestamp(current_time) if conflict_override else None
             
+            self.cursor.execute('''
+                INSERT INTO training_educator_signups (staff_name, class_name, class_date,
+                                                    conflict_override, conflict_details, 
+                                                    override_acknowledged, signup_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (staff_name, class_name, class_date, conflict_override, conflict_details, 
+                 override_timestamp, signup_timestamp))
+            
+            # Add audit entry
+            audit_timestamp = self._format_eastern_timestamp(current_time)
+            self.cursor.execute('''
+                INSERT INTO training_educator_audit (action, staff_name, class_name, class_date,
+                                                   conflict_override, conflict_details, action_date)
+                VALUES ('educator_signup', ?, ?, ?, ?, ?, ?)
+            ''', (staff_name, class_name, class_date, conflict_override, conflict_details, audit_timestamp))
+            
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        finally:
+            self.disconnect()
+    
+    def cancel_educator_signup(self, signup_id):
+        """Cancel an educator signup"""
+        self.connect()
+        try:
+            # Get signup details for audit
+            self.cursor.execute('''
+                SELECT staff_name, class_name, class_date, conflict_override, conflict_details
+                FROM training_educator_signups
+                WHERE id = ?
+            ''', (signup_id,))
+            signup = self.cursor.fetchone()
+            
+            if signup:
+                # Update status
+                self.cursor.execute('''
+                    UPDATE training_educator_signups
+                    SET status = 'cancelled'
+                    WHERE id = ?
+                ''', (signup_id,))
+                
+                # Add audit entry
+                current_time = self._get_eastern_time()
+                audit_timestamp = self._format_eastern_timestamp(current_time)
+                self.cursor.execute('''
+                    INSERT INTO training_educator_audit (action, staff_name, class_name, class_date,
+                                                       conflict_override, conflict_details, action_date)
+                    VALUES ('educator_cancelled', ?, ?, ?, ?, ?, ?)
+                ''', (signup['staff_name'], signup['class_name'], signup['class_date'],
+                     signup['conflict_override'], signup['conflict_details'], audit_timestamp))
+                
+                self.conn.commit()
+                return True
+            return False
+        finally:
+            self.disconnect()
+    
+    def get_staff_educator_signups(self, staff_name):
+        """Get all educator signups for a staff member"""
+        self.connect()
+        self.cursor.execute('''
+            SELECT * FROM training_educator_signups
+            WHERE staff_name = ? AND status = 'active'
+            ORDER BY class_date
+        ''', (staff_name,))
+        signups = [dict(row) for row in self.cursor.fetchall()]
+        self.disconnect()
+        
+        # Convert timestamps to Eastern time for display
+        for signup in signups:
+            if signup.get('signup_date'):
+                signup['signup_date_display'] = self._parse_and_format_timestamp(
+                    signup['signup_date']
+                )
+            if signup.get('override_acknowledged'):
+                signup['override_acknowledged_display'] = self._parse_and_format_timestamp(
+                    signup['override_acknowledged']
+                )
+        
+        return signups
+    
+    def get_educator_signups_for_class(self, class_name, class_date=None):
+        """Get all educator signups for a class"""
+        self.connect()
+        if class_date:
+            self.cursor.execute('''
+                SELECT * FROM training_educator_signups
+                WHERE class_name = ? AND class_date = ? AND status = 'active'
+                ORDER BY signup_date
+            ''', (class_name, class_date))
+        else:
+            self.cursor.execute('''
+                SELECT * FROM training_educator_signups
+                WHERE class_name = ? AND status = 'active'
+                ORDER BY class_date, signup_date
+            ''', (class_name,))
+        signups = [dict(row) for row in self.cursor.fetchall()]
+        self.disconnect()
+        return signups
+    
+    def get_educator_signup_count(self, class_name, class_date):
+        """Get count of educator signups for a specific class and date"""
+        self.connect()
+        self.cursor.execute('''
+            SELECT COUNT(*) as count FROM training_educator_signups
+            WHERE class_name = ? AND class_date = ? AND status = 'active'
+        ''', (class_name, class_date))
+        count = self.cursor.fetchone()['count']
+        self.disconnect()
+        return count
+    
+    def check_existing_educator_signup(self, staff_name, class_name, class_date):
+        """Check if staff member already signed up as educator for this class/date"""
+        self.connect()
+        self.cursor.execute('''
+            SELECT * FROM training_educator_signups
+            WHERE staff_name = ? AND class_name = ? AND class_date = ? AND status = 'active'
+        ''', (staff_name, class_name, class_date))
+        signup = self.cursor.fetchone()
+        self.disconnect()
+        return dict(signup) if signup else None
+    
+    # EXISTING METHODS (unchanged)
     def get_staff_enrollments(self, staff_name):
         """Get all training enrollments for a staff member"""
         self.connect()
@@ -413,6 +580,35 @@ class UnifiedDatabase:
                 )
         
         return enrollments
+    
+    def get_conflict_override_educator_signups(self, staff_name=None):
+        """Get all educator signups with conflict overrides"""
+        self.connect()
+        
+        if staff_name:
+            self.cursor.execute('''
+                SELECT * FROM training_educator_signups
+                WHERE staff_name = ? AND conflict_override = 1 AND status = 'active'
+                ORDER BY class_date
+            ''', (staff_name,))
+        else:
+            self.cursor.execute('''
+                SELECT * FROM training_educator_signups
+                WHERE conflict_override = 1 AND status = 'active'
+                ORDER BY staff_name, class_date
+            ''')
+            
+        signups = [dict(row) for row in self.cursor.fetchall()]
+        self.disconnect()
+        
+        # Add display timestamps
+        for signup in signups:
+            if signup.get('override_acknowledged'):
+                signup['override_acknowledged_display'] = self._parse_and_format_timestamp(
+                    signup['override_acknowledged']
+                )
+        
+        return signups
         
     def _parse_and_format_timestamp(self, timestamp_str):
         """Parse stored timestamp and format for display"""
@@ -447,9 +643,17 @@ class UnifiedDatabase:
         self.cursor.execute("SELECT COUNT(*) as total FROM training_enrollments WHERE status = 'active'")
         total_enrollments = self.cursor.fetchone()['total']
         
+        # Get total educator signups
+        self.cursor.execute("SELECT COUNT(*) as total FROM training_educator_signups WHERE status = 'active'")
+        total_educator_signups = self.cursor.fetchone()['total']
+        
         # Get conflicts count
         self.cursor.execute("SELECT COUNT(*) as conflicts FROM training_enrollments WHERE conflict_override = 1 AND status = 'active'")
-        conflict_count = self.cursor.fetchone()['conflicts']
+        enrollment_conflicts = self.cursor.fetchone()['conflicts']
+        
+        # Get educator conflicts count
+        self.cursor.execute("SELECT COUNT(*) as conflicts FROM training_educator_signups WHERE conflict_override = 1 AND status = 'active'")
+        educator_conflicts = self.cursor.fetchone()['conflicts']
         
         # Get recent enrollments (last 24 hours Eastern time)
         current_time = self._get_eastern_time()
@@ -462,11 +666,22 @@ class UnifiedDatabase:
         ''', (yesterday_str,))
         recent_enrollments = self.cursor.fetchone()['recent']
         
+        # Get recent educator signups
+        self.cursor.execute('''
+            SELECT COUNT(*) as recent FROM training_educator_signups 
+            WHERE status = 'active' AND signup_date >= ?
+        ''', (yesterday_str,))
+        recent_educator_signups = self.cursor.fetchone()['recent']
+        
         self.disconnect()
         
         return {
             'total_enrollments': total_enrollments,
-            'conflict_overrides': conflict_count,
+            'total_educator_signups': total_educator_signups,
+            'enrollment_conflicts': enrollment_conflicts,
+            'educator_conflicts': educator_conflicts,
+            'total_conflicts': enrollment_conflicts + educator_conflicts,
             'recent_enrollments': recent_enrollments,
+            'recent_educator_signups': recent_educator_signups,
             'current_time_eastern': current_time.strftime('%m/%d/%Y %I:%M %p %Z')
         }

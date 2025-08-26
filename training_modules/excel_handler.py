@@ -1,8 +1,20 @@
+# training_modules/excel_handler.py - Enhanced version with instructor count support
 import pandas as pd
 import openpyxl
 from datetime import datetime, time
 import os
-from training_modules.config import NON_CLASS_COLUMNS, DEFAULT_CLASS_DETAILS
+from training_modules.config import NON_CLASS_COLUMNS
+
+# Enhanced default class details
+DEFAULT_CLASS_DETAILS = {
+    'students_per_class': 21,
+    'nurses_medic_separate': 'No',
+    'classes_per_day': 1,
+    'is_two_day_class': 'No',
+    'time_1_start': '08:00',
+    'time_1_end': '16:00',
+    'instructors_per_day': 0  # Default to 0 instructors needed
+}
 
 class ExcelHandler:
     def __init__(self, excel_path):
@@ -196,6 +208,7 @@ class ExcelHandler:
                 # Return default values with the class name and a flag indicating missing data
                 default_details = DEFAULT_CLASS_DETAILS.copy()
                 default_details['class_name'] = class_name
+                default_details['instructors_per_day'] = 0  # Default to 0 for missing sheets
                 default_details['_missing_sheet'] = True  # Flag to indicate missing data
                 return default_details
                 
@@ -249,6 +262,7 @@ class ExcelHandler:
                 print(f"Warning: No dates found for class '{class_name}' sheet")
                 default_details = DEFAULT_CLASS_DETAILS.copy()
                 default_details['class_name'] = class_name
+                default_details['instructors_per_day'] = 0  # Default to 0 for classes with no dates
                 default_details['_missing_dates'] = True  # Flag to indicate missing dates
                 return default_details
             
@@ -283,6 +297,21 @@ class ExcelHandler:
                         details[label] = '16:00'
                         print(f"    -> Using default: 16:00")
             
+            # ENHANCED: Extract instructor count from row 21, column B
+            instructors_per_day_value = sheet.cell(row=21, column=2).value
+            
+            # Convert instructor count to integer, defaulting to 0
+            try:
+                if instructors_per_day_value is not None:
+                    details['instructors_per_day'] = int(float(instructors_per_day_value))
+                    print(f"  Instructors per day for {class_name}: {details['instructors_per_day']} (raw value: {repr(instructors_per_day_value)})")
+                else:
+                    details['instructors_per_day'] = 0
+                    print(f"  No instructor count found for {class_name} (cell B21 is empty)")
+            except (ValueError, TypeError) as e:
+                details['instructors_per_day'] = 0
+                print(f"  Could not parse instructor count for {class_name}: {repr(instructors_per_day_value)}, error: {e}")
+            
             # Add class name to details
             details['class_name'] = class_name
             
@@ -298,6 +327,7 @@ class ExcelHandler:
             # Return default values with the class name and error flag
             default_details = DEFAULT_CLASS_DETAILS.copy()
             default_details['class_name'] = class_name
+            default_details['instructors_per_day'] = 0  # Default to 0 for error cases
             default_details['_error'] = str(e)  # Flag to indicate error
             return default_details
 
@@ -358,6 +388,26 @@ class ExcelHandler:
                     date_options.append((date_str, None, date_str))
                     
         return date_options
+    
+    def needs_educators(self, class_name):
+        """Check if a class needs educators"""
+        class_details = self.get_class_details(class_name)
+        instructor_count = class_details.get('instructors_per_day', 0)
+        
+        try:
+            return int(float(instructor_count)) > 0 if instructor_count else False
+        except (ValueError, TypeError):
+            return False
+    
+    def get_educator_requirement(self, class_name):
+        """Get the number of educators needed for a class"""
+        class_details = self.get_class_details(class_name)
+        instructor_count = class_details.get('instructors_per_day', 0)
+        
+        try:
+            return int(float(instructor_count)) if instructor_count else 0
+        except (ValueError, TypeError):
+            return 0
             
     def get_all_classes(self):
         """Get list of all available classes"""

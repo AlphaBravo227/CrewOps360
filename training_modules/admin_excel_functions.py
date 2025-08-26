@@ -1,4 +1,4 @@
-# training_modules/admin_excel_functions.py
+# training_modules/admin_excel_functions.py - Enhanced with educator reporting
 import pandas as pd
 import openpyxl
 from datetime import datetime
@@ -6,10 +6,11 @@ import streamlit as st
 from .config import NON_CLASS_COLUMNS, DEFAULT_CLASS_DETAILS
 
 class ExcelAdminFunctions:
-    def __init__(self, excel_handler, enrollment_manager, database):
+    def __init__(self, excel_handler, enrollment_manager, database, educator_manager=None):
         self.excel = excel_handler
         self.enrollment = enrollment_manager
         self.db = database
+        self.educator = educator_manager
         
     def get_enrollment_compliance_report(self):
         """Generate compliance report showing enrollment status vs assignments"""
@@ -21,6 +22,11 @@ class ExcelAdminFunctions:
             assigned_classes = self.excel.get_assigned_classes(staff_name)
             enrolled_classes = self.enrollment.get_enrolled_classes(staff_name)
             live_meeting_count = self.enrollment.get_live_staff_meeting_count(staff_name)
+            
+            # Get educator signups if available
+            educator_signups = 0
+            if self.educator:
+                educator_signups = len(self.educator.get_staff_educator_signups(staff_name))
             
             # Calculate completion metrics
             total_assigned = len(assigned_classes)
@@ -34,6 +40,9 @@ class ExcelAdminFunctions:
             
             # Get conflict overrides
             conflict_enrollments = self.db.get_conflict_override_enrollments(staff_name)
+            educator_conflicts = []
+            if self.educator:
+                educator_conflicts = self.db.get_conflict_override_educator_signups(staff_name)
             
             report_data.append({
                 'Staff Name': staff_name,
@@ -44,11 +53,153 @@ class ExcelAdminFunctions:
                 'LIVE Meetings': f"{live_meeting_count}/2" if staff_meetings_assigned else "N/A",
                 'Meeting Compliance': "✅" if staff_meeting_compliance else "❌",
                 'Conflict Overrides': len(conflict_enrollments),
+                'Educator Signups': educator_signups,
+                'Educator Conflicts': len(educator_conflicts),
                 'Status': self._get_compliance_status(completion_rate, staff_meeting_compliance)
             })
             
         return pd.DataFrame(report_data)
     
+    def get_educator_coverage_report(self):
+        """Generate report showing educator coverage for classes that need educators"""
+        if not self.educator:
+            return pd.DataFrame()  # Return empty DataFrame if educator manager not available
+        
+        opportunities = self.educator.get_educator_opportunities()
+        coverage_data = []
+        
+        for opportunity in opportunities:
+            class_name = opportunity['class_name']
+            instructor_requirement = opportunity['instructor_count']
+            available_dates = opportunity['available_dates']
+            
+            for date in available_dates:
+                current_signups = self.db.get_educator_signup_count(class_name, date)
+                coverage_rate = (current_signups / instructor_requirement * 100) if instructor_requirement > 0 else 0
+                
+                # Get educator names
+                educator_roster = self.educator.get_class_educator_roster(class_name, date)
+                educator_names = [e['staff_name'] for e in educator_roster if e['status'] == 'active']
+                educator_conflicts = sum(1 for e in educator_roster if e.get('has_conflict', False))
+                
+                coverage_data.append({
+                    'Class Name': class_name,
+                    'Date': date,
+                    'Required Educators': instructor_requirement,
+                    'Current Signups': current_signups,
+                    'Coverage Rate': f"{coverage_rate:.1f}%",
+                    'Still Needed': max(0, instructor_requirement - current_signups),
+                    'Educator Conflicts': educator_conflicts,
+                    'Educators': ', '.join(educator_names) if educator_names else 'None',
+                    'Status': self._get_coverage_status(coverage_rate, instructor_requirement, current_signups)
+                })
+        
+        return pd.DataFrame(coverage_data)
+    
+    def get_educator_participation_report(self):
+        """Generate report showing individual educator participation"""
+        if not self.educator:
+            return pd.DataFrame()
+        
+        all_staff = self.excel.get_staff_list()
+        participation_data = []
+        
+        for staff_name in all_staff:
+            educator_signups = self.educator.get_staff_educator_signups(staff_name)
+            
+            if educator_signups:  # Only include staff who have signed up as educators
+                total_signups = len(educator_signups)
+                conflict_overrides = sum(1 for signup in educator_signups 
+                                       if signup.get('conflict_override', False))
+                
+                # Get unique classes
+                unique_classes = set(signup['class_name'] for signup in educator_signups)
+                
+                # Get recent signups (last 30 days)
+                thirty_days_ago = datetime.now().replace(day=1)  # Simplified for demo
+                recent_signups = sum(1 for signup in educator_signups 
+                                   if signup.get('signup_date_display'))  # Simplified check
+                
+                participation_data.append({
+                    'Staff Name': staff_name,
+                    'Total Educator Signups': total_signups,
+                    'Unique Classes': len(unique_classes),
+                    'Conflict Overrides': conflict_overrides,
+                    'Recent Signups (30d)': recent_signups,
+                    'Classes': ', '.join(sorted(unique_classes)),
+                    'Participation Level': self._get_participation_level(total_signups)
+                })
+        
+        return pd.DataFrame(participation_data)
+    
+    def get_classes_needing_educators_report(self):
+        """Generate report showing classes that still need educator signups"""
+        if not self.educator:
+            return pd.DataFrame()
+        
+        needs_educators = self.educator.get_classes_needing_educators()
+        
+        if not needs_educators:
+            return pd.DataFrame(columns=['Class Name', 'Date', 'Still Needed', 'Current', 'Required', 'Urgency'])
+        
+        report_data = []
+        for need in needs_educators:
+            urgency_level = self._get_urgency_level(need['current'], need['required'])
+            
+            report_data.append({
+                'Class Name': need['class_name'],
+                'Date': need['class_date'],
+                'Still Needed': need['needed'],
+                'Current': need['current'],
+                'Required': need['required'],
+                'Coverage %': f"{(need['current'] / need['required'] * 100):.1f}%" if need['required'] > 0 else "0%",
+                'Urgency': urgency_level
+            })
+        
+        # Sort by urgency and then by needed count
+        df = pd.DataFrame(report_data)
+        if not df.empty:
+            urgency_order = {'🔴 Critical': 0, '🟡 Moderate': 1, '🟢 Low': 2}
+            df['urgency_sort'] = df['Urgency'].map(urgency_order)
+            df = df.sort_values(['urgency_sort', 'Still Needed'], ascending=[True, False])
+            df = df.drop('urgency_sort', axis=1)
+        
+        return df
+    
+    def _get_coverage_status(self, coverage_rate, required, current):
+        """Determine educator coverage status"""
+        if current >= required:
+            return "✅ Fully Covered"
+        elif coverage_rate >= 75:
+            return "🟡 Nearly Covered"
+        elif coverage_rate >= 50:
+            return "🟠 Partially Covered"
+        elif current > 0:
+            return "🔴 Under Covered"
+        else:
+            return "❌ No Coverage"
+    
+    def _get_participation_level(self, signup_count):
+        """Determine educator participation level"""
+        if signup_count >= 5:
+            return "🌟 High"
+        elif signup_count >= 3:
+            return "📈 Moderate"
+        elif signup_count >= 1:
+            return "🟢 Active"
+        else:
+            return "⭕ None"
+    
+    def _get_urgency_level(self, current, required):
+        """Determine urgency level for educator needs"""
+        if current == 0:
+            return "🔴 Critical"
+        elif current < required * 0.5:
+            return "🟡 Moderate"
+        else:
+            return "🟢 Low"
+    
+    # EXISTING METHODS (unchanged but enhanced with educator data)
     def _get_compliance_status(self, completion_rate, meeting_compliance):
         """Determine overall compliance status"""
         if completion_rate == 100 and meeting_compliance:
@@ -70,9 +221,13 @@ class ExcelAdminFunctions:
             enrollment_summary = self.enrollment.get_class_enrollment_summary(class_name)
             
             max_students = int(class_details.get('students_per_class', 21))
+            instructor_requirement = class_details.get('instructors_per_day', 0)
+            
             total_capacity = 0
             total_enrolled = 0
             total_dates = 0
+            total_educator_signups = 0
+            educator_coverage = 0
             
             # Calculate across all dates
             for i in range(1, 9):
@@ -84,8 +239,15 @@ class ExcelAdminFunctions:
                     date_str = class_details[date_key]
                     if date_str in enrollment_summary:
                         total_enrolled += enrollment_summary[date_str]['total']
+                    
+                    # Add educator data if available
+                    if self.educator and instructor_requirement > 0:
+                        educator_signups = self.db.get_educator_signup_count(class_name, date_str)
+                        total_educator_signups += educator_signups
+                        educator_coverage += instructor_requirement
             
             utilization_rate = (total_enrolled / total_capacity * 100) if total_capacity > 0 else 0
+            educator_coverage_rate = (total_educator_signups / educator_coverage * 100) if educator_coverage > 0 else 0
             
             utilization_data.append({
                 'Class Name': class_name,
@@ -94,34 +256,28 @@ class ExcelAdminFunctions:
                 'Current Enrolled': total_enrolled,
                 'Utilization Rate': f"{utilization_rate:.1f}%",
                 'Available Slots': total_capacity - total_enrolled,
+                'Educator Requirements': educator_coverage,
+                'Educator Signups': total_educator_signups,
+                'Educator Coverage': f"{educator_coverage_rate:.1f}%" if educator_coverage > 0 else "N/A",
                 'Class Type': "Staff Meeting" if self.excel.is_staff_meeting(class_name) else "Training",
                 'Status': self._get_utilization_status(utilization_rate)
             })
             
         return pd.DataFrame(utilization_data)
     
-    def _get_utilization_status(self, utilization_rate):
-        """Determine utilization status"""
-        if utilization_rate >= 90:
-            return "🔴 Nearly Full"
-        elif utilization_rate >= 70:
-            return "🟡 Good Utilization"
-        elif utilization_rate >= 40:
-            return "🟠 Moderate"
-        else:
-            return "🟢 Low Utilization"
-    
     def get_conflict_analysis_report(self):
-        """Analyze schedule conflicts and overrides"""
+        """Analyze schedule conflicts and overrides (including educator conflicts)"""
         all_staff = self.excel.get_staff_list()
         conflict_data = []
         
         for staff_name in all_staff:
+            # Student enrollment conflicts
             conflict_enrollments = self.db.get_conflict_override_enrollments(staff_name)
             
             for enrollment in conflict_enrollments:
                 conflict_data.append({
                     'Staff Name': staff_name,
+                    'Type': 'Student Enrollment',
                     'Class Name': enrollment['class_name'],
                     'Class Date': enrollment['class_date'],
                     'Conflict Details': enrollment['conflict_details'],
@@ -129,9 +285,26 @@ class ExcelAdminFunctions:
                     'Meeting Type': enrollment.get('meeting_type', 'N/A'),
                     'Session Time': enrollment.get('session_time', 'N/A')
                 })
+            
+            # Educator signup conflicts
+            if self.educator:
+                educator_conflicts = self.db.get_conflict_override_educator_signups(staff_name)
+                
+                for signup in educator_conflicts:
+                    conflict_data.append({
+                        'Staff Name': staff_name,
+                        'Type': 'Educator Signup',
+                        'Class Name': signup['class_name'],
+                        'Class Date': signup['class_date'],
+                        'Conflict Details': signup['conflict_details'],
+                        'Override Date': signup.get('override_acknowledged_display', 'N/A'),
+                        'Meeting Type': 'N/A',
+                        'Session Time': 'N/A'
+                    })
         
         return pd.DataFrame(conflict_data)
     
+    # ALL OTHER EXISTING METHODS remain unchanged...
     def get_staff_without_assignments(self):
         """Find staff members with no class assignments"""
         all_staff = self.excel.get_staff_list()
@@ -208,15 +381,19 @@ class ExcelAdminFunctions:
             'classes_per_day': int(class_details.get('classes_per_day', 1)),
             'is_two_day_class': class_details.get('is_two_day_class', 'No'),
             'nurses_medic_separate': class_details.get('nurses_medic_separate', 'No'),
+            'instructor_requirement': class_details.get('instructors_per_day', 0),
             'dates': [],
             'overall_stats': {},
-            'staff_analysis': {}
+            'staff_analysis': {},
+            'educator_analysis': {}
         }
         
         # Get all scheduled dates and their details
         total_capacity = 0
         total_enrolled = 0
         total_conflicts = 0
+        total_educator_signups = 0
+        total_educator_conflicts = 0
         
         for i in range(1, 9):
             date_key = f'date_{i}'
@@ -231,6 +408,16 @@ class ExcelAdminFunctions:
                 enrolled_count = len(date_enrollments)
                 conflict_count = sum(1 for e in date_enrollments if e.get('conflict_override', False))
                 
+                # Get educator signups for this date
+                educator_signups = 0
+                educator_conflicts = 0
+                educator_names = []
+                if self.educator:
+                    educator_signups = self.db.get_educator_signup_count(class_name, date_str)
+                    educator_roster = self.educator.get_class_educator_roster(class_name, date_str)
+                    educator_conflicts = sum(1 for e in educator_roster if e.get('has_conflict', False))
+                    educator_names = [e['staff_name'] for e in educator_roster if e['status'] == 'active']
+                
                 max_students = int(class_details.get('students_per_class', 21))
                 capacity = max_students
                 
@@ -244,22 +431,35 @@ class ExcelAdminFunctions:
                     'utilization_rate': (enrolled_count / capacity * 100) if capacity > 0 else 0,
                     'conflicts': conflict_count,
                     'available_slots': capacity - enrolled_count,
-                    'enrollments': date_enrollments
+                    'enrollments': date_enrollments,
+                    'educator_signups': educator_signups,
+                    'educator_requirement': report['instructor_requirement'],
+                    'educator_conflicts': educator_conflicts,
+                    'educator_names': educator_names,
+                    'educator_coverage_rate': (educator_signups / report['instructor_requirement'] * 100) if report['instructor_requirement'] > 0 else 0
                 }
                 
                 report['dates'].append(date_info)
                 total_capacity += capacity
                 total_enrolled += enrolled_count
                 total_conflicts += conflict_count
+                total_educator_signups += educator_signups
+                total_educator_conflicts += educator_conflicts
         
         # Overall statistics
+        total_educator_requirement = len(report['dates']) * report['instructor_requirement']
+        
         report['overall_stats'] = {
             'total_dates': len(report['dates']),
             'total_capacity': total_capacity,
             'total_enrolled': total_enrolled,
             'overall_utilization': (total_enrolled / total_capacity * 100) if total_capacity > 0 else 0,
             'total_conflicts': total_conflicts,
-            'total_available_slots': total_capacity - total_enrolled
+            'total_available_slots': total_capacity - total_enrolled,
+            'total_educator_requirement': total_educator_requirement,
+            'total_educator_signups': total_educator_signups,
+            'educator_coverage_rate': (total_educator_signups / total_educator_requirement * 100) if total_educator_requirement > 0 else 0,
+            'total_educator_conflicts': total_educator_conflicts
         }
         
         # Get assigned vs enrolled staff
@@ -274,6 +474,29 @@ class ExcelAdminFunctions:
             'assigned_but_not_enrolled': [s for s in assigned_staff if s not in enrolled_staff_names],
             'enrolled_staff': enrolled_staff_names
         }
+        
+        # Educator analysis
+        if self.educator:
+            all_educator_signups = self.db.get_educator_signups_for_class(class_name)
+            unique_educators = list(set([e['staff_name'] for e in all_educator_signups]))
+            
+            report['educator_analysis'] = {
+                'unique_educators': len(unique_educators),
+                'educator_names': unique_educators,
+                'total_educator_signups': total_educator_signups,
+                'dates_needing_educators': sum(1 for date_info in report['dates'] 
+                                             if date_info['educator_signups'] < date_info['educator_requirement']),
+                'fully_covered_dates': sum(1 for date_info in report['dates'] 
+                                         if date_info['educator_signups'] >= date_info['educator_requirement'])
+            }
+        else:
+            report['educator_analysis'] = {
+                'unique_educators': 0,
+                'educator_names': [],
+                'total_educator_signups': 0,
+                'dates_needing_educators': 0,
+                'fully_covered_dates': 0
+            }
         
         return report
     
@@ -318,6 +541,37 @@ class ExcelAdminFunctions:
         
         return df, title
     
+    def export_educator_roster(self, class_name, date_str=None):
+        """Export educator roster for a specific class/date"""
+        if not self.educator:
+            return pd.DataFrame(), "No educator data available"
+        
+        if date_str:
+            # Single date educator roster
+            educators = self.educator.get_class_educator_roster(class_name, date_str)
+            title = f"{class_name} Educators - {date_str}"
+        else:
+            # All dates educator roster
+            educators = self.educator.get_class_educator_roster(class_name)
+            title = f"{class_name} Educators - All Dates"
+        
+        roster_data = []
+        for educator in educators:
+            roster_data.append({
+                'Educator Name': educator['staff_name'],
+                'Date': educator['class_date'],
+                'Has Conflict': '⚠️' if educator.get('has_conflict') else '',
+                'Conflict Details': educator.get('conflict_details', ''),
+                'Signup Date': educator.get('signup_date', ''),
+                'Status': educator.get('status', 'active')
+            })
+        
+        df = pd.DataFrame(roster_data)
+        if not df.empty:
+            df = df.sort_values(['Date', 'Educator Name'])
+        
+        return df, title
+    
     def get_class_completion_tracking(self, class_name):
         """Track completion status for all assigned staff"""
         assigned_staff = self._get_staff_assigned_to_class(class_name)
@@ -345,6 +599,12 @@ class ExcelAdminFunctions:
             is_staff_meeting = self.excel.is_staff_meeting(class_name)
             meeting_compliance = live_count >= 2 if is_staff_meeting else True
             
+            # Get educator signup info if available
+            educator_signups = 0
+            if self.educator:
+                educator_signups = len([e for e in self.educator.get_staff_educator_signups(staff_name)
+                                      if e['class_name'] == class_name])
+            
             completion_data.append({
                 'Staff Name': staff_name,
                 'Enrolled Dates': len(enrolled_dates),
@@ -353,20 +613,38 @@ class ExcelAdminFunctions:
                 'LIVE Meetings': f"{live_count}/2" if is_staff_meeting else 'N/A',
                 'Meeting Compliance': '✅' if meeting_compliance else '❌',
                 'Conflicts': sum(1 for e in staff_enrollments if e.get('conflict_override')),
+                'Educator Signups': educator_signups,
                 'Enrolled Dates List': ', '.join(enrolled_dates) if enrolled_dates else 'None'
             })
         
         return pd.DataFrame(completion_data)
 
+    def _get_utilization_status(self, utilization_rate):
+        """Determine utilization status"""
+        if utilization_rate >= 90:
+            return "🔴 Nearly Full"
+        elif utilization_rate >= 70:
+            return "🟡 Good Utilization"
+        elif utilization_rate >= 40:
+            return "🟠 Moderate"
+        else:
+            return "🟢 Low Utilization"
 
-# Integration function for enhanced admin reports
+
+# Integration function for enhanced admin reports with educator functionality
 def enhance_admin_reports(admin_access_instance, excel_admin_functions):
-    """Add enhanced reporting to admin access"""
+    """Add enhanced reporting to admin access including educator reports"""
     
     def _show_enhanced_enrollment_reports():
         st.subheader("📈 Enhanced Enrollment Reports")
         
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Compliance", "🎯 Utilization", "⚠️ Conflicts", "📋 Individual Classes", "🔍 Validation"])
+        # Add educator tab if educator functionality is available
+        has_educator = excel_admin_functions.educator is not None
+        
+        if has_educator:
+            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Compliance", "🎯 Utilization", "⚠️ Conflicts", "👨‍🏫 Educators", "📋 Individual Classes", "🔍 Validation"])
+        else:
+            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Compliance", "🎯 Utilization", "⚠️ Conflicts", "📋 Individual Classes", "🔍 Validation"])
         
         with tab1:
             st.write("### Staff Enrollment Compliance")
@@ -386,8 +664,12 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                         total_conflicts = compliance_df['Conflict Overrides'].sum()
                         st.metric("Total Conflicts", total_conflicts)
                     with col4:
-                        behind_schedule = len(compliance_df[compliance_df['Status'] == '🔴 Behind Schedule'])
-                        st.metric("Behind Schedule", behind_schedule)
+                        if has_educator:
+                            total_educator_signups = compliance_df['Educator Signups'].sum()
+                            st.metric("Educator Signups", total_educator_signups)
+                        else:
+                            behind_schedule = len(compliance_df[compliance_df['Status'] == '🔴 Behind Schedule'])
+                            st.metric("Behind Schedule", behind_schedule)
                     
                     # Detailed table
                     st.dataframe(compliance_df, use_container_width=True)
@@ -437,6 +719,15 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                 conflict_df = excel_admin_functions.get_conflict_analysis_report()
                 
                 if not conflict_df.empty:
+                    # Show conflict breakdown
+                    if has_educator:
+                        conflict_types = conflict_df['Type'].value_counts()
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Student Conflicts", conflict_types.get('Student Enrollment', 0))
+                        with col2:
+                            st.metric("Educator Conflicts", conflict_types.get('Educator Signup', 0))
+                    
                     st.warning(f"Found {len(conflict_df)} schedule conflicts requiring manual resolution")
                     st.dataframe(conflict_df, use_container_width=True)
                 else:
@@ -444,7 +735,97 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
             except Exception as e:
                 st.error(f"Error generating conflict report: {str(e)}")
         
-        with tab4:
+        # EDUCATOR TAB (only if educator functionality is available)
+        if has_educator:
+            with tab4:
+                st.write("### 👨‍🏫 Educator Coverage Analysis")
+                
+                try:
+                    # Educator coverage report
+                    coverage_df = excel_admin_functions.get_educator_coverage_report()
+                    
+                    if not coverage_df.empty:
+                        # Coverage summary metrics
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            fully_covered = len(coverage_df[coverage_df['Status'] == '✅ Fully Covered'])
+                            st.metric("Fully Covered", fully_covered)
+                        
+                        with col2:
+                            total_needed = coverage_df['Still Needed'].sum()
+                            st.metric("Total Positions Needed", total_needed)
+                        
+                        with col3:
+                            critical_classes = len(coverage_df[coverage_df['Status'] == '❌ No Coverage'])
+                            st.metric("Classes w/o Educators", critical_classes)
+                        
+                        with col4:
+                            avg_coverage = coverage_df['Coverage Rate'].str.rstrip('%').astype(float).mean()
+                            st.metric("Avg Coverage", f"{avg_coverage:.1f}%")
+                        
+                        st.write("#### Educator Coverage by Class/Date")
+                        st.dataframe(coverage_df, use_container_width=True)
+                        
+                        # Classes needing educators
+                        st.write("#### 🚨 Priority - Classes Still Needing Educators")
+                        needs_educators_df = excel_admin_functions.get_classes_needing_educators_report()
+                        
+                        if not needs_educators_df.empty:
+                            st.dataframe(needs_educators_df, use_container_width=True)
+                        else:
+                            st.success("✅ All educator positions are filled!")
+                        
+                        # Individual educator participation
+                        st.write("#### Individual Educator Participation")
+                        participation_df = excel_admin_functions.get_educator_participation_report()
+                        
+                        if not participation_df.empty:
+                            st.dataframe(participation_df, use_container_width=True)
+                        else:
+                            st.info("No educator signups found.")
+                        
+                        # Export functionality
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            if st.button("📥 Export Coverage Report"):
+                                csv = coverage_df.to_csv(index=False)
+                                st.download_button(
+                                    "Download Coverage CSV",
+                                    csv,
+                                    f"educator_coverage_{datetime.now().strftime('%Y%m%d')}.csv",
+                                    "text/csv"
+                                )
+                        
+                        with col2:
+                            if st.button("📥 Export Needs Report"):
+                                csv = needs_educators_df.to_csv(index=False)
+                                st.download_button(
+                                    "Download Needs CSV",
+                                    csv,
+                                    f"educator_needs_{datetime.now().strftime('%Y%m%d')}.csv",
+                                    "text/csv"
+                                )
+                        
+                        with col3:
+                            if st.button("📥 Export Participation Report"):
+                                csv = participation_df.to_csv(index=False)
+                                st.download_button(
+                                    "Download Participation CSV",
+                                    csv,
+                                    f"educator_participation_{datetime.now().strftime('%Y%m%d')}.csv",
+                                    "text/csv"
+                                )
+                    
+                    else:
+                        st.info("No educator data available - no classes require educators.")
+                        
+                except Exception as e:
+                    st.error(f"Error generating educator reports: {str(e)}")
+        
+        # Individual classes tab
+        individual_tab_idx = tab5 if has_educator else tab4
+        with individual_tab_idx:
             st.write("### Individual Class Reports")
             
             try:
@@ -470,6 +851,27 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                             utilization = class_report['overall_stats']['overall_utilization']
                             st.metric("Utilization", f"{utilization:.1f}%")
                         
+                        # Educator overview (if applicable)
+                        if has_educator and class_report['instructor_requirement'] > 0:
+                            st.write("### 👨‍🏫 Educator Coverage")
+                            
+                            col1, col2, col3, col4 = st.columns(4)
+                            with col1:
+                                st.metric("Required per Date", class_report['instructor_requirement'])
+                            with col2:
+                                st.metric("Total Required", class_report['overall_stats']['total_educator_requirement'])
+                            with col3:
+                                st.metric("Total Signups", class_report['overall_stats']['total_educator_signups'])
+                            with col4:
+                                coverage_rate = class_report['overall_stats']['educator_coverage_rate']
+                                st.metric("Coverage Rate", f"{coverage_rate:.1f}%")
+                            
+                            # Show unique educators
+                            if class_report['educator_analysis']['educator_names']:
+                                st.write("**Educators signed up:**")
+                                for educator in class_report['educator_analysis']['educator_names']:
+                                    st.write(f"• {educator}")
+                        
                         # Staff assignment analysis
                         st.write("### 👥 Staff Assignment Analysis")
                         staff_stats = class_report['staff_analysis']
@@ -491,7 +893,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                         
                         # Export options
                         st.write("### 📥 Export Options")
-                        col1, col2 = st.columns(2)
+                        col1, col2, col3 = st.columns(3)
                         
                         with col1:
                             if st.button("Export Class Roster"):
@@ -514,12 +916,26 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                     f"{selected_class.replace(' ', '_')}_completion_{datetime.now().strftime('%Y%m%d')}.csv",
                                     "text/csv"
                                 )
+                        
+                        with col3:
+                            if has_educator and class_report['instructor_requirement'] > 0:
+                                if st.button("Export Educator Roster"):
+                                    educator_df, title = excel_admin_functions.export_educator_roster(selected_class)
+                                    csv = educator_df.to_csv(index=False)
+                                    st.download_button(
+                                        "Download Educator CSV",
+                                        csv,
+                                        f"{selected_class.replace(' ', '_')}_educators_{datetime.now().strftime('%Y%m%d')}.csv",
+                                        "text/csv"
+                                    )
                     else:
                         st.error(f"Could not generate report for {selected_class}")
             except Exception as e:
                 st.error(f"Error with individual class reports: {str(e)}")
         
-        with tab5:
+        # Validation tab
+        validation_tab_idx = tab6 if has_educator else tab5
+        with validation_tab_idx:
             st.write("### Excel Structure Validation")
             try:
                 validation_issues = excel_admin_functions.validate_excel_structure()
