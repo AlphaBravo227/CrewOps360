@@ -20,7 +20,7 @@ class UIComponents:
             # Check if user has any staff meetings assigned
             has_staff_meetings = any(excel_handler.is_staff_meeting(cls) for cls in assigned_classes)
             if has_staff_meetings:
-                st.metric("LIVE Staff Meetings", f"{live_meeting_count}/2")
+                st.metric("FY26 LIVE Staff Meetings", f"{live_meeting_count}/2")
                 if live_meeting_count >= 2:
                     st.success("✅ LIVE meeting requirement met!")
                 else:
