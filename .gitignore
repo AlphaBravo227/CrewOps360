@@ -19,8 +19,12 @@ training/upload/~$MASTER Education Classes Roster.xlsx
 *.pyc
 *.pyc
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 *.pyc
 data/medflight_tracks.db
+=======
+/data
+>>>>>>> Stashed changes
 =======
 /data
 >>>>>>> Stashed changes
