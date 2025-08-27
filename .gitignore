@@ -18,3 +18,5 @@
 training/upload/~$MASTER Education Classes Roster.xlsx
 *.pyc
 *.pyc
+*.pyc
+data/medflight_tracks.db
