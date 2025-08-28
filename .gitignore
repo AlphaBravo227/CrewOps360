@@ -6,3 +6,5 @@ training/upload/~$MASTER Education Classes Roster.xlsx
 /training_modules/__pycache__
 /data
 *.pyc
+data/medflight_tracks.db
+upload files/~$Preferences v6.xlsx
