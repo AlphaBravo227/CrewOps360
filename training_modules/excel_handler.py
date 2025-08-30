@@ -409,6 +409,64 @@ class ExcelHandler:
             return int(float(instructor_count)) if instructor_count else 0
         except (ValueError, TypeError):
             return 0
+
+    def is_educator_authorized(self, staff_name):
+        """
+        Check if a staff member is authorized to sign up as an educator
+        based on the 'Educator AT' column in the Class_Enrollment sheet
+        
+        Args:
+            staff_name (str): Name of the staff member to check
+            
+        Returns:
+            bool: True if staff is authorized for educator signups, False otherwise
+        """
+        if self.enrollment_sheet is None:
+            print(f"Excel loading error: {self.load_error}")
+            return True  # Default to showing if there's an error
+        
+        try:
+            # Find the staff member's row
+            staff_row = None
+            for row_idx, row in enumerate(self.enrollment_sheet.iter_rows(min_row=2, max_col=1), start=2):
+                if row[0].value and str(row[0].value).strip() == staff_name:
+                    staff_row = row_idx
+                    break
+            
+            if not staff_row:
+                print(f"Staff member '{staff_name}' not found in enrollment sheet")
+                return True  # Default to showing if staff not found
+            
+            # Find the "Educator AT" column
+            educator_col = None
+            for col_idx, col in enumerate(self.enrollment_sheet.iter_cols(min_row=1, max_row=1), start=1):
+                if col[0].value and str(col[0].value).strip() == "Educator AT":
+                    educator_col = col_idx
+                    break
+            
+            if not educator_col:
+                print("Warning: 'Educator AT' column not found - defaulting to show educator signup")
+                return True  # Default to showing if column not found
+            
+            # Check the value in the Educator AT column for this staff member
+            cell = self.enrollment_sheet.cell(row=staff_row, column=educator_col)
+            cell_value = cell.value
+            
+            # Handle different representations of True
+            is_authorized = (
+                cell_value is True or 
+                (isinstance(cell_value, str) and cell_value.lower() in ['true', 'yes', '1', 'x', '✓']) or
+                (isinstance(cell_value, int) and cell_value == 1)
+            )
+            
+            print(f"Staff {staff_name} educator authorization: {is_authorized} (cell value: {cell_value})")
+            return is_authorized
+            
+        except Exception as e:
+            print(f"Error checking educator authorization for {staff_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            return True  # Default to showing if there's an error    
             
     def get_all_classes(self):
         """Get list of all available classes"""
