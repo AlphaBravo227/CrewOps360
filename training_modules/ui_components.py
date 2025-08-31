@@ -564,7 +564,7 @@ class UIComponents:
                 st.write(f"**Available slots:** {option['available_slots']}")
                 
                 if option['meeting_type'] == 'LIVE':
-                    st.info("🔴 **LIVE Option Selected** - This will count toward your LIVE meeting requirement")
+                    st.info("🔴 **LIVE Option** - This will count toward your LIVE meeting requirement")
                 
                 if UIComponents._handle_enrollment_button(
                     f"Enroll in {option['meeting_type']} Option", f"enroll_{option_key}",
