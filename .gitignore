@@ -1,10 +1,21 @@
 /venv
-training/upload/~$MASTER Education Classes Roster.xlsx
-*.pyc
-/data
 /training_modules/__pycache__
-upload files/~$Preferences v6.xlsx
+/training_modules/__pycache__
+/modules/__pycache__
 /modules/__pycache__
 /training_modules/__pycache__
-data/medflight_tracks.db
-data/medflight_tracks.db
+/modules/__pycache__
+/training_modules/__pycache__
+/modules/__pycache__
+/modules/__pycache__
+/modules/__pycache__
+/modules/__pycache__
+*.pyc
+*.pyc
+*.pyc
+/modules/__pycache__
+*.pyc
+training/upload/~$MASTER Education Classes Roster.xlsx
+*.pyc
+*.pyc
+/data
