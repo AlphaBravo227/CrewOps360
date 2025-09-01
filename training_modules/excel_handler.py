@@ -1,4 +1,4 @@
-# training_modules/excel_handler.py - Enhanced version with instructor count support
+# training_modules/excel_handler.py - Updated for new Excel layout with up to 14 date rows
 import pandas as pd
 import openpyxl
 from datetime import datetime, time
@@ -190,7 +190,7 @@ class ExcelHandler:
         return None
         
     def get_class_details(self, class_name):
-        """Get details for a specific class from its sheet"""
+        """Get details for a specific class from its sheet - UPDATED for new layout with up to 14 date rows"""
         try:
             # Try exact match first
             sheet = None
@@ -214,14 +214,14 @@ class ExcelHandler:
                 
             details = {}
             
-            # Extract dates (rows 1-8, column B), LIVE options (column C), 
-            # Can work N prior (column D), and Location (column E)
+            # Extract dates from rows 1-14 (row 15 is blank)
+            # Check columns B (date), C (LIVE option), D (Can work N prior), E (Location)
             has_any_dates = False
-            for i in range(1, 9):
-                date_value = sheet.cell(row=i, column=2).value
-                live_option = sheet.cell(row=i, column=3).value
-                can_work_n_prior = sheet.cell(row=i, column=4).value
-                location = sheet.cell(row=i, column=5).value
+            for i in range(1, 15):  # Check rows 1-14 only (row 15 is blank)
+                date_value = sheet.cell(row=i, column=2).value  # Column B
+                live_option = sheet.cell(row=i, column=3).value  # Column C
+                can_work_n_prior = sheet.cell(row=i, column=4).value  # Column D
+                location = sheet.cell(row=i, column=5).value  # Column E
                 
                 if date_value:
                     has_any_dates = True
@@ -229,7 +229,7 @@ class ExcelHandler:
                     if isinstance(date_value, datetime):
                         details[f'date_{i}'] = date_value.strftime('%m/%d/%Y')
                     elif isinstance(date_value, str) and date_value.strip():
-                        details[f'date_{i}'] = date_value
+                        details[f'date_{i}'] = date_value.strip()
                     else:
                         details[f'date_{i}'] = None
                         
@@ -249,9 +249,10 @@ class ExcelHandler:
                     details[f'date_{i}_can_work_n_prior'] = can_n_prior
                     
                     # Store location
-                    details[f'date_{i}_location'] = location if location else ""
+                    details[f'date_{i}_location'] = str(location).strip() if location else ""
                     
                 else:
+                    # No date in this row - set defaults
                     details[f'date_{i}'] = None
                     details[f'date_{i}_has_live'] = False
                     details[f'date_{i}_can_work_n_prior'] = False
@@ -266,20 +267,18 @@ class ExcelHandler:
                 default_details['_missing_dates'] = True  # Flag to indicate missing dates
                 return default_details
             
-            # Extract other details with defaults
-            details['students_per_class'] = sheet.cell(row=9, column=2).value or 21
-            details['nurses_medic_separate'] = sheet.cell(row=10, column=2).value or 'No'
-            details['classes_per_day'] = sheet.cell(row=11, column=2).value or 1
-            details['is_two_day_class'] = sheet.cell(row=12, column=2).value or 'No'
+            # Extract class configuration from fixed rows (updated positions)
+            details['students_per_class'] = sheet.cell(row=16, column=2).value or 21  # Confirmed: Row 16
+            details['nurses_medic_separate'] = sheet.cell(row=17, column=2).value or 'No'  # Row 17
+            details['classes_per_day'] = sheet.cell(row=18, column=2).value or 1  # Row 18
+            details['is_two_day_class'] = sheet.cell(row=19, column=2).value or 'No'  # Row 19
             
-            # Extract times (rows 13-20, column B) with improved parsing
+            # Extract time configurations (rows 20-27)
             time_labels = ['time_1_start', 'time_1_end', 'time_2_start', 'time_2_end',
                          'time_3_start', 'time_3_end', 'time_4_start', 'time_4_end']
             
-            # Debug: Let's see what we're getting from the cells
-            
             for idx, label in enumerate(time_labels):
-                row_num = 13 + idx
+                row_num = 20 + idx  # Rows 20-27 for time configurations
                 time_value = sheet.cell(row=row_num, column=2).value
                 print(f"  Row {row_num}, {label}: raw value = {repr(time_value)}, type = {type(time_value)}")
                 
@@ -297,8 +296,8 @@ class ExcelHandler:
                         details[label] = '16:00'
                         print(f"    -> Using default: 16:00")
             
-            # ENHANCED: Extract instructor count from row 21, column B
-            instructors_per_day_value = sheet.cell(row=21, column=2).value
+            # Extract instructor count from row 28, column B (confirmed)
+            instructors_per_day_value = sheet.cell(row=28, column=2).value
             
             # Convert instructor count to integer, defaulting to 0
             try:
@@ -307,7 +306,7 @@ class ExcelHandler:
                     print(f"  Instructors per day for {class_name}: {details['instructors_per_day']} (raw value: {repr(instructors_per_day_value)})")
                 else:
                     details['instructors_per_day'] = 0
-                    print(f"  No instructor count found for {class_name} (cell B21 is empty)")
+                    print(f"  No instructor count found for {class_name} (cell B28 is empty)")
             except (ValueError, TypeError) as e:
                 details['instructors_per_day'] = 0
                 print(f"  Could not parse instructor count for {class_name}: {repr(instructors_per_day_value)}, error: {e}")
@@ -341,8 +340,8 @@ class ExcelHandler:
             class_details.get('_error')):
             return False
         
-        # Check if any dates are actually configured
-        has_dates = any(class_details.get(f'date_{i}') for i in range(1, 9))
+        # Check if any dates are actually configured (checking rows 1-14)
+        has_dates = any(class_details.get(f'date_{i}') for i in range(1, 15))
         return has_dates
 
     def get_class_dates(self, class_name):
@@ -353,7 +352,8 @@ class ExcelHandler:
             
         dates = []
         
-        for i in range(1, 9):
+        # Check rows 1-14 for dates (only use the ones that exist)
+        for i in range(1, 15):
             date_key = f'date_{i}'
             if date_key in class_details and class_details[date_key]:
                 dates.append(class_details[date_key])
@@ -368,7 +368,8 @@ class ExcelHandler:
             
         date_options = []
         
-        for i in range(1, 9):
+        # Check rows 1-14 for dates (only use the ones that exist)
+        for i in range(1, 15):
             date_key = f'date_{i}'
             live_key = f'date_{i}_has_live'
             
@@ -408,6 +409,64 @@ class ExcelHandler:
             return int(float(instructor_count)) if instructor_count else 0
         except (ValueError, TypeError):
             return 0
+
+    def is_educator_authorized(self, staff_name):
+        """
+        Check if a staff member is authorized to sign up as an educator
+        based on the 'Educator AT' column in the Class_Enrollment sheet
+        
+        Args:
+            staff_name (str): Name of the staff member to check
+            
+        Returns:
+            bool: True if staff is authorized for educator signups, False otherwise
+        """
+        if self.enrollment_sheet is None:
+            print(f"Excel loading error: {self.load_error}")
+            return True  # Default to showing if there's an error
+        
+        try:
+            # Find the staff member's row
+            staff_row = None
+            for row_idx, row in enumerate(self.enrollment_sheet.iter_rows(min_row=2, max_col=1), start=2):
+                if row[0].value and str(row[0].value).strip() == staff_name:
+                    staff_row = row_idx
+                    break
+            
+            if not staff_row:
+                print(f"Staff member '{staff_name}' not found in enrollment sheet")
+                return True  # Default to showing if staff not found
+            
+            # Find the "Educator AT" column
+            educator_col = None
+            for col_idx, col in enumerate(self.enrollment_sheet.iter_cols(min_row=1, max_row=1), start=1):
+                if col[0].value and str(col[0].value).strip() == "Educator AT":
+                    educator_col = col_idx
+                    break
+            
+            if not educator_col:
+                print("Warning: 'Educator AT' column not found - defaulting to show educator signup")
+                return True  # Default to showing if column not found
+            
+            # Check the value in the Educator AT column for this staff member
+            cell = self.enrollment_sheet.cell(row=staff_row, column=educator_col)
+            cell_value = cell.value
+            
+            # Handle different representations of True
+            is_authorized = (
+                cell_value is True or 
+                (isinstance(cell_value, str) and cell_value.lower() in ['true', 'yes', '1', 'x', '✓']) or
+                (isinstance(cell_value, int) and cell_value == 1)
+            )
+            
+            print(f"Staff {staff_name} educator authorization: {is_authorized} (cell value: {cell_value})")
+            return is_authorized
+            
+        except Exception as e:
+            print(f"Error checking educator authorization for {staff_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            return True  # Default to showing if there's an error    
             
     def get_all_classes(self):
         """Get list of all available classes"""

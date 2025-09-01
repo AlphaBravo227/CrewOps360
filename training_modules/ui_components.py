@@ -133,9 +133,9 @@ class UIComponents:
             st.error("No class details available")
             return
         
-        # Check if this is missing class data
+        # Check if this is missing class data - now checks rows 1-14 dynamically
         is_missing_data = (not class_details or 
-                          not any(class_details.get(f'date_{i}') for i in range(1, 9)))
+                        not any(class_details.get(f'date_{i}') for i in range(1, 15)))
         
         if is_missing_data:
             st.error("📅 **Class data not configured**")
@@ -158,10 +158,10 @@ class UIComponents:
             if class_details.get('is_staff_meeting', False):
                 st.write("• **Staff Meeting (LIVE/Virtual options)**")
         
-        # Display available dates
+        # Display available dates - now dynamically checks all possible date rows
         st.write("**📅 Available Dates:**")
         dates = []
-        for i in range(1, 9):
+        for i in range(1, 15):  # Check rows 1-14 for dates
             date_key = f'date_{i}'
             if date_key in class_details and class_details[date_key]:
                 date = class_details[date_key]
@@ -405,9 +405,9 @@ class UIComponents:
     def display_class_details_full(class_details):
         """Display full class details with location information"""
         
-        # Check if this is missing class data (returns default values)
+        # Check if this is missing class data - now checks rows 1-14 dynamically
         is_missing_data = (not class_details or 
-                          not any(class_details.get(f'date_{i}') for i in range(1, 9)))
+                        not any(class_details.get(f'date_{i}') for i in range(1, 15)))
         
         if is_missing_data:
             st.error("📅 **Class data not configured**")
@@ -436,11 +436,11 @@ class UIComponents:
         for time_slot in times:
             st.write(f"• {time_slot}")
         
-        # Display available dates with full details
+        # Display available dates with full details - now dynamically checks all possible date rows
         st.write("")
         st.write("**📅 Available Dates:**")
         dates = []
-        for i in range(1, 9):
+        for i in range(1, 15):  # Check rows 1-14 for dates
             date_key = f'date_{i}'
             if date_key in class_details and class_details[date_key]:
                 date = class_details[date_key]
@@ -564,7 +564,7 @@ class UIComponents:
                 st.write(f"**Available slots:** {option['available_slots']}")
                 
                 if option['meeting_type'] == 'LIVE':
-                    st.info("🔴 **LIVE Option Selected** - This will count toward your LIVE meeting requirement")
+                    st.info("🔴 **LIVE Option** - This will count toward your LIVE meeting requirement")
                 
                 if UIComponents._handle_enrollment_button(
                     f"Enroll in {option['meeting_type']} Option", f"enroll_{option_key}",

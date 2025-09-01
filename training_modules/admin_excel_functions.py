@@ -388,14 +388,14 @@ class ExcelAdminFunctions:
             'educator_analysis': {}
         }
         
-        # Get all scheduled dates and their details
+        # Get all scheduled dates and their details - now dynamically checks rows 1-14
         total_capacity = 0
         total_enrolled = 0
         total_conflicts = 0
         total_educator_signups = 0
         total_educator_conflicts = 0
         
-        for i in range(1, 9):
+        for i in range(1, 15):  # Check rows 1-14 for dates (only process the ones that exist)
             date_key = f'date_{i}'
             if date_key in class_details and class_details[date_key]:
                 date_str = class_details[date_key]
@@ -485,9 +485,9 @@ class ExcelAdminFunctions:
                 'educator_names': unique_educators,
                 'total_educator_signups': total_educator_signups,
                 'dates_needing_educators': sum(1 for date_info in report['dates'] 
-                                             if date_info['educator_signups'] < date_info['educator_requirement']),
+                                            if date_info['educator_signups'] < date_info['educator_requirement']),
                 'fully_covered_dates': sum(1 for date_info in report['dates'] 
-                                         if date_info['educator_signups'] >= date_info['educator_requirement'])
+                                        if date_info['educator_signups'] >= date_info['educator_requirement'])
             }
         else:
             report['educator_analysis'] = {
@@ -499,7 +499,7 @@ class ExcelAdminFunctions:
             }
         
         return report
-    
+
     def _get_staff_assigned_to_class(self, class_name):
         """Get list of staff assigned to a specific class"""
         all_staff = self.excel.get_staff_list()

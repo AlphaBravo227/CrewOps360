@@ -377,8 +377,22 @@ class EducatorManager:
         """Get educator opportunities with signup status for a specific staff member"""
         opportunities = self.get_educator_opportunities()
         
+        # Get all classes where staff member is assigned as a student (required to take)
+        assigned_classes = self.excel.get_assigned_classes(staff_name)
+        assigned_class_names = set(assigned_classes)
+        
+        # Filter out opportunities where staff is assigned as student
+        filtered_opportunities = []
+        excluded_classes = []
+        
         for opportunity in opportunities:
             class_name = opportunity['class_name']
+            
+            if class_name in assigned_class_names:
+                # This class should be excluded - staff is assigned as student
+                excluded_classes.append(class_name)
+                continue
+            
             instructor_count = opportunity['instructor_count']
             
             # Add status for each date
@@ -406,5 +420,9 @@ class EducatorManager:
                 })
             
             opportunity['date_status'] = date_status
+            filtered_opportunities.append(opportunity)
         
-        return opportunities
+        return {
+            'opportunities': filtered_opportunities,
+            'excluded_classes': excluded_classes
+        }

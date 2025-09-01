@@ -11,7 +11,25 @@ class EducatorUIComponents:
     @staticmethod
     def display_educator_opportunities(educator_manager, staff_name):
         """Display available educator opportunities for a staff member"""
-        opportunities = educator_manager.get_educator_opportunities_with_status(staff_name)
+        result = educator_manager.get_educator_opportunities_with_status(staff_name)
+        
+        # Handle both old and new return formats
+        if isinstance(result, dict):
+            # New format with filtering
+            opportunities = result['opportunities']
+            excluded_classes = result['excluded_classes']
+        else:
+            # Old format - just opportunities list, no filtering
+            opportunities = result
+            excluded_classes = []
+        
+        # Display excluded classes message if any
+        if excluded_classes:
+            st.info(
+                f"**Classes excluded from educator signup:** You are assigned as a student to: "
+                f"{', '.join(excluded_classes)}"
+            )
+            st.markdown("---")
         
         if not opportunities:
             st.info("No educator opportunities available at this time.")
@@ -69,7 +87,7 @@ class EducatorUIComponents:
                         else:
                             st.success(f"🟢 {signup_status}")
                         
-                        # NEW: Show the names of educators who have signed up (if multiple educators needed)
+                        # Show the names of educators who have signed up (if multiple educators needed)
                         if max_signups > 1 and signed_up_educators:
                             st.write("**👨‍🏫 Signed up:**")
                             for educator_name in signed_up_educators:
@@ -103,10 +121,7 @@ class EducatorUIComponents:
                                 else:
                                     st.error("Error cancelling signup")
                         
-                        elif is_full:
-                            st.write("*No slots*")
-                        
-                        else:
+                        elif not is_full:
                             # Show signup button with conflict handling
                             if conflict_info and not conflict_info.startswith('ℹ️'):
                                 # Real conflict - show override option
@@ -129,6 +144,8 @@ class EducatorUIComponents:
                                     except Exception as e:
                                         st.error(f"Error during signup: {str(e)}")
                                         st.write(f"Debug info: class_name={class_name}, date={date}, staff_name={staff_name}")
+                        else:
+                            st.write("Full")
                     
                     st.markdown("---")
     

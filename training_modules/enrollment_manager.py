@@ -239,12 +239,12 @@ class EnrollmentManager:
         if not class_details:
             return None
         
-        # Collect all dates and their N prior settings
+        # Collect all dates and their N prior settings - now dynamically checks rows 1-14
         dates = []
         can_work_n_prior_list = []
         locations = []
         
-        for i in range(1, 9):
+        for i in range(1, 15):  # Check rows 1-14 for dates (only process the ones that exist)
             date_key = f'date_{i}'
             if date_key in class_details and class_details[date_key]:
                 dates.append(class_details[date_key])
@@ -265,8 +265,7 @@ class EnrollmentManager:
             if date in conflicts and i < len(locations):
                 conflicts[date]['location'] = locations[i]
         
-        return conflicts
-        
+        return conflicts        
     def get_available_session_options(self, class_name, class_date):
         """Get available session options with current enrollment info and conflict status"""
         class_details = self.excel.get_class_details(class_name)
