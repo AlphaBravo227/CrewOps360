@@ -132,18 +132,29 @@ class EducatorUIComponents:
                             else:
                                 # No conflict or AT info only - normal signup
                                 if st.button("Sign Up", key=f"signup_{button_key}"):
-                                    try:
-                                        success, message = educator_manager.signup_as_educator(
-                                            staff_name, class_name, date
-                                        )
-                                        if success:
-                                            st.success("Successfully signed up as educator!")
-                                            st.rerun()
-                                        else:
-                                            st.error(f"Signup failed: {message}")
-                                    except Exception as e:
-                                        st.error(f"Error during signup: {str(e)}")
-                                        st.write(f"Debug info: class_name={class_name}, date={date}, staff_name={staff_name}")
+                                    print(f"DEBUG: Educator signup button clicked for {staff_name} -> {class_name} on {date}")
+                                    
+                                    with st.spinner("Processing educator signup..."):
+                                        try:
+                                            success, message = educator_manager.signup_as_educator(
+                                                staff_name, class_name, date
+                                            )
+                                            print(f"DEBUG: Educator signup result: success={success}, message={message}")
+                                            
+                                            if success:
+                                                # Store success in session state
+                                                st.session_state['educator_signup_success'] = True
+                                                st.session_state['educator_signup_message'] = "Successfully signed up as educator!"
+                                                st.rerun()
+                                            else:
+                                                st.error(f"Signup failed: {message}")
+                                        except Exception as e:
+                                            st.error(f"Error during signup: {str(e)}")
+                                            print(f"DEBUG: Exception during educator signup: {e}")
+                                            import traceback
+                                            traceback.print_exc()
+
+
                         else:
                             st.write("Full")
                     
@@ -198,7 +209,7 @@ class EducatorUIComponents:
     
     @staticmethod
     def _handle_educator_signup_with_conflict(educator_manager, staff_name, class_name, 
-                                            class_date, conflict_info, button_key):
+                                        class_date, conflict_info, button_key):
         """Handle educator signup with conflict override"""
         
         # Show conflict warning and override option
@@ -228,21 +239,28 @@ class EducatorUIComponents:
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("Confirm Signup", key=f"confirm_educator_{button_key}", 
-                               disabled=not acknowledge):
-                        success, message = educator_manager.signup_as_educator(
-                            staff_name, class_name, class_date, override_conflict=True
-                        )
+                            disabled=not acknowledge):
+                        with st.spinner("Processing educator signup..."):
+                            success, message = educator_manager.signup_as_educator(
+                                staff_name, class_name, class_date, override_conflict=True
+                            )
                         
                         if success:
-                            st.success("Successfully signed up as educator with conflict override!")
-                            del st.session_state[f"show_educator_override_{button_key}"]
+                            # Clean up session state
+                            if f"show_educator_override_{button_key}" in st.session_state:
+                                del st.session_state[f"show_educator_override_{button_key}"]
+                            # Store success in session state
+                            st.session_state['educator_signup_success'] = True
+                            st.session_state['educator_signup_message'] = "Successfully signed up as educator with conflict override!"
                             st.rerun()
                         else:
                             st.error(f"Signup failed: {message}")
                 
                 with col2:
                     if st.button("Cancel", key=f"cancel_educator_override_{button_key}"):
-                        del st.session_state[f"show_educator_override_{button_key}"]
+                        if f"show_educator_override_{button_key}" in st.session_state:
+                            del st.session_state[f"show_educator_override_{button_key}"]
+                        st.rerun()
     
     @staticmethod
     def display_staff_educator_enrollments(educator_manager, staff_name):
@@ -404,3 +422,13 @@ class EducatorUIComponents:
                     st.write("*No educators signed up*")
             
             st.markdown("---")
+
+    @staticmethod
+    def display_educator_status():
+        """Display educator signup success/error messages from session state"""
+        if st.session_state.get('educator_signup_success', False):
+            st.success(st.session_state.get('educator_signup_message', 'Educator signup successful!'))
+            # Clear the success flag after displaying
+            del st.session_state['educator_signup_success']
+            if 'educator_signup_message' in st.session_state:
+                del st.session_state['educator_signup_message']

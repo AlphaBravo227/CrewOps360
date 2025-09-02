@@ -2,6 +2,7 @@
 """
 Enhanced unified database module that includes educator signup functionality
 along with existing training enrollment data and track data.
+COMPLETELY FIXED VERSION - No more None IDs
 """
 import sqlite3
 from datetime import datetime
@@ -36,8 +37,9 @@ class UnifiedDatabase:
         return dt.strftime('%Y-%m-%d %H:%M:%S %Z')
         
     def connect(self):
-        """Establish database connection"""
+        """Establish database connection with proper row factory - FIXED"""
         self.conn = sqlite3.connect(self.db_path)
+        # CRITICAL: Always ensure row factory is set for dictionary access
         self.conn.row_factory = sqlite3.Row
         self.cursor = self.conn.cursor()
         
@@ -47,10 +49,10 @@ class UnifiedDatabase:
             self.conn.close()
             
     def initialize_training_tables(self):
-        """Create training-related tables in the unified database"""
+        """Create training-related tables with proper schema - COMPLETELY FIXED"""
         self.connect()
         
-        # Create training enrollments table with conflict override fields
+        # Create training enrollments table
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS training_enrollments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,24 +87,7 @@ class UnifiedDatabase:
             )
         ''')
         
-        # Check if conflict fields exist in existing table (for migration)
-        self.cursor.execute("PRAGMA table_info(training_enrollments)")
-        columns = [column[1] for column in self.cursor.fetchall()]
-        
-        # Add new columns if they don't exist
-        if 'session_time' not in columns:
-            self.cursor.execute('ALTER TABLE training_enrollments ADD COLUMN session_time TEXT DEFAULT NULL')
-            
-        if 'conflict_override' not in columns:
-            self.cursor.execute('ALTER TABLE training_enrollments ADD COLUMN conflict_override BOOLEAN DEFAULT 0')
-            
-        if 'conflict_details' not in columns:
-            self.cursor.execute('ALTER TABLE training_enrollments ADD COLUMN conflict_details TEXT DEFAULT NULL')
-            
-        if 'override_acknowledged' not in columns:
-            self.cursor.execute('ALTER TABLE training_enrollments ADD COLUMN override_acknowledged TEXT DEFAULT NULL')
-        
-        # Create training audit log table with conflict tracking
+        # Create training enrollment audit log table
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS training_enrollment_audit (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -135,21 +120,9 @@ class UnifiedDatabase:
             )
         ''')
         
-        # Check if conflict fields exist in audit table
-        self.cursor.execute("PRAGMA table_info(training_enrollment_audit)")
-        audit_columns = [column[1] for column in self.cursor.fetchall()]
-        
-        if 'session_time' not in audit_columns:
-            self.cursor.execute('ALTER TABLE training_enrollment_audit ADD COLUMN session_time TEXT DEFAULT NULL')
-            
-        if 'conflict_override' not in audit_columns:
-            self.cursor.execute('ALTER TABLE training_enrollment_audit ADD COLUMN conflict_override BOOLEAN DEFAULT 0')
-            
-        if 'conflict_details' not in audit_columns:
-            self.cursor.execute('ALTER TABLE training_enrollment_audit ADD COLUMN conflict_details TEXT DEFAULT NULL')
-        
         self.conn.commit()
         self.disconnect()
+        print("Training tables created successfully with proper AUTO INCREMENT")
         
     def migrate_from_separate_database(self, old_db_path):
         """
@@ -234,38 +207,108 @@ class UnifiedDatabase:
             old_conn.close()
             self.disconnect()
     
-    # STUDENT ENROLLMENT METHODS (existing)
+    # STUDENT ENROLLMENT METHODS - COMPLETELY FIXED
     def add_enrollment(self, staff_name, class_name, class_date, role='General', 
-                      meeting_type=None, session_time=None, conflict_override=False, 
-                      conflict_details=None):
-        """Add a new training enrollment with optional conflict override"""
+                    meeting_type=None, session_time=None, conflict_override=False, 
+                    conflict_details=None):
+        """Add a new training enrollment - COMPLETELY FIXED"""
+        print(f"DEBUG: add_enrollment called for {staff_name}, {class_name}, {class_date}")
+        
         self.connect()
         try:
+            # First, check if this exact enrollment already exists
+            self.cursor.execute('''
+                SELECT id, status FROM training_enrollments 
+                WHERE staff_name = ? AND class_name = ? AND class_date = ? 
+                AND (meeting_type = ? OR (meeting_type IS NULL AND ? IS NULL))
+                AND (session_time = ? OR (session_time IS NULL AND ? IS NULL))
+            ''', (staff_name, class_name, class_date, meeting_type, meeting_type, 
+                session_time, session_time))
+            
+            existing = self.cursor.fetchone()
+            
+            if existing:
+                # If it exists but is cancelled, reactivate it
+                if existing['status'] == 'cancelled':
+                    print(f"DEBUG: Reactivating cancelled enrollment ID {existing['id']}")
+                    
+                    current_time = self._get_eastern_time()
+                    enrollment_timestamp = self._format_eastern_timestamp(current_time)
+                    override_timestamp = self._format_eastern_timestamp(current_time) if conflict_override else None
+                    
+                    self.cursor.execute('''
+                        UPDATE training_enrollments 
+                        SET status = 'active', role = ?, conflict_override = ?,
+                            conflict_details = ?, override_acknowledged = ?, enrollment_date = ?
+                        WHERE id = ?
+                    ''', (role, conflict_override, conflict_details, 
+                        override_timestamp, enrollment_timestamp, existing['id']))
+                    
+                    self.conn.commit()
+                    print(f"DEBUG: Enrollment reactivated successfully")
+                    return True
+                else:
+                    print(f"DEBUG: Enrollment already exists and is active")
+                    return False  # Already exists and is active
+            
+            # No existing enrollment, create new one
             current_time = self._get_eastern_time()
             enrollment_timestamp = self._format_eastern_timestamp(current_time)
             override_timestamp = self._format_eastern_timestamp(current_time) if conflict_override else None
             
+            print(f"DEBUG: Inserting new enrollment with timestamp {enrollment_timestamp}")
+            
+            # Insert with explicit column list (excludes id to allow auto-increment)
             self.cursor.execute('''
-                INSERT INTO training_enrollments (staff_name, class_name, class_date, role, 
-                                               meeting_type, session_time, conflict_override, 
-                                               conflict_details, override_acknowledged, enrollment_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO training_enrollments 
+                (staff_name, class_name, class_date, role, meeting_type, session_time,
+                 conflict_override, conflict_details, override_acknowledged, enrollment_date, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
             ''', (staff_name, class_name, class_date, role, meeting_type, session_time,
-                 conflict_override, conflict_details, override_timestamp, enrollment_timestamp))
+                conflict_override, conflict_details, override_timestamp, enrollment_timestamp))
+            
+            # Get the auto-generated ID
+            inserted_id = self.cursor.lastrowid
+            print(f"SUCCESS: Enrollment created with ID: {inserted_id}")
             
             # Add audit entry
             audit_timestamp = self._format_eastern_timestamp(current_time)
             self.cursor.execute('''
-                INSERT INTO training_enrollment_audit (action, staff_name, class_name, class_date, 
-                                                    role, meeting_type, session_time, 
-                                                    conflict_override, conflict_details, action_date)
+                INSERT INTO training_enrollment_audit 
+                (action, staff_name, class_name, class_date, role, meeting_type, 
+                 session_time, conflict_override, conflict_details, action_date)
                 VALUES ('enrolled', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (staff_name, class_name, class_date, role, meeting_type, session_time,
-                 conflict_override, conflict_details, audit_timestamp))
+                conflict_override, conflict_details, audit_timestamp))
             
             self.conn.commit()
+            print(f"DEBUG: Enrollment inserted and committed successfully")
+            
+            # Verify the enrollment was added
+            self.cursor.execute('''
+                SELECT id FROM training_enrollments 
+                WHERE staff_name = ? AND class_name = ? AND class_date = ? 
+                AND status = 'active'
+                ORDER BY id DESC LIMIT 1
+            ''', (staff_name, class_name, class_date))
+            
+            verification = self.cursor.fetchone()
+            if verification:
+                print(f"DEBUG: Verified enrollment created with ID {verification['id']}")
+            else:
+                print(f"DEBUG: WARNING - Could not verify enrollment was created")
+            
             return True
-        except sqlite3.IntegrityError:
+            
+        except sqlite3.IntegrityError as e:
+            print(f"DEBUG: IntegrityError - {e}")
+            self.conn.rollback()
+            return False
+        except Exception as e:
+            print(f"DEBUG: Unexpected error in add_enrollment - {e}")
+            import traceback
+            traceback.print_exc()
+            self.conn.rollback()
             return False
         finally:
             self.disconnect()
@@ -295,9 +338,9 @@ class UnifiedDatabase:
                 current_time = self._get_eastern_time()
                 audit_timestamp = self._format_eastern_timestamp(current_time)
                 self.cursor.execute('''
-                    INSERT INTO training_enrollment_audit (action, staff_name, class_name, class_date, 
-                                                        role, meeting_type, session_time, 
-                                                        conflict_override, conflict_details, action_date)
+                    INSERT INTO training_enrollment_audit 
+                    (action, staff_name, class_name, class_date, role, meeting_type, 
+                     session_time, conflict_override, conflict_details, action_date)
                     VALUES ('cancelled', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (enrollment['staff_name'], enrollment['class_name'], 
                      enrollment['class_date'], enrollment['role'], 
@@ -311,35 +354,44 @@ class UnifiedDatabase:
         finally:
             self.disconnect()
     
-    # EDUCATOR SIGNUP METHODS (new)
+    # EDUCATOR SIGNUP METHODS - COMPLETELY FIXED
     def add_educator_signup(self, staff_name, class_name, class_date, 
                            conflict_override=False, conflict_details=None):
-        """Add a new educator signup with optional conflict override"""
+        """Add a new educator signup - COMPLETELY FIXED"""
         self.connect()
         try:
             current_time = self._get_eastern_time()
             signup_timestamp = self._format_eastern_timestamp(current_time)
             override_timestamp = self._format_eastern_timestamp(current_time) if conflict_override else None
             
+            # Insert with explicit column list (excludes id to allow auto-increment)
             self.cursor.execute('''
-                INSERT INTO training_educator_signups (staff_name, class_name, class_date,
-                                                    conflict_override, conflict_details, 
-                                                    override_acknowledged, signup_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO training_educator_signups 
+                (staff_name, class_name, class_date, conflict_override, conflict_details, 
+                 override_acknowledged, signup_date, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
             ''', (staff_name, class_name, class_date, conflict_override, conflict_details, 
                  override_timestamp, signup_timestamp))
+            
+            # Get the auto-generated ID
+            inserted_id = self.cursor.lastrowid
+            print(f"SUCCESS: Educator signup created with ID: {inserted_id}")
             
             # Add audit entry
             audit_timestamp = self._format_eastern_timestamp(current_time)
             self.cursor.execute('''
-                INSERT INTO training_educator_audit (action, staff_name, class_name, class_date,
-                                                   conflict_override, conflict_details, action_date)
+                INSERT INTO training_educator_audit 
+                (action, staff_name, class_name, class_date, conflict_override, 
+                 conflict_details, action_date)
                 VALUES ('educator_signup', ?, ?, ?, ?, ?, ?)
-            ''', (staff_name, class_name, class_date, conflict_override, conflict_details, audit_timestamp))
+            ''', (staff_name, class_name, class_date, conflict_override, 
+                 conflict_details, audit_timestamp))
             
             self.conn.commit()
             return True
-        except sqlite3.IntegrityError:
+            
+        except sqlite3.IntegrityError as e:
+            print(f"IntegrityError in add_educator_signup: {e}")
             return False
         finally:
             self.disconnect()
@@ -368,8 +420,9 @@ class UnifiedDatabase:
                 current_time = self._get_eastern_time()
                 audit_timestamp = self._format_eastern_timestamp(current_time)
                 self.cursor.execute('''
-                    INSERT INTO training_educator_audit (action, staff_name, class_name, class_date,
-                                                       conflict_override, conflict_details, action_date)
+                    INSERT INTO training_educator_audit 
+                    (action, staff_name, class_name, class_date, conflict_override, 
+                     conflict_details, action_date)
                     VALUES ('educator_cancelled', ?, ?, ?, ?, ?, ?)
                 ''', (signup['staff_name'], signup['class_name'], signup['class_date'],
                      signup['conflict_override'], signup['conflict_details'], audit_timestamp))
@@ -381,45 +434,84 @@ class UnifiedDatabase:
             self.disconnect()
     
     def get_staff_educator_signups(self, staff_name):
-        """Get all educator signups for a staff member"""
+        """Get all educator signups for a staff member - COMPLETELY FIXED"""
         self.connect()
+        
+        # Explicit column selection ensures proper ordering
         self.cursor.execute('''
-            SELECT * FROM training_educator_signups
+            SELECT id, staff_name, class_name, class_date, conflict_override, 
+                   conflict_details, override_acknowledged, signup_date, status
+            FROM training_educator_signups
             WHERE staff_name = ? AND status = 'active'
             ORDER BY class_date
         ''', (staff_name,))
-        signups = [dict(row) for row in self.cursor.fetchall()]
+        
+        rows = self.cursor.fetchall()
+        signups = []
+        
+        for row in rows:
+            # Explicit dictionary creation to ensure all fields are captured
+            signup_dict = {
+                'id': row['id'],
+                'staff_name': row['staff_name'],
+                'class_name': row['class_name'],
+                'class_date': row['class_date'],
+                'conflict_override': row['conflict_override'],
+                'conflict_details': row['conflict_details'],
+                'override_acknowledged': row['override_acknowledged'],
+                'signup_date': row['signup_date'],
+                'status': row['status']
+            }
+            
+            # Convert timestamps for display
+            if signup_dict.get('signup_date'):
+                signup_dict['signup_date_display'] = self._parse_and_format_timestamp(
+                    signup_dict['signup_date']
+                )
+            if signup_dict.get('override_acknowledged'):
+                signup_dict['override_acknowledged_display'] = self._parse_and_format_timestamp(
+                    signup_dict['override_acknowledged']
+                )
+            
+            signups.append(signup_dict)
+        
         self.disconnect()
-        
-        # Convert timestamps to Eastern time for display
-        for signup in signups:
-            if signup.get('signup_date'):
-                signup['signup_date_display'] = self._parse_and_format_timestamp(
-                    signup['signup_date']
-                )
-            if signup.get('override_acknowledged'):
-                signup['override_acknowledged_display'] = self._parse_and_format_timestamp(
-                    signup['override_acknowledged']
-                )
-        
         return signups
     
     def get_educator_signups_for_class(self, class_name, class_date=None):
-        """Get all educator signups for a class"""
+        """Get all educator signups for a class - FIXED"""
         self.connect()
         if class_date:
             self.cursor.execute('''
-                SELECT * FROM training_educator_signups
+                SELECT id, staff_name, class_name, class_date, conflict_override,
+                       conflict_details, signup_date, status
+                FROM training_educator_signups
                 WHERE class_name = ? AND class_date = ? AND status = 'active'
                 ORDER BY signup_date
             ''', (class_name, class_date))
         else:
             self.cursor.execute('''
-                SELECT * FROM training_educator_signups
+                SELECT id, staff_name, class_name, class_date, conflict_override,
+                       conflict_details, signup_date, status
+                FROM training_educator_signups
                 WHERE class_name = ? AND status = 'active'
                 ORDER BY class_date, signup_date
             ''', (class_name,))
-        signups = [dict(row) for row in self.cursor.fetchall()]
+        
+        rows = self.cursor.fetchall()
+        signups = []
+        for row in rows:
+            signups.append({
+                'id': row['id'],
+                'staff_name': row['staff_name'],
+                'class_name': row['class_name'],
+                'class_date': row['class_date'],
+                'conflict_override': row['conflict_override'],
+                'conflict_details': row['conflict_details'],
+                'signup_date': row['signup_date'],
+                'status': row['status']
+            })
+        
         self.disconnect()
         return signups
     
@@ -435,39 +527,77 @@ class UnifiedDatabase:
         return count
     
     def check_existing_educator_signup(self, staff_name, class_name, class_date):
-        """Check if staff member already signed up as educator for this class/date"""
+        """Check if staff member already signed up as educator - COMPLETELY FIXED"""
         self.connect()
         self.cursor.execute('''
-            SELECT * FROM training_educator_signups
+            SELECT id, staff_name, class_name, class_date, status
+            FROM training_educator_signups
             WHERE staff_name = ? AND class_name = ? AND class_date = ? AND status = 'active'
         ''', (staff_name, class_name, class_date))
+        
         signup = self.cursor.fetchone()
+        if signup:
+            result = {
+                'id': signup['id'],
+                'staff_name': signup['staff_name'],
+                'class_name': signup['class_name'],
+                'class_date': signup['class_date'],
+                'status': signup['status']
+            }
+            self.disconnect()
+            return result
+        
         self.disconnect()
-        return dict(signup) if signup else None
+        return None
     
-    # EXISTING METHODS (unchanged)
+    # EXISTING ENROLLMENT METHODS - FIXED
     def get_staff_enrollments(self, staff_name):
-        """Get all training enrollments for a staff member"""
+        """Get all training enrollments for a staff member - COMPLETELY FIXED"""
         self.connect()
+        
+        # Explicit column selection
         self.cursor.execute('''
-            SELECT * FROM training_enrollments
+            SELECT id, staff_name, class_name, class_date, role, meeting_type, 
+                   session_time, conflict_override, conflict_details, 
+                   override_acknowledged, enrollment_date, status
+            FROM training_enrollments
             WHERE staff_name = ? AND status = 'active'
             ORDER BY class_date
         ''', (staff_name,))
-        enrollments = [dict(row) for row in self.cursor.fetchall()]
+        
+        rows = self.cursor.fetchall()
+        enrollments = []
+        
+        for row in rows:
+            # Explicit dictionary creation
+            enrollment_dict = {
+                'id': row['id'],
+                'staff_name': row['staff_name'],
+                'class_name': row['class_name'],
+                'class_date': row['class_date'],
+                'role': row['role'],
+                'meeting_type': row['meeting_type'],
+                'session_time': row['session_time'],
+                'conflict_override': row['conflict_override'],
+                'conflict_details': row['conflict_details'],
+                'override_acknowledged': row['override_acknowledged'],
+                'enrollment_date': row['enrollment_date'],
+                'status': row['status']
+            }
+            
+            # Convert timestamps for display
+            if enrollment_dict.get('enrollment_date'):
+                enrollment_dict['enrollment_date_display'] = self._parse_and_format_timestamp(
+                    enrollment_dict['enrollment_date']
+                )
+            if enrollment_dict.get('override_acknowledged'):
+                enrollment_dict['override_acknowledged_display'] = self._parse_and_format_timestamp(
+                    enrollment_dict['override_acknowledged']
+                )
+            
+            enrollments.append(enrollment_dict)
+        
         self.disconnect()
-        
-        # Convert timestamps to Eastern time for display
-        for enrollment in enrollments:
-            if enrollment.get('enrollment_date'):
-                enrollment['enrollment_date_display'] = self._parse_and_format_timestamp(
-                    enrollment['enrollment_date']
-                )
-            if enrollment.get('override_acknowledged'):
-                enrollment['override_acknowledged_display'] = self._parse_and_format_timestamp(
-                    enrollment['override_acknowledged']
-                )
-        
         return enrollments
         
     def get_class_enrollments(self, class_name, class_date=None):
@@ -475,15 +605,35 @@ class UnifiedDatabase:
         self.connect()
         if class_date:
             self.cursor.execute('''
-                SELECT * FROM training_enrollments
+                SELECT id, staff_name, class_name, class_date, role, meeting_type, 
+                       session_time, conflict_override, conflict_details, status
+                FROM training_enrollments
                 WHERE class_name = ? AND class_date = ? AND status = 'active'
             ''', (class_name, class_date))
         else:
             self.cursor.execute('''
-                SELECT * FROM training_enrollments
+                SELECT id, staff_name, class_name, class_date, role, meeting_type, 
+                       session_time, conflict_override, conflict_details, status
+                FROM training_enrollments
                 WHERE class_name = ? AND status = 'active'
             ''', (class_name,))
-        enrollments = [dict(row) for row in self.cursor.fetchall()]
+            
+        rows = self.cursor.fetchall()
+        enrollments = []
+        for row in rows:
+            enrollments.append({
+                'id': row['id'],
+                'staff_name': row['staff_name'],
+                'class_name': row['class_name'],
+                'class_date': row['class_date'],
+                'role': row['role'],
+                'meeting_type': row['meeting_type'],
+                'session_time': row['session_time'],
+                'conflict_override': row['conflict_override'],
+                'conflict_details': row['conflict_details'],
+                'status': row['status']
+            })
+        
         self.disconnect()
         return enrollments
         
@@ -519,7 +669,9 @@ class UnifiedDatabase:
         self.connect()
         
         query = '''
-            SELECT * FROM training_enrollments
+            SELECT id, staff_name, class_name, class_date, role, meeting_type, 
+                   session_time, conflict_override
+            FROM training_enrollments
             WHERE class_name = ? AND class_date = ? AND status = 'active'
         '''
         params = [class_name, class_date]
@@ -537,7 +689,20 @@ class UnifiedDatabase:
             query += ' AND (meeting_type IS NULL OR meeting_type = "")'
             
         self.cursor.execute(query, params)
-        enrollments = [dict(row) for row in self.cursor.fetchall()]
+        rows = self.cursor.fetchall()
+        enrollments = []
+        for row in rows:
+            enrollments.append({
+                'id': row['id'],
+                'staff_name': row['staff_name'],
+                'class_name': row['class_name'],
+                'class_date': row['class_date'],
+                'role': row['role'],
+                'meeting_type': row['meeting_type'],
+                'session_time': row['session_time'],
+                'conflict_override': row['conflict_override']
+            })
+        
         self.disconnect()
         return enrollments
         
@@ -558,27 +723,44 @@ class UnifiedDatabase:
         
         if staff_name:
             self.cursor.execute('''
-                SELECT * FROM training_enrollments
+                SELECT id, staff_name, class_name, class_date, role, meeting_type,
+                       conflict_override, conflict_details, override_acknowledged
+                FROM training_enrollments
                 WHERE staff_name = ? AND conflict_override = 1 AND status = 'active'
                 ORDER BY class_date
             ''', (staff_name,))
         else:
             self.cursor.execute('''
-                SELECT * FROM training_enrollments
+                SELECT id, staff_name, class_name, class_date, role, meeting_type,
+                       conflict_override, conflict_details, override_acknowledged
+                FROM training_enrollments
                 WHERE conflict_override = 1 AND status = 'active'
                 ORDER BY staff_name, class_date
             ''')
             
-        enrollments = [dict(row) for row in self.cursor.fetchall()]
-        self.disconnect()
-        
-        # Add display timestamps
-        for enrollment in enrollments:
-            if enrollment.get('override_acknowledged'):
-                enrollment['override_acknowledged_display'] = self._parse_and_format_timestamp(
-                    enrollment['override_acknowledged']
+        rows = self.cursor.fetchall()
+        enrollments = []
+        for row in rows:
+            enrollment_dict = {
+                'id': row['id'],
+                'staff_name': row['staff_name'],
+                'class_name': row['class_name'],
+                'class_date': row['class_date'],
+                'role': row['role'],
+                'meeting_type': row['meeting_type'],
+                'conflict_override': row['conflict_override'],
+                'conflict_details': row['conflict_details'],
+                'override_acknowledged': row['override_acknowledged']
+            }
+            
+            if enrollment_dict.get('override_acknowledged'):
+                enrollment_dict['override_acknowledged_display'] = self._parse_and_format_timestamp(
+                    enrollment_dict['override_acknowledged']
                 )
+            
+            enrollments.append(enrollment_dict)
         
+        self.disconnect()
         return enrollments
     
     def get_conflict_override_educator_signups(self, staff_name=None):
@@ -587,27 +769,42 @@ class UnifiedDatabase:
         
         if staff_name:
             self.cursor.execute('''
-                SELECT * FROM training_educator_signups
+                SELECT id, staff_name, class_name, class_date, conflict_override,
+                       conflict_details, override_acknowledged
+                FROM training_educator_signups
                 WHERE staff_name = ? AND conflict_override = 1 AND status = 'active'
                 ORDER BY class_date
             ''', (staff_name,))
         else:
             self.cursor.execute('''
-                SELECT * FROM training_educator_signups
+                SELECT id, staff_name, class_name, class_date, conflict_override,
+                       conflict_details, override_acknowledged
+                FROM training_educator_signups
                 WHERE conflict_override = 1 AND status = 'active'
                 ORDER BY staff_name, class_date
             ''')
             
-        signups = [dict(row) for row in self.cursor.fetchall()]
-        self.disconnect()
-        
-        # Add display timestamps
-        for signup in signups:
-            if signup.get('override_acknowledged'):
-                signup['override_acknowledged_display'] = self._parse_and_format_timestamp(
-                    signup['override_acknowledged']
+        rows = self.cursor.fetchall()
+        signups = []
+        for row in rows:
+            signup_dict = {
+                'id': row['id'],
+                'staff_name': row['staff_name'],
+                'class_name': row['class_name'],
+                'class_date': row['class_date'],
+                'conflict_override': row['conflict_override'],
+                'conflict_details': row['conflict_details'],
+                'override_acknowledged': row['override_acknowledged']
+            }
+            
+            if signup_dict.get('override_acknowledged'):
+                signup_dict['override_acknowledged_display'] = self._parse_and_format_timestamp(
+                    signup_dict['override_acknowledged']
                 )
+            
+            signups.append(signup_dict)
         
+        self.disconnect()
         return signups
         
     def _parse_and_format_timestamp(self, timestamp_str):

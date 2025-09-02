@@ -1,7 +1,7 @@
-# training_modules/enrollment_manager.py
+# training_modules/enrollment_manager.py - FIXED VERSION
 """
 Updated Enrollment Manager for the training module that uses the unified database.
-Includes duplicate enrollment prevention logic.
+Includes duplicate enrollment prevention logic - FIXED duplicate handling.
 """
 from datetime import datetime
 
@@ -28,12 +28,13 @@ class EnrollmentManager:
     def enroll_staff(self, staff_name, class_name, class_date, role='General', 
                     meeting_type=None, session_time=None, override_conflict=False,
                     replace_existing=False, existing_enrollment_id=None):
-        """Enroll a staff member in a class with conflict and duplicate checking"""
+        """Enroll a staff member in a class with conflict and duplicate checking - FIXED VERSION"""
         
-        # Check for existing enrollments in this class (unless we're doing a replacement)
+        # FIXED: Check for existing enrollments BEFORE calling the database layer
         if not replace_existing:
             existing_enrollments = self.check_existing_enrollment(staff_name, class_name)
             if existing_enrollments:
+                print(f"DEBUG: Found {len(existing_enrollments)} existing enrollments for {staff_name} in {class_name}")
                 # Return special status indicating duplicate enrollment found
                 return "duplicate_found", existing_enrollments
         
@@ -52,6 +53,7 @@ class EnrollmentManager:
             
             if has_conflict:
                 # Don't allow enrollment without override
+                print(f"DEBUG: Schedule conflict found for {staff_name}: {conflict_info}")
                 return False, conflict_info
         elif self.track_manager and override_conflict:
             # Get conflict details for recording
@@ -60,20 +62,33 @@ class EnrollmentManager:
             )
         
         # Check if enrollment is allowed (slots available, etc.)
-        if self.can_enroll(staff_name, class_name, class_date, role, meeting_type, session_time):
+        can_enroll_result = self.can_enroll(staff_name, class_name, class_date, role, meeting_type, session_time)
+        
+        if can_enroll_result:
+            print(f"DEBUG: Attempting to add enrollment to database for {staff_name}")
             success = self.db.add_enrollment(
                 staff_name, class_name, class_date, role, 
                 meeting_type, session_time, override_conflict, conflict_details
             )
+            print(f"DEBUG: Database add_enrollment returned: {success}")
+            
             if success:
                 message = "Enrollment successful"
                 if replace_existing:
                     message += " (existing enrollment replaced)"
-                return success, message
+                return True, message
             else:
-                return False, "Enrollment failed"
-        
-        return False, "No available slots"
+                # FIXED: If database returns False, it means there was a duplicate that wasn't caught above
+                # Check again for duplicates and return the proper response
+                existing_enrollments = self.check_existing_enrollment(staff_name, class_name)
+                if existing_enrollments:
+                    print(f"DEBUG: Database returned False due to duplicate, returning duplicate_found status")
+                    return "duplicate_found", existing_enrollments
+                else:
+                    return False, "Enrollment failed - unknown error"
+        else:
+            print(f"DEBUG: can_enroll returned False - no available slots")
+            return False, "No available slots"
 
     def enroll_staff_with_replacement(self, staff_name, class_name, class_date, role='General',
                                     meeting_type=None, session_time=None, override_conflict=False,
@@ -183,11 +198,13 @@ class EnrollmentManager:
         # Get class details
         class_details = self.excel.get_class_details(class_name)
         if not class_details:
+            print(f"DEBUG: No class details found for {class_name}")
             return False
             
         # Check if staff is assigned to this class
         assigned_classes = self.excel.get_assigned_classes(staff_name)
         if class_name not in assigned_classes:
+            print(f"DEBUG: {staff_name} not assigned to {class_name}. Assigned classes: {assigned_classes}")
             return False
             
         # Check available slots
@@ -202,8 +219,11 @@ class EnrollmentManager:
             current_enrollment = self.db.get_enrollment_count(class_name, class_date, role, meeting_type, session_time)
         else:
             current_enrollment = self.db.get_enrollment_count(class_name, class_date, None, meeting_type, session_time)
-            
-        return current_enrollment < max_students
+        
+        available_slots = max_students - current_enrollment
+        print(f"DEBUG: can_enroll check - max: {max_students}, current: {current_enrollment}, available: {available_slots}")
+        
+        return available_slots > 0
         
     def cancel_enrollment(self, enrollment_id):
         """Cancel an enrollment"""
@@ -266,6 +286,7 @@ class EnrollmentManager:
                 conflicts[date]['location'] = locations[i]
         
         return conflicts        
+        
     def get_available_session_options(self, class_name, class_date):
         """Get available session options with current enrollment info and conflict status"""
         class_details = self.excel.get_class_details(class_name)

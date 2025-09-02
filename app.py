@@ -487,7 +487,7 @@ def display_training_events_app():
                             class_enrollments = [e for e in enrollments if e['class_name'] == class_name]
                             
                             if class_enrollments:
-                                for enrollment in class_enrollments:
+                                for idx, enrollment in enumerate(class_enrollments):
                                     col1, col2, col3 = st.columns([2, 2, 1])
                                     
                                     with col1:
@@ -504,7 +504,11 @@ def display_training_events_app():
                                             st.warning("⚠️ Conflict Override Applied")
                                     
                                     with col3:
-                                        if st.button("Cancel", key=f"tab1_cancel_{enrollment['id']}"):
+                                        # Create unique key using multiple identifiers
+                                        unique_key = f"tab1_cancel_{selected_staff}_{class_name}_{enrollment['class_date']}_{idx}"
+                                        unique_key = unique_key.replace(' ', '_').replace('/', '_').replace(':', '_')
+
+                                        if st.button("Cancel", key=unique_key):                                        
                                             if st.session_state.training_enrollment_manager.cancel_enrollment(enrollment['id']):
                                                 st.success("Enrollment cancelled!")
                                                 st.rerun()
