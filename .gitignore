@@ -19,3 +19,4 @@ training/upload/~$MASTER Education Classes Roster.xlsx
 *.pyc
 *.pyc
 /data
+/training_modules/__pycache__
