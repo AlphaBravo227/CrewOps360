@@ -1,7 +1,7 @@
-# training_modules/enrollment_manager.py - FIXED VERSION
+# training_modules/enrollment_manager.py - FIXED VERSION with corrected LIVE/Virtual logic
 """
 Updated Enrollment Manager for the training module that uses the unified database.
-Includes duplicate enrollment prevention logic - FIXED duplicate handling.
+FIXED: Now properly respects the LIVE option settings from Excel for staff meetings.
 """
 from datetime import datetime
 
@@ -153,7 +153,7 @@ class EnrollmentManager:
         
         for staff_name in all_staff:
             assigned_classes = self.excel.get_assigned_classes(staff_name)
-            if class_name in assigned_classes:
+            if class_name in assigned_staff:
                 assigned_staff.append(staff_name)
         
         # Collect conflicts for all assigned staff
@@ -288,7 +288,7 @@ class EnrollmentManager:
         return conflicts        
         
     def get_available_session_options(self, class_name, class_date):
-        """Get available session options with current enrollment info and conflict status"""
+        """Get available session options with current enrollment info and conflict status - FIXED LIVE/Virtual logic"""
         class_details = self.excel.get_class_details(class_name)
         if not class_details:
             return []
@@ -351,8 +351,27 @@ class EnrollmentManager:
                                 })
         
         elif is_staff_meeting:
-            # Staff meeting with LIVE/Virtual options
-            for meeting_type in ['LIVE', 'Virtual']:
+            # FIXED: Staff meeting with LIVE/Virtual options - now properly checks has_live setting
+            
+            # Find which date this is to get the has_live setting
+            has_live_option = False
+            for i in range(1, 15):  # Check rows 1-14 for dates
+                date_key = f'date_{i}'
+                live_key = f'date_{i}_has_live'
+                
+                if date_key in class_details and class_details[date_key] == class_date:
+                    has_live_option = class_details.get(live_key, False)
+                    print(f"DEBUG: Found LIVE setting for {class_date}: {has_live_option}")
+                    break
+            
+            # Only show LIVE option if has_live_option is True
+            meeting_types = ['Virtual']  # Always include Virtual
+            if has_live_option:
+                meeting_types.append('LIVE')
+            
+            print(f"DEBUG: Meeting types to offer for {class_date}: {meeting_types}")
+            
+            for meeting_type in meeting_types:
                 enrollments = self.get_session_enrollments(class_name, class_date, None, meeting_type)
                 available_slots = max_students - len(enrollments)
                 

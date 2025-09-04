@@ -188,9 +188,39 @@ class ExcelHandler:
                 pass
                 
         return None
+
+    def _parse_checkbox_value(self, cell_value):
+        """
+        Parse checkbox values from Excel cells more reliably.
+        Handles True/False booleans, Yes/No text, X marks, and 1/0 numbers.
+        """
+        if cell_value is None:
+            return False
         
+        # Handle boolean values (actual Excel checkboxes)
+        if isinstance(cell_value, bool):
+            return cell_value
+        
+        # Handle string values
+        if isinstance(cell_value, str):
+            cleaned = cell_value.strip().upper()
+            # Check for common "true" representations
+            if cleaned in ['YES', 'Y', 'TRUE', 'T', 'X', '✓', '1']:
+                return True
+            # Check for common "false" representations
+            if cleaned in ['NO', 'N', 'FALSE', 'F', '', '0']:
+                return False
+        
+        # Handle numeric values
+        if isinstance(cell_value, (int, float)):
+            return bool(cell_value)  # 0 = False, anything else = True
+        
+        # Default to False for unknown values
+        print(f"Warning: Unknown checkbox value type {type(cell_value)}: {repr(cell_value)}")
+        return False
+
     def get_class_details(self, class_name):
-        """Get details for a specific class from its sheet - UPDATED for new layout with up to 14 date rows"""
+        """Get details for a specific class from its sheet - UPDATED with better checkbox handling"""
         try:
             # Try exact match first
             sheet = None
@@ -233,23 +263,18 @@ class ExcelHandler:
                     else:
                         details[f'date_{i}'] = None
                         
-                    # Check if LIVE option is available for this date
-                    # Handle different representations of True for checkboxes
-                    has_live = (live_option is True or 
-                               (isinstance(live_option, str) and live_option.lower() in ['true', 'yes', '1', 'x', '✓']) or
-                               (isinstance(live_option, int) and live_option == 1))
+                    # Use improved checkbox parsing
+                    has_live = self._parse_checkbox_value(live_option)
+                    can_n_prior = self._parse_checkbox_value(can_work_n_prior)
                     
                     details[f'date_{i}_has_live'] = has_live
-                    
-                    # Check if night workers can attend
-                    can_n_prior = (can_work_n_prior is True or
-                                  (isinstance(can_work_n_prior, str) and can_work_n_prior.lower() in ['true', 'yes', '1', 'x', '✓']) or
-                                  (isinstance(can_work_n_prior, int) and can_work_n_prior == 1))
-                    
                     details[f'date_{i}_can_work_n_prior'] = can_n_prior
                     
                     # Store location
                     details[f'date_{i}_location'] = str(location).strip() if location else ""
+                    
+                    # Debug output for troubleshooting
+                    print(f"  Date {i}: {details[f'date_{i}']} - LIVE: {live_option} -> {has_live}, N Prior: {can_work_n_prior} -> {can_n_prior}")
                     
                 else:
                     # No date in this row - set defaults
@@ -269,9 +294,19 @@ class ExcelHandler:
             
             # Extract class configuration from fixed rows (updated positions)
             details['students_per_class'] = sheet.cell(row=16, column=2).value or 21  # Confirmed: Row 16
-            details['nurses_medic_separate'] = sheet.cell(row=17, column=2).value or 'No'  # Row 17
+            
+            # Use improved checkbox parsing for these boolean fields
+            nurses_medic_separate_value = sheet.cell(row=17, column=2).value
+            details['nurses_medic_separate'] = 'Yes' if self._parse_checkbox_value(nurses_medic_separate_value) else 'No'
+            
             details['classes_per_day'] = sheet.cell(row=18, column=2).value or 1  # Row 18
-            details['is_two_day_class'] = sheet.cell(row=19, column=2).value or 'No'  # Row 19
+            
+            is_two_day_value = sheet.cell(row=19, column=2).value
+            details['is_two_day_class'] = 'Yes' if self._parse_checkbox_value(is_two_day_value) else 'No'
+            
+            # Debug output for boolean fields
+            print(f"  Class config - Nurses/Medic separate: {nurses_medic_separate_value} -> {details['nurses_medic_separate']}")
+            print(f"  Class config - Two day class: {is_two_day_value} -> {details['is_two_day_class']}")
             
             # Extract time configurations (rows 20-27)
             time_labels = ['time_1_start', 'time_1_end', 'time_2_start', 'time_2_end',
@@ -452,12 +487,16 @@ class ExcelHandler:
             cell = self.enrollment_sheet.cell(row=staff_row, column=educator_col)
             cell_value = cell.value
             
-            # Handle different representations of True
-            is_authorized = (
-                cell_value is True or 
-                (isinstance(cell_value, str) and cell_value.lower() in ['true', 'yes', '1', 'x', '✓']) or
-                (isinstance(cell_value, int) and cell_value == 1)
-            )
+            # Use the improved checkbox parsing if available, otherwise fall back to original logic
+            if hasattr(self, '_parse_checkbox_value'):
+                is_authorized = self._parse_checkbox_value(cell_value)
+            else:
+                # Original logic as fallback
+                is_authorized = (
+                    cell_value is True or 
+                    (isinstance(cell_value, str) and cell_value.lower() in ['true', 'yes', '1', 'x', '✓']) or
+                    (isinstance(cell_value, int) and cell_value == 1)
+                )
             
             print(f"Staff {staff_name} educator authorization: {is_authorized} (cell value: {cell_value})")
             return is_authorized
@@ -466,7 +505,7 @@ class ExcelHandler:
             print(f"Error checking educator authorization for {staff_name}: {e}")
             import traceback
             traceback.print_exc()
-            return True  # Default to showing if there's an error    
+            return True  # Default to showing if there's an error
             
     def get_all_classes(self):
         """Get list of all available classes"""
