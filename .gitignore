@@ -22,3 +22,4 @@ training/upload/~$MASTER Education Classes Roster.xlsx
 /training_modules/__pycache__
 training_modules/__pycache__/ui_components.cpython-313.pyc
 *.cpython-*.pyc
+*.DS_Store
