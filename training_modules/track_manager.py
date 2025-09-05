@@ -109,9 +109,7 @@ class TrainingTrackManager:
                     
                     dates.append(date_str)
                     date_columns[date_str] = col_idx
-            
-            print(f"Found CCEMT schedule dates: {dates}")
-            
+                        
             # Read staff schedules (starting from row 2, column A for names)
             for row in ccemt_sheet.iter_rows(min_row=2, max_col=1):
                 staff_name = row[0].value
@@ -140,9 +138,7 @@ class TrainingTrackManager:
                             self.ccemt_schedule_cache[staff_name][date_str] = normalized_value
                         else:
                             # Store original value for any other notation
-                            self.ccemt_schedule_cache[staff_name][date_str] = schedule_str
-                
-                print(f"Loaded CCEMT schedule for {staff_name}: {self.ccemt_schedule_cache[staff_name]}")
+                            self.ccemt_schedule_cache[staff_name][date_str] = schedule_str                
         
         except Exception as e:
             print(f"Error loading CCEMT schedules: {e}")
@@ -406,7 +402,6 @@ def integrate_ccemt_schedules(track_manager, excel_handler):
     This should be called after both components are initialized.
     """
     track_manager.set_excel_handler(excel_handler)
-    print("CCEMT schedule integration completed")
 
 # Usage example for app.py integration:
 """

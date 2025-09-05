@@ -34,8 +34,6 @@ class EnrollmentManager:
         if not replace_existing:
             existing_enrollments = self.check_existing_enrollment(staff_name, class_name)
             if existing_enrollments:
-                print(f"DEBUG: Found {len(existing_enrollments)} existing enrollments for {staff_name} in {class_name}")
-                # Return special status indicating duplicate enrollment found
                 return "duplicate_found", existing_enrollments
         
         # If replacing existing enrollment, cancel it first
@@ -70,7 +68,6 @@ class EnrollmentManager:
                 staff_name, class_name, class_date, role, 
                 meeting_type, session_time, override_conflict, conflict_details
             )
-            print(f"DEBUG: Database add_enrollment returned: {success}")
             
             if success:
                 message = "Enrollment successful"
@@ -82,12 +79,10 @@ class EnrollmentManager:
                 # Check again for duplicates and return the proper response
                 existing_enrollments = self.check_existing_enrollment(staff_name, class_name)
                 if existing_enrollments:
-                    print(f"DEBUG: Database returned False due to duplicate, returning duplicate_found status")
                     return "duplicate_found", existing_enrollments
                 else:
                     return False, "Enrollment failed - unknown error"
         else:
-            print(f"DEBUG: can_enroll returned False - no available slots")
             return False, "No available slots"
 
     def enroll_staff_with_replacement(self, staff_name, class_name, class_date, role='General',
@@ -198,13 +193,11 @@ class EnrollmentManager:
         # Get class details
         class_details = self.excel.get_class_details(class_name)
         if not class_details:
-            print(f"DEBUG: No class details found for {class_name}")
             return False
             
         # Check if staff is assigned to this class
         assigned_classes = self.excel.get_assigned_classes(staff_name)
         if class_name not in assigned_classes:
-            print(f"DEBUG: {staff_name} not assigned to {class_name}. Assigned classes: {assigned_classes}")
             return False
             
         # Check available slots
@@ -221,7 +214,6 @@ class EnrollmentManager:
             current_enrollment = self.db.get_enrollment_count(class_name, class_date, None, meeting_type, session_time)
         
         available_slots = max_students - current_enrollment
-        print(f"DEBUG: can_enroll check - max: {max_students}, current: {current_enrollment}, available: {available_slots}")
         
         return available_slots > 0
         

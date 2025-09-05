@@ -310,7 +310,6 @@ def display_training_events_app():
             st.session_state.training_track_manager.set_excel_handler(
                 st.session_state.training_excel_handler
             )
-            print("CCEMT schedule integration completed")
 
         # Initialize admin access
         if 'training_admin_access' not in st.session_state:
