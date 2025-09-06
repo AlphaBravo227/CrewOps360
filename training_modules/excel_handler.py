@@ -230,7 +230,6 @@ class ExcelHandler:
                         break
                         
             if sheet is None:
-                print(f"Warning: Sheet '{class_name}' not found in workbook")
                 # Return default values with the class name and a flag indicating missing data
                 default_details = DEFAULT_CLASS_DETAILS.copy()
                 default_details['class_name'] = class_name
@@ -304,21 +303,15 @@ class ExcelHandler:
             for idx, label in enumerate(time_labels):
                 row_num = 20 + idx  # Rows 20-27 for time configurations
                 time_value = sheet.cell(row=row_num, column=2).value
-                print(f"  Row {row_num}, {label}: raw value = {repr(time_value)}, type = {type(time_value)}")
                 
                 parsed_time = self._parse_time_value(time_value)
                 details[label] = parsed_time
                 
-                if parsed_time:
-                    print(f"    -> Parsed as: {parsed_time}")
-                else:
-                    # Use default times if parsing fails
-                    if label == 'time_1_start' and not parsed_time:
+                if not parsed_time:
+                    if label == 'time_1_start':
                         details[label] = '08:00'
-                        print(f"    -> Using default: 08:00")
-                    elif label == 'time_1_end' and not parsed_time:
+                    elif label == 'time_1_end':
                         details[label] = '16:00'
-                        print(f"    -> Using default: 16:00")
             
             # Extract instructor count from row 28, column B (confirmed)
             instructors_per_day_value = sheet.cell(row=28, column=2).value
