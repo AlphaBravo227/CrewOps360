@@ -1309,37 +1309,25 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                     # Export functionality
                     st.markdown("---")
                     st.write("### 📥 Export Options")
+                    st.markdown("---")
                     
-                    col1, col2 = st.columns(2)
+                    # Excel Export
+                    excel_data = excel_admin_functions.export_comprehensive_schedule_to_excel(
+                        schedule_df, 
+                        start_date.strftime('%m/%d/%Y'), 
+                        end_date.strftime('%m/%d/%Y')
+                    )
                     
-                    with col1:
-                        # CSV Export
-                        csv_data = schedule_df.to_csv(index=False)
+                    if excel_data:
                         st.download_button(
-                            label="📄 Download as CSV",
-                            data=csv_data,
-                            file_name=f"education_schedule_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv",
-                            mime="text/csv",
+                            label="📊 Download as Excel",
+                            type="primary",
+                            data=excel_data,
+                            file_name=f"education_schedule_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True
                         )
-                    
-                    with col2:
-                        # Excel Export
-                        excel_data = excel_admin_functions.export_comprehensive_schedule_to_excel(
-                            schedule_df, 
-                            start_date.strftime('%m/%d/%Y'), 
-                            end_date.strftime('%m/%d/%Y')
-                        )
-                        
-                        if excel_data:
-                            st.download_button(
-                                label="📊 Download as Excel",
-                                data=excel_data,
-                                file_name=f"education_schedule_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                use_container_width=True
-                            )
-                        else:
+                    else:
                             st.error("Failed to generate Excel file")
                     
                     # Legend
