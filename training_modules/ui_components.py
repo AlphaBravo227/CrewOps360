@@ -812,8 +812,6 @@ class UIComponents:
         else:
             # Normal enrollment without conflict
             if st.button(button_label, key=button_key):
-                # Add debug print
-                print(f"DEBUG: Button clicked - attempting enrollment for {staff_name} in {class_name} on {date}")
                 
                 with st.spinner("Processing enrollment..."):
                     try:

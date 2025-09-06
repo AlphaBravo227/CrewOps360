@@ -132,14 +132,12 @@ class EducatorUIComponents:
                             else:
                                 # No conflict or AT info only - normal signup
                                 if st.button("Sign Up", key=f"signup_{button_key}"):
-                                    print(f"DEBUG: Educator signup button clicked for {staff_name} -> {class_name} on {date}")
                                     
                                     with st.spinner("Processing educator signup..."):
                                         try:
                                             success, message = educator_manager.signup_as_educator(
                                                 staff_name, class_name, date
                                             )
-                                            print(f"DEBUG: Educator signup result: success={success}, message={message}")
                                             
                                             if success:
                                                 # Store success in session state
@@ -150,7 +148,6 @@ class EducatorUIComponents:
                                                 st.error(f"Signup failed: {message}")
                                         except Exception as e:
                                             st.error(f"Error during signup: {str(e)}")
-                                            print(f"DEBUG: Exception during educator signup: {e}")
                                             import traceback
                                             traceback.print_exc()
 

@@ -116,8 +116,6 @@ class ExcelHandler:
                         if header_value not in NON_CLASS_COLUMNS:
                             headers.append((col_idx, header_value))
                 
-                print(f"Found class columns: {[h[1] for h in headers]}")
-                
                 # Check which classes are assigned (checkbox is True)
                 for col_idx, class_name in headers:
                     cell = self.enrollment_sheet.cell(row=staff_row, column=col_idx)
@@ -128,8 +126,6 @@ class ExcelHandler:
                         (isinstance(cell_value, str) and cell_value.lower() in ['true', 'yes', '1', 'x', '✓']) or
                         (isinstance(cell_value, int) and cell_value == 1)):
                         assigned_classes.append(class_name)
-                        
-            print(f"Staff {staff_name} assigned to: {assigned_classes}")
                         
         except Exception as e:
             print(f"Error getting assigned classes: {e}")
@@ -273,9 +269,6 @@ class ExcelHandler:
                     # Store location
                     details[f'date_{i}_location'] = str(location).strip() if location else ""
                     
-                    # Debug output for troubleshooting
-                    print(f"  Date {i}: {details[f'date_{i}']} - LIVE: {live_option} -> {has_live}, N Prior: {can_work_n_prior} -> {can_n_prior}")
-                    
                 else:
                     # No date in this row - set defaults
                     details[f'date_{i}'] = None
@@ -303,11 +296,7 @@ class ExcelHandler:
             
             is_two_day_value = sheet.cell(row=19, column=2).value
             details['is_two_day_class'] = 'Yes' if self._parse_checkbox_value(is_two_day_value) else 'No'
-            
-            # Debug output for boolean fields
-            print(f"  Class config - Nurses/Medic separate: {nurses_medic_separate_value} -> {details['nurses_medic_separate']}")
-            print(f"  Class config - Two day class: {is_two_day_value} -> {details['is_two_day_class']}")
-            
+                        
             # Extract time configurations (rows 20-27)
             time_labels = ['time_1_start', 'time_1_end', 'time_2_start', 'time_2_end',
                          'time_3_start', 'time_3_end', 'time_4_start', 'time_4_end']
@@ -338,7 +327,6 @@ class ExcelHandler:
             try:
                 if instructors_per_day_value is not None:
                     details['instructors_per_day'] = int(float(instructors_per_day_value))
-                    print(f"  Instructors per day for {class_name}: {details['instructors_per_day']} (raw value: {repr(instructors_per_day_value)})")
                 else:
                     details['instructors_per_day'] = 0
                     print(f"  No instructor count found for {class_name} (cell B28 is empty)")
@@ -348,10 +336,7 @@ class ExcelHandler:
             
             # Add class name to details
             details['class_name'] = class_name
-            
-            print(f"  time_1_start: {details.get('time_1_start')}")
-            print(f"  time_1_end: {details.get('time_1_end')}")
-            
+                        
             return details
             
         except Exception as e:

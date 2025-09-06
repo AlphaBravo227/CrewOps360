@@ -1,8 +1,9 @@
-# training_modules/admin_excel_functions.py - Enhanced with educator reporting
+# training_modules/admin_excel_functions.py - Enhanced with comprehensive schedule report
 import pandas as pd
 import openpyxl
-from datetime import datetime
+from datetime import datetime, timedelta
 import streamlit as st
+import calendar
 from .config import NON_CLASS_COLUMNS, DEFAULT_CLASS_DETAILS
 
 class ExcelAdminFunctions:
@@ -166,6 +167,241 @@ class ExcelAdminFunctions:
         
         return df
     
+    def get_comprehensive_education_schedule_report(self, start_date, end_date):
+        """Generate comprehensive education schedule report for a date range"""
+        try:
+            # Parse date strings to datetime objects for comparison
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d') if isinstance(start_date, str) else start_date
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d') if isinstance(end_date, str) else end_date
+            
+            # Generate date range with MM/DD/YY format
+            date_range = []
+            current_date = start_dt
+            while current_date <= end_dt:
+                date_range.append(current_date.strftime('%m/%d/%y'))
+                current_date += timedelta(days=1)
+            
+            # Get all staff from the database - this returns a list of staff names
+            all_staff_names = self._get_all_staff_from_database()
+            
+            # Initialize report data
+            report_data = []
+            
+            for staff_name in all_staff_names:  # staff_name is now a string, not a dict
+                # Initialize row data
+                row_data = {
+                    'STAFF NAME': staff_name,
+                }
+                
+                # Get all enrollments for this staff member
+                staff_enrollments = self.db.get_staff_enrollments(staff_name)
+                
+                # Get all educator signups for this staff member
+                staff_educator_signups = []
+                if self.educator:
+                    staff_educator_signups = self.educator.get_staff_educator_signups(staff_name)
+                
+                # Process each date in the range
+                for date_str in date_range:
+                    activities = []
+                    
+                    # Convert MM/DD/YY back to MM/DD/YYYY for database comparison
+                    date_parts = date_str.split('/')
+                    full_date_str = f"{date_parts[0]}/{date_parts[1]}/20{date_parts[2]}"
+                    
+                    # Check for student enrollments on this date
+                    enrollments_on_date = [e for e in staff_enrollments if e['class_date'] == full_date_str]
+                    for enrollment in enrollments_on_date:
+                        activities.append(enrollment['class_name'])
+                    
+                    # Check for educator signups on this date
+                    educator_signups_on_date = [e for e in staff_educator_signups if e['class_date'] == full_date_str]
+                    for signup in educator_signups_on_date:
+                        activities.append(f"EDU:{signup['class_name']}")
+                    
+                    # Join activities with comma if multiple, otherwise leave blank
+                    row_data[date_str] = ', '.join(activities) if activities else ''
+                
+                report_data.append(row_data)
+            
+            # Create DataFrame
+            columns = ['STAFF NAME'] + date_range
+            df = pd.DataFrame(report_data, columns=columns)
+            
+            # Sort by staff name
+            df = df.sort_values('STAFF NAME')
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error generating comprehensive schedule report: {e}")
+            import traceback
+            traceback.print_exc()
+            return pd.DataFrame()
+
+    def _get_all_staff_from_database(self):
+        """Get all unique staff names from the database (enrollments and educator signups)"""
+        try:
+            all_staff = set()  # Use set to avoid duplicates
+            
+            # Get all staff from training enrollments
+            self.db.connect()
+            self.db.cursor.execute('''
+                SELECT DISTINCT staff_name FROM training_enrollments 
+                WHERE status = 'active'
+            ''')
+            enrollment_staff = self.db.cursor.fetchall()
+            
+            for row in enrollment_staff:
+                staff_name = row['staff_name']
+                if staff_name:
+                    all_staff.add(staff_name)
+                    print(f"DEBUG: Found staff from enrollments: {staff_name}")
+            
+            # Get all staff from educator signups if educator manager is available
+            if self.educator:
+                self.db.cursor.execute('''
+                    SELECT DISTINCT staff_name FROM training_educator_signups 
+                    WHERE status = 'active'
+                ''')
+                educator_staff = self.db.cursor.fetchall()
+                
+                for row in educator_staff:
+                    staff_name = row['staff_name']
+                    if staff_name:
+                        all_staff.add(staff_name)
+                        print(f"DEBUG: Found staff from educator signups: {staff_name}")
+            
+            self.db.disconnect()
+            
+            # Convert to sorted list
+            staff_list = sorted(list(all_staff))
+            
+            print(f"Found {len(staff_list)} unique staff members from database: {staff_list}")
+            return staff_list
+            
+        except Exception as e:
+            print(f"Error getting staff from database: {e}")
+            import traceback
+            traceback.print_exc()
+            if hasattr(self.db, 'disconnect'):
+                self.db.disconnect()
+            return []
+
+    def export_comprehensive_schedule_to_excel(self, schedule_df, start_date, end_date):
+        """Export comprehensive schedule report to Excel format"""
+        try:
+            from io import BytesIO
+            import xlsxwriter
+            
+            if schedule_df.empty:
+                return None
+            
+            # Create a BytesIO buffer
+            output = BytesIO()
+            
+            # Create workbook and worksheet
+            workbook = xlsxwriter.Workbook(output, {'in_memory': True})
+            worksheet = workbook.add_worksheet('Education Schedule')
+            
+            # Define formats
+            header_format = workbook.add_format({
+                'bold': True,
+                'bg_color': '#4F81BD',
+                'font_color': 'white',
+                'border': 1,
+                'align': 'center',
+                'valign': 'vcenter'
+            })
+            
+            staff_name_format = workbook.add_format({
+                'bold': True,
+                'border': 1,
+                'align': 'left',
+                'valign': 'vcenter'
+            })
+            
+            role_format = workbook.add_format({
+                'border': 1,
+                'align': 'center',
+                'valign': 'vcenter'
+            })
+            
+            date_format = workbook.add_format({
+                'border': 1,
+                'align': 'left',
+                'valign': 'top',
+                'text_wrap': True
+            })
+            
+            educator_format = workbook.add_format({
+                'border': 1,
+                'align': 'left',
+                'valign': 'top',
+                'text_wrap': True,
+                'font_color': '#0066CC'  # Blue color for educator entries
+            })
+            
+            # Write title and date range
+            worksheet.merge_range('A1:E1', f'Comprehensive Education Schedule Report', 
+                                workbook.add_format({'bold': True, 'font_size': 16, 'align': 'center'}))
+            worksheet.merge_range('A2:E2', f'Date Range: {start_date} to {end_date}', 
+                                workbook.add_format({'italic': True, 'align': 'center'}))
+            
+            # Start data at row 4
+            start_row = 3
+            
+            # Write headers
+            for col_num, column_name in enumerate(schedule_df.columns):
+                worksheet.write(start_row, col_num, column_name, header_format)
+            
+            # Set column widths
+            worksheet.set_column('A:A', 25)  # Staff Name
+            worksheet.set_column('B:B', 12)  # Role
+            
+            # Date columns - make them narrower but tall enough for wrapped text
+            date_columns = len(schedule_df.columns) - 2  # Subtract STAFF NAME and ROLE columns
+            if date_columns > 0:
+                worksheet.set_column(2, 2 + date_columns - 1, 15)
+            
+            # Write data
+            for row_num, (index, row) in enumerate(schedule_df.iterrows(), start_row + 1):
+                for col_num, (column_name, value) in enumerate(row.items()):
+                    cell_value = str(value) if pd.notna(value) and value != '' else ''
+                    
+                    if column_name == 'STAFF NAME':
+                        worksheet.write(row_num, col_num, cell_value, staff_name_format)
+                    elif column_name == 'ROLE':
+                        worksheet.write(row_num, col_num, cell_value, role_format)
+                    else:
+                        # Date columns - check if contains educator entries
+                        if 'EDU:' in cell_value:
+                            worksheet.write(row_num, col_num, cell_value, educator_format)
+                        else:
+                            worksheet.write(row_num, col_num, cell_value, date_format)
+            
+            # Set row heights for better readability
+            for row in range(start_row + 1, start_row + 1 + len(schedule_df)):
+                worksheet.set_row(row, 30)  # Taller rows for wrapped text
+            
+            # Add a legend
+            legend_row = start_row + len(schedule_df) + 2
+            worksheet.write(legend_row, 0, 'Legend:', workbook.add_format({'bold': True}))
+            worksheet.write(legend_row + 1, 0, 'Regular text = Student enrollment')
+            worksheet.write(legend_row + 2, 0, 'EDU: prefix = Educator signup', educator_format)
+            
+            # Close workbook
+            workbook.close()
+            output.seek(0)
+            
+            return output.getvalue()
+            
+        except Exception as e:
+            print(f"Error exporting comprehensive schedule to Excel: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
     def _get_coverage_status(self, coverage_rate, required, current):
         """Determine educator coverage status"""
         if current >= required:
@@ -631,9 +867,9 @@ class ExcelAdminFunctions:
             return "🟢 Low Utilization"
 
 
-# Integration function for enhanced admin reports with educator functionality
+# Integration function for enhanced admin reports with educator functionality and comprehensive schedule report
 def enhance_admin_reports(admin_access_instance, excel_admin_functions):
-    """Add enhanced reporting to admin access including educator reports"""
+    """Add enhanced reporting to admin access including educator reports and comprehensive schedule"""
     
     def _show_enhanced_enrollment_reports():
         st.subheader("📈 Enhanced Enrollment Reports")
@@ -642,9 +878,15 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
         has_educator = excel_admin_functions.educator is not None
         
         if has_educator:
-            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Compliance", "🎯 Utilization", "⚠️ Conflicts", "👨‍🏫 Educators", "📋 Individual Classes", "🔍 Validation"])
+            tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+                "📊 Compliance", "🎯 Utilization", "⚠️ Conflicts", "👨‍🏫 Educators", 
+                "📋 Individual Classes", "🔍 Validation", "📅 Schedule Report"
+            ])
         else:
-            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Compliance", "🎯 Utilization", "⚠️ Conflicts", "📋 Individual Classes", "🔍 Validation"])
+            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+                "📊 Compliance", "🎯 Utilization", "⚠️ Conflicts", 
+                "📋 Individual Classes", "🔍 Validation", "📅 Schedule Report"
+            ])
         
         with tab1:
             st.write("### Staff Enrollment Compliance")
@@ -957,6 +1199,168 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                     st.info(f"Classes with no enrollments: {', '.join(unused_classes)}")
             except Exception as e:
                 st.error(f"Error with validation: {str(e)}")
+        
+        # COMPREHENSIVE SCHEDULE REPORT TAB
+        schedule_report_tab = tab7 if has_educator else tab6
+        with schedule_report_tab:
+            _show_comprehensive_schedule_report()
+
+    def _show_comprehensive_schedule_report():
+        """Show comprehensive education schedule report with date range selection"""
+        st.subheader("📅 Comprehensive Education Schedule Report")
+        st.write("Generate a complete schedule showing all staff enrollments and educator signups across a date range.")
+        
+        # Date range selection
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            start_date = st.date_input(
+                "Start Date",
+                value=datetime.now().replace(day=1),  # Default to first of current month
+                key="schedule_report_start_date"
+            )
+        
+        with col2:
+            # Default end date to end of current month
+            now = datetime.now()
+            last_day = calendar.monthrange(now.year, now.month)[1]
+            default_end = now.replace(day=last_day)
+            
+            end_date = st.date_input(
+                "End Date",
+                value=default_end,
+                key="schedule_report_end_date"
+            )
+        
+        # Validation
+        if start_date > end_date:
+            st.error("Start date must be before or equal to end date.")
+            return
+        
+        # Calculate date range info
+        date_diff = (end_date - start_date).days + 1
+        if date_diff > 90:
+            st.warning(f"⚠️ Large date range selected ({date_diff} days). This may take longer to generate.")
+        
+        st.info(f"📊 Report will cover {date_diff} days from {start_date.strftime('%m/%d/%Y')} to {end_date.strftime('%m/%d/%Y')}")
+        
+        # Generate report button
+        if st.button("📊 Generate Comprehensive Schedule Report", type="primary", use_container_width=True):
+            try:
+                with st.spinner("Generating comprehensive education schedule report..."):
+                    # Generate the report
+                    schedule_df = excel_admin_functions.get_comprehensive_education_schedule_report(
+                        start_date.strftime('%Y-%m-%d'),
+                        end_date.strftime('%Y-%m-%d')
+                    )
+                
+                if not schedule_df.empty:
+                    st.success(f"✅ Report generated successfully! Found {len(schedule_df)} staff members.")
+                    
+                    # Display summary metrics
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        total_staff = len(schedule_df)
+                        st.metric("Total Staff", total_staff)
+                    
+                    with col2:
+                        # Count staff with any activities
+                        date_columns = [col for col in schedule_df.columns if col not in ['STAFF NAME']]
+                        staff_with_activities = 0
+                        for _, row in schedule_df.iterrows():
+                            if any(row[col] != '' for col in date_columns):
+                                staff_with_activities += 1
+                        st.metric("Staff with Activities", staff_with_activities)
+                    
+                    with col3:
+                        # Count total activities
+                        total_activities = 0
+                        for _, row in schedule_df.iterrows():
+                            for col in date_columns:
+                                if row[col] != '':
+                                    # Count comma-separated activities
+                                    activities = row[col].split(',')
+                                    total_activities += len([a.strip() for a in activities if a.strip()])
+                        st.metric("Total Activities", total_activities)
+                    
+                    with col4:
+                        # Count educator activities
+                        educator_activities = 0
+                        for _, row in schedule_df.iterrows():
+                            for col in date_columns:
+                                if 'EDU:' in row[col]:
+                                    activities = row[col].split(',')
+                                    educator_activities += len([a.strip() for a in activities if 'EDU:' in a.strip()])
+                        st.metric("Educator Signups", educator_activities)
+                    
+                    st.markdown("---")
+                    
+                    # Display the report (with pagination for large reports)
+                    st.write("### 📋 Schedule Report Preview")
+                    
+                    if len(schedule_df) > 50:
+                        st.info(f"Large report with {len(schedule_df)} staff members. Showing first 50 rows in preview.")
+                        st.dataframe(schedule_df.head(50), use_container_width=True)
+                        st.info("Download the Excel file to see the complete report.")
+                    else:
+                        st.dataframe(schedule_df, use_container_width=True)
+                    
+                    # Export functionality
+                    st.markdown("---")
+                    st.write("### 📥 Export Options")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # CSV Export
+                        csv_data = schedule_df.to_csv(index=False)
+                        st.download_button(
+                            label="📄 Download as CSV",
+                            data=csv_data,
+                            file_name=f"education_schedule_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+                    
+                    with col2:
+                        # Excel Export
+                        excel_data = excel_admin_functions.export_comprehensive_schedule_to_excel(
+                            schedule_df, 
+                            start_date.strftime('%m/%d/%Y'), 
+                            end_date.strftime('%m/%d/%Y')
+                        )
+                        
+                        if excel_data:
+                            st.download_button(
+                                label="📊 Download as Excel",
+                                data=excel_data,
+                                file_name=f"education_schedule_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True
+                            )
+                        else:
+                            st.error("Failed to generate Excel file")
+                    
+                    # Legend
+                    st.markdown("---")
+                    st.write("### 📖 Legend")
+                    st.write("• **Regular text** = Student enrollment in class")
+                    st.write("• **EDU:** prefix = Educator signup for class")
+                    st.write("• **Multiple activities** = Separated by commas")
+                    st.write("• **Empty cells** = No scheduled activities")
+                    
+                else:
+                    st.warning("No data found for the selected date range. Please check:")
+                    st.write("• Date range includes dates with scheduled classes")
+                    st.write("• Staff members have enrollments or educator signups")
+                    st.write("• Database contains enrollment and educator signup data")
+                    
+            except Exception as e:
+                st.error(f"Error generating report: {str(e)}")
+                import traceback
+                traceback.print_exc()
     
     # Replace the existing method
     admin_access_instance._show_enhanced_enrollment_reports = _show_enhanced_enrollment_reports
+                    

@@ -64,7 +64,6 @@ class EducatorManager:
                             day_2 = (date_obj + timedelta(days=1)).strftime('%m/%d/%Y')
                             
                             expanded_dates.extend([day_1, day_2])
-                            print(f"DEBUG: Expanded 2-day class {class_name} date {base_date} to [{day_1}, {day_2}]")
                         except ValueError as e:
                             print(f"Warning: Could not parse date {base_date} for class {class_name}: {e}")
                             expanded_dates.append(base_date)  # Add original if parsing fails
@@ -79,7 +78,6 @@ class EducatorManager:
                         'class_details': class_details,
                         'is_two_day': is_two_day
                     })
-                    print(f"DEBUG: Added opportunity for {class_name} with {len(expanded_dates)} dates (2-day: {is_two_day})")
                 else:
                     print(f"Warning: Class {class_name} needs {instructor_count} instructors but has no available dates")
         
@@ -88,44 +86,33 @@ class EducatorManager:
     def can_signup_as_educator(self, staff_name, class_name, class_date):
         """Check if staff can sign up as educator for this class/date"""
         
-        try:
-            print(f"DEBUG: Checking signup eligibility for {staff_name} in {class_name} on {class_date}")
-            
+        try:            
             # Check if already signed up for this specific class/date
             existing_signup = self.db.check_existing_educator_signup(staff_name, class_name, class_date)
             if existing_signup:
-                print(f"DEBUG: Already signed up")
                 return False, "Already signed up as educator for this date"
             
             # Check capacity
             class_details = self.excel.get_class_details(class_name)
             if not class_details:
-                print(f"DEBUG: No class details found for {class_name}")
                 return False, "Class details not found"
             
             instructor_count = class_details.get('instructors_per_day', 0)
-            print(f"DEBUG: Raw instructor count for {class_name}: {repr(instructor_count)}")
             
             try:
                 max_instructors = int(float(instructor_count)) if instructor_count else 0
             except (ValueError, TypeError) as e:
-                print(f"DEBUG: Error parsing instructor count: {e}")
                 max_instructors = 0
-            
-            print(f"DEBUG: Parsed max instructors: {max_instructors}")
-            
+                        
             if max_instructors <= 0:
-                print(f"DEBUG: No educator positions available")
                 return False, "No educator positions available for this class"
             
             # Check current signups vs capacity
             current_signups = self.db.get_educator_signup_count(class_name, class_date)
-            print(f"DEBUG: Current signups: {current_signups}, Max: {max_instructors}")
             
             if current_signups >= max_instructors:
                 return False, f"Educator positions full ({current_signups}/{max_instructors})"
             
-            print(f"DEBUG: Signup allowed")
             return True, "Available"
             
         except Exception as e:
@@ -206,7 +193,6 @@ class EducatorManager:
                         # Check if current_date matches either day 1 or day 2 of this base date
                         if (current_date_obj == base_date_obj or current_date_obj == day_2_obj):
                             can_work_n_prior = class_details.get(f'date_{i}_can_work_n_prior', False)
-                            print(f"DEBUG: Found matching base date {class_details[date_key]} for {class_date}, can_work_n_prior: {can_work_n_prior}")
                             break
             except ValueError as e:
                 print(f"Warning: Could not parse date {class_date}: {e}")
