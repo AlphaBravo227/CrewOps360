@@ -1,0 +1,7 @@
+-show location in the signup
+-allow multiple SM signups
+-better Training & Events UI with SM counters
+-shouldn't be able to sign up for a class or edu if you already have signed up on the same day and time (overlapping EDU and classes)
+-working N prior but not blocked notification
+-sort all dates by availability
+-training comprehensive output in 2-week name order
