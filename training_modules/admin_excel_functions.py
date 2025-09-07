@@ -239,6 +239,316 @@ class ExcelAdminFunctions:
             traceback.print_exc()
             return pd.DataFrame()
 
+    def export_comprehensive_schedule_to_excel(self, schedule_df, start_date, end_date):
+        """Export comprehensive schedule report to Excel format with class details as comments using openpyxl"""
+        try:
+            from io import BytesIO
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+            from openpyxl.comments import Comment
+            
+            if schedule_df.empty:
+                return None
+            
+            # Create a new workbook and worksheet
+            workbook = openpyxl.Workbook()
+            worksheet = workbook.active
+            worksheet.title = 'Education Schedule'
+            
+            # Define styles
+            header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
+            header_font = Font(color="FFFFFF", bold=True)
+            border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+            
+            staff_name_font = Font(bold=True)
+            date_alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+            educator_font = Font(color="0066CC")  # Blue color for educator entries
+            
+            # Write title and date range
+            worksheet.merge_cells('A1:E1')
+            title_cell = worksheet['A1']
+            title_cell.value = f'Comprehensive Education Schedule Report'
+            title_cell.font = Font(bold=True, size=16)
+            title_cell.alignment = Alignment(horizontal='center')
+            
+            worksheet.merge_cells('A2:E2')
+            subtitle_cell = worksheet['A2']
+            subtitle_cell.value = f'Date Range: {start_date} to {end_date}'
+            subtitle_cell.font = Font(italic=True)
+            subtitle_cell.alignment = Alignment(horizontal='center')
+            
+            # Start data at row 4
+            start_row = 4
+            
+            # Write headers
+            for col_num, column_name in enumerate(schedule_df.columns, 1):
+                cell = worksheet.cell(row=start_row, column=col_num, value=column_name)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.border = border
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+            
+            # Set column widths
+            worksheet.column_dimensions['A'].width = 25  # Staff Name
+            
+            # Date columns - make them narrower but tall enough for wrapped text
+            date_columns = len(schedule_df.columns) - 1  # Subtract STAFF NAME column
+            if date_columns > 0:
+                for col_num in range(2, 2 + date_columns):
+                    col_letter = openpyxl.utils.get_column_letter(col_num)
+                    worksheet.column_dimensions[col_letter].width = 15
+            
+            # Write data with comments
+            for row_num, (index, row) in enumerate(schedule_df.iterrows(), start_row + 1):
+                for col_num, (column_name, value) in enumerate(row.items(), 1):
+                    cell_value = str(value) if pd.notna(value) and value != '' else ''
+                    cell = worksheet.cell(row=row_num, column=col_num, value=cell_value)
+                    cell.border = border
+                    
+                    if column_name == 'STAFF NAME':
+                        cell.font = staff_name_font
+                        cell.alignment = Alignment(horizontal='left', vertical='center')
+                    else:
+                        # Date columns - check if contains activities and add comments
+                        cell.alignment = date_alignment
+                        
+                        if cell_value and cell_value.strip():
+                            # Parse activities (comma-separated)
+                            activities = [activity.strip() for activity in cell_value.split(',') if activity.strip()]
+                            
+                            # Generate comment with class details
+                            staff_name = row.iloc[0]  # Get staff name from first column
+                            comment_text = self._generate_class_details_comment(activities, column_name, staff_name)
+                            
+                            # Determine format based on content
+                            if 'EDU:' in cell_value:
+                                cell.font = educator_font
+                            
+                            # Add comment if we have details
+                            if comment_text:
+                                comment = Comment(comment_text, "System")
+                                comment.width = 300
+                                comment.height = 100
+                                cell.comment = comment
+            
+            # Set row heights for better readability
+            for row in range(start_row + 1, start_row + 1 + len(schedule_df)):
+                worksheet.row_dimensions[row].height = 30
+            
+            # Add a legend
+            legend_row = start_row + len(schedule_df) + 2
+            worksheet.cell(row=legend_row, column=1, value='Legend:').font = Font(bold=True)
+            worksheet.cell(row=legend_row + 1, column=1, value='Regular text = Student enrollment')
+            legend_cell = worksheet.cell(row=legend_row + 2, column=1, value='EDU: prefix = Educator signup')
+            legend_cell.font = educator_font
+            worksheet.cell(row=legend_row + 3, column=1, value='Hover over cells with activities to see class details')
+            
+            # Save to BytesIO buffer
+            output = BytesIO()
+            workbook.save(output)
+            output.seek(0)
+            
+            return output.getvalue()
+            
+        except Exception as e:
+            print(f"Error exporting comprehensive schedule to Excel: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def _generate_class_details_comment(self, activities, date_str, staff_name):
+        """Generate comment text with class details for activities"""
+        try:
+            comment_lines = []
+            
+            # Convert MM/DD/YY back to MM/DD/YYYY for class detail lookup
+            date_parts = date_str.split('/')
+            if len(date_parts) == 3:
+                full_date_str = f"{date_parts[0]}/{date_parts[1]}/20{date_parts[2]}"
+            else:
+                full_date_str = date_str
+            
+            for activity in activities:
+                activity = activity.strip()
+                if not activity:
+                    continue
+                
+                # Extract class name (remove EDU: prefix if present)
+                if activity.startswith('EDU:'):
+                    class_name = activity[4:].strip()
+                    activity_type = "Educator"
+                    is_educator = True
+                else:
+                    class_name = activity
+                    activity_type = "Student"
+                    is_educator = False
+                
+                # Get class details
+                class_details = self.excel.get_class_details(class_name)
+                
+                if class_details:
+                    # Get specific enrollment details for this staff member
+                    if is_educator:
+                        # Get educator signup details
+                        time_info, location_info = self._get_specific_educator_details(
+                            staff_name, class_name, full_date_str, class_details
+                        )
+                    else:
+                        # Get student enrollment details
+                        time_info, location_info = self._get_specific_enrollment_details(
+                            staff_name, class_name, full_date_str, class_details
+                        )
+                    
+                    # Build comment for this activity
+                    if len(activities) > 1:
+                        # Multiple activities - include class name and type header
+                        activity_comment = f"{class_name} ({activity_type}):\n"
+                        activity_comment += f"Time: {time_info}\n"
+                        activity_comment += f"Location: {location_info}"
+                    else:
+                        # Single activity - just time and location
+                        activity_comment = f"Time: {time_info}\n"
+                        activity_comment += f"Location: {location_info}"
+                    
+                    comment_lines.append(activity_comment)
+                else:
+                    # Fallback if class details not found
+                    if len(activities) > 1:
+                        # Multiple activities - include class name and type header
+                        activity_comment = f"{class_name} ({activity_type}):\n"
+                        activity_comment += "Time: Not specified\n"
+                        activity_comment += "Location: Not specified"
+                    else:
+                        # Single activity - just time and location
+                        activity_comment = "Time: Not specified\n"
+                        activity_comment += "Location: Not specified"
+                    
+                    comment_lines.append(activity_comment)
+            
+            # Join all activity comments
+            return '\n\n'.join(comment_lines) if comment_lines else None
+            
+        except Exception as e:
+            print(f"Error generating class details comment: {e}")
+            return None
+
+    def _get_specific_enrollment_details(self, staff_name, class_name, class_date, class_details):
+        """Get time and location details for a specific staff enrollment"""
+        try:
+            # Get the actual enrollment record for this staff member
+            enrollments = self.db.get_staff_enrollments(staff_name)
+            matching_enrollment = None
+            
+            for enrollment in enrollments:
+                if (enrollment['class_name'] == class_name and 
+                    enrollment['class_date'] == class_date):
+                    matching_enrollment = enrollment
+                    break
+            
+            if matching_enrollment:
+                # Get specific session time if enrolled in a specific session
+                session_time = matching_enrollment.get('session_time')
+                
+                if session_time:
+                    # Use the specific session time
+                    time_info = session_time
+                else:
+                    # Fall back to general class time (first session only)
+                    time_info = self._get_general_class_time(class_details)
+                
+                # Get location for this date
+                location_info = self._get_class_location_for_date(class_details, class_date)
+                
+                return time_info, location_info
+            else:
+                # Fallback if enrollment not found
+                time_info = self._get_general_class_time(class_details)
+                location_info = self._get_class_location_for_date(class_details, class_date)
+                return time_info, location_info
+                
+        except Exception as e:
+            print(f"Error getting specific enrollment details: {e}")
+            return "Not specified", "Not specified"
+
+    def _get_specific_educator_details(self, staff_name, class_name, class_date, class_details):
+        """Get time and location details for a specific educator signup"""
+        try:
+            # Get the actual educator signup record for this staff member
+            if self.educator:
+                educator_signups = self.educator.get_staff_educator_signups(staff_name)
+                matching_signup = None
+                
+                for signup in educator_signups:
+                    if (signup['class_name'] == class_name and 
+                        signup['class_date'] == class_date):
+                        matching_signup = signup
+                        break
+                
+                if matching_signup:
+                    # For educators, we typically use the general class time
+                    time_info = self._get_general_class_time(class_details)
+                    location_info = self._get_class_location_for_date(class_details, class_date)
+                    return time_info, location_info
+            
+            # Fallback if educator manager not available or signup not found
+            time_info = self._get_general_class_time(class_details)
+            location_info = self._get_class_location_for_date(class_details, class_date)
+            return time_info, location_info
+            
+        except Exception as e:
+            print(f"Error getting specific educator details: {e}")
+            return "Not specified", "Not specified"
+
+    def _get_general_class_time(self, class_details):
+        """Extract general time information from class details (first session only)"""
+        try:
+            # Get the first time slot only (not all sessions)
+            start_time = class_details.get('time_1_start')
+            end_time = class_details.get('time_1_end')
+            
+            if start_time and end_time:
+                time_info = f"{start_time} - {end_time}"
+            elif start_time:
+                time_info = f"Starts: {start_time}"
+            elif end_time:
+                time_info = f"Ends: {end_time}"
+            else:
+                time_info = "Not specified"
+            
+            return time_info
+            
+        except Exception as e:
+            print(f"Error getting class time: {e}")
+            return "Not specified"
+
+    def _get_class_location_for_date(self, class_details, target_date):
+        """Get location information for a specific date"""
+        try:
+            # Search through date rows to find matching date and its location
+            for i in range(1, 15):  # Check rows 1-14 for dates
+                date_key = f'date_{i}'
+                location_key = f'date_{i}_location'
+                
+                if date_key in class_details and class_details[date_key]:
+                    stored_date = class_details[date_key]
+                    
+                    # Compare dates (handle different formats)
+                    if stored_date == target_date:
+                        location = class_details.get(location_key, '')
+                        return location.strip() if location else "Not specified"
+            
+            # If no specific location found for the date
+            return "Not specified"
+            
+        except Exception as e:
+            print(f"Error getting class location: {e}")
+            return "Not specified"
+
     def _get_all_staff_from_database(self):
         """Get all unique staff names from the database (enrollments and educator signups)"""
         try:
@@ -288,119 +598,126 @@ class ExcelAdminFunctions:
                 self.db.disconnect()
             return []
 
-    def export_comprehensive_schedule_to_excel(self, schedule_df, start_date, end_date):
-        """Export comprehensive schedule report to Excel format"""
+    def _get_class_time_for_date(self, class_details):
+        """Extract time information from class details"""
         try:
-            from io import BytesIO
-            import xlsxwriter
+            # Get the first time slot (most common case)
+            start_time = class_details.get('time_1_start')
+            end_time = class_details.get('time_1_end')
             
-            if schedule_df.empty:
-                return None
+            if start_time and end_time:
+                time_info = f"{start_time} - {end_time}"
+            elif start_time:
+                time_info = f"Starts: {start_time}"
+            elif end_time:
+                time_info = f"Ends: {end_time}"
+            else:
+                time_info = "Not specified"
             
-            # Create a BytesIO buffer
-            output = BytesIO()
-            
-            # Create workbook and worksheet
-            workbook = xlsxwriter.Workbook(output, {'in_memory': True})
-            worksheet = workbook.add_worksheet('Education Schedule')
-            
-            # Define formats
-            header_format = workbook.add_format({
-                'bold': True,
-                'bg_color': '#4F81BD',
-                'font_color': 'white',
-                'border': 1,
-                'align': 'center',
-                'valign': 'vcenter'
-            })
-            
-            staff_name_format = workbook.add_format({
-                'bold': True,
-                'border': 1,
-                'align': 'left',
-                'valign': 'vcenter'
-            })
-            
-            role_format = workbook.add_format({
-                'border': 1,
-                'align': 'center',
-                'valign': 'vcenter'
-            })
-            
-            date_format = workbook.add_format({
-                'border': 1,
-                'align': 'left',
-                'valign': 'top',
-                'text_wrap': True
-            })
-            
-            educator_format = workbook.add_format({
-                'border': 1,
-                'align': 'left',
-                'valign': 'top',
-                'text_wrap': True,
-                'font_color': '#0066CC'  # Blue color for educator entries
-            })
-            
-            # Write title and date range
-            worksheet.merge_range('A1:E1', f'Comprehensive Education Schedule Report', 
-                                workbook.add_format({'bold': True, 'font_size': 16, 'align': 'center'}))
-            worksheet.merge_range('A2:E2', f'Date Range: {start_date} to {end_date}', 
-                                workbook.add_format({'italic': True, 'align': 'center'}))
-            
-            # Start data at row 4
-            start_row = 3
-            
-            # Write headers
-            for col_num, column_name in enumerate(schedule_df.columns):
-                worksheet.write(start_row, col_num, column_name, header_format)
-            
-            # Set column widths
-            worksheet.set_column('A:A', 25)  # Staff Name
-            worksheet.set_column('B:B', 12)  # Role
-            
-            # Date columns - make them narrower but tall enough for wrapped text
-            date_columns = len(schedule_df.columns) - 2  # Subtract STAFF NAME and ROLE columns
-            if date_columns > 0:
-                worksheet.set_column(2, 2 + date_columns - 1, 15)
-            
-            # Write data
-            for row_num, (index, row) in enumerate(schedule_df.iterrows(), start_row + 1):
-                for col_num, (column_name, value) in enumerate(row.items()):
-                    cell_value = str(value) if pd.notna(value) and value != '' else ''
+            # Check for multiple sessions
+            classes_per_day = int(class_details.get('classes_per_day', 1))
+            if classes_per_day > 1:
+                sessions = []
+                for i in range(1, min(classes_per_day + 1, 5)):  # Max 4 sessions
+                    start_key = f'time_{i}_start'
+                    end_key = f'time_{i}_end'
                     
-                    if column_name == 'STAFF NAME':
-                        worksheet.write(row_num, col_num, cell_value, staff_name_format)
-                    elif column_name == 'ROLE':
-                        worksheet.write(row_num, col_num, cell_value, role_format)
-                    else:
-                        # Date columns - check if contains educator entries
-                        if 'EDU:' in cell_value:
-                            worksheet.write(row_num, col_num, cell_value, educator_format)
-                        else:
-                            worksheet.write(row_num, col_num, cell_value, date_format)
+                    session_start = class_details.get(start_key)
+                    session_end = class_details.get(end_key)
+                    
+                    if session_start and session_end:
+                        sessions.append(f"Session {i}: {session_start} - {session_end}")
+                
+                if sessions:
+                    time_info = '; '.join(sessions)
             
-            # Set row heights for better readability
-            for row in range(start_row + 1, start_row + 1 + len(schedule_df)):
-                worksheet.set_row(row, 30)  # Taller rows for wrapped text
-            
-            # Add a legend
-            legend_row = start_row + len(schedule_df) + 2
-            worksheet.write(legend_row, 0, 'Legend:', workbook.add_format({'bold': True}))
-            worksheet.write(legend_row + 1, 0, 'Regular text = Student enrollment')
-            worksheet.write(legend_row + 2, 0, 'EDU: prefix = Educator signup', educator_format)
-            
-            # Close workbook
-            workbook.close()
-            output.seek(0)
-            
-            return output.getvalue()
+            return time_info
             
         except Exception as e:
-            print(f"Error exporting comprehensive schedule to Excel: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
+            print(f"Error getting class time: {e}")
+            return "Not specified"
+
+    def _get_class_time_for_date(self, class_details):
+        """Extract general time information from class details"""
+        try:
+            # Get the first time slot (most common case)
+            start_time = class_details.get('time_1_start')
+            end_time = class_details.get('time_1_end')
+            
+            if start_time and end_time:
+                time_info = f"{start_time} - {end_time}"
+            elif start_time:
+                time_info = f"Starts: {start_time}"
+            elif end_time:
+                time_info = f"Ends: {end_time}"
+            else:
+                time_info = "Not specified"
+            
+            return time_info
+            
+        except Exception as e:
+            print(f"Error getting class time: {e}")
+            return "Not specified"
+        """Get location information for a specific date"""
+        try:
+            # Search through date rows to find matching date and its location
+            for i in range(1, 15):  # Check rows 1-14 for dates
+                date_key = f'date_{i}'
+                location_key = f'date_{i}_location'
+                
+                if date_key in class_details and class_details[date_key]:
+                    stored_date = class_details[date_key]
+                    
+                    # Compare dates (handle different formats)
+                    if stored_date == target_date:
+                        location = class_details.get(location_key, '')
+                        return location.strip() if location else "Not specified"
+            
+            # If no specific location found for the date
+            return "Not specified"
+            
+        except Exception as e:
+            print(f"Error getting class location: {e}")
+            return "Not specified"
+
+    def _get_class_time_for_date(self, class_details):
+        """Extract time information from class details"""
+        try:
+            # Get the first time slot (most common case)
+            start_time = class_details.get('time_1_start')
+            end_time = class_details.get('time_1_end')
+            
+            if start_time and end_time:
+                time_info = f"{start_time} - {end_time}"
+            elif start_time:
+                time_info = f"Starts: {start_time}"
+            elif end_time:
+                time_info = f"Ends: {end_time}"
+            else:
+                time_info = "Not specified"
+            
+            # Check for multiple sessions
+            classes_per_day = int(class_details.get('classes_per_day', 1))
+            if classes_per_day > 1:
+                sessions = []
+                for i in range(1, min(classes_per_day + 1, 5)):  # Max 4 sessions
+                    start_key = f'time_{i}_start'
+                    end_key = f'time_{i}_end'
+                    
+                    session_start = class_details.get(start_key)
+                    session_end = class_details.get(end_key)
+                    
+                    if session_start and session_end:
+                        sessions.append(f"Session {i}: {session_start} - {session_end}")
+                
+                if sessions:
+                    time_info = '; '.join(sessions)
+            
+            return time_info
+            
+        except Exception as e:
+            print(f"Error getting class time: {e}")
+            return "Not specified"
 
     def _get_coverage_status(self, coverage_rate, required, current):
         """Determine educator coverage status"""
