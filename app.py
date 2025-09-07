@@ -379,28 +379,13 @@ def display_training_events_app():
         # Get educator signup metrics - NEW
         educator_signups = st.session_state.training_educator_manager.get_staff_educator_signups(selected_staff)
         
-        # Display enrollment summary with LIVE meeting metric and educator metrics
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1:
-            st.metric("Total Assigned Classes", len(assigned_classes))
-        with col2:
-            st.metric("Classes Enrolled", len(enrolled_classes))
-        with col3:
-            st.metric("Classes Remaining", len(assigned_classes) - len(enrolled_classes))
-        with col4:
-            # Check if user has any staff meetings assigned
-            has_staff_meetings = any(st.session_state.training_excel_handler.is_staff_meeting(cls) for cls in assigned_classes)
-            if has_staff_meetings:
-                st.metric("FY26 LIVE Staff Meetings", f"{live_meeting_count}/2")
-                if live_meeting_count >= 2:
-                    st.success("✅ LIVE meeting requirement met!")
-                else:
-                    st.info(f"📝 Need {2 - live_meeting_count} more LIVE meeting(s)")
-            else:
-                st.metric("LIVE Meetings", "N/A")
-        with col5:
-            st.metric("Educator Signups", len(educator_signups))
+        # Display enrollment summary using enhanced Staff Meeting tracking
+        TrainingUIComponents.display_enrollment_metrics_with_sm(
+            assigned_classes, enrolled_classes, 
+            st.session_state.training_enrollment_manager, 
+            selected_staff, 
+            st.session_state.training_excel_handler
+        )
 
 # Replace the tabs section in app.py display_training_events_app() function
 # This goes where the tab creation and content currently exists

@@ -28,13 +28,25 @@ class EnrollmentManager:
     def enroll_staff(self, staff_name, class_name, class_date, role='General', 
                     meeting_type=None, session_time=None, override_conflict=False,
                     replace_existing=False, existing_enrollment_id=None):
-        """Enroll a staff member in a class with conflict and duplicate checking - FIXED VERSION"""
+        """Enroll a staff member in a class with conflict and duplicate checking - UPDATED for SM classes"""
         
-        # FIXED: Check for existing enrollments BEFORE calling the database layer
-        if not replace_existing:
+        # Check if this is a Staff Meeting class
+        is_staff_meeting = self.excel.is_staff_meeting(class_name)
+        
+        # UPDATED: Skip duplicate check for Staff Meeting classes
+        if not replace_existing and not is_staff_meeting:
             existing_enrollments = self.check_existing_enrollment(staff_name, class_name)
             if existing_enrollments:
                 return "duplicate_found", existing_enrollments
+        
+        # For Staff Meeting classes, check if they're already enrolled in this specific session
+        if is_staff_meeting and not replace_existing:
+            is_already_enrolled = self.is_enrolled_in_date_and_type(
+                staff_name, class_name, class_date, meeting_type, session_time
+            )
+            if is_already_enrolled:
+                # They're already enrolled in this exact session, don't allow duplicate
+                return False, "You are already enrolled in this specific Staff Meeting session"
         
         # If replacing existing enrollment, cancel it first
         if replace_existing and existing_enrollment_id:
@@ -73,15 +85,26 @@ class EnrollmentManager:
                 message = "Enrollment successful"
                 if replace_existing:
                     message += " (existing enrollment replaced)"
+                # UPDATED: Add progress notification for Staff Meeting enrollments
+                elif is_staff_meeting:
+                    progress = self.get_staff_meeting_progress(staff_name)
+                    total_enrolled = progress['total_enrolled']
+                    live_enrolled = progress['live_enrolled']
+                    
+                    if total_enrolled > 1:
+                        message += f" - You now have {total_enrolled}/8 Staff Meeting sessions"
+                        if meeting_type == 'LIVE':
+                            message += f" ({live_enrolled}/2 LIVE)"
+                        else:
+                            message += f" ({live_enrolled}/2 LIVE)"
                 return True, message
             else:
-                # FIXED: If database returns False, it means there was a duplicate that wasn't caught above
-                # Check again for duplicates and return the proper response
-                existing_enrollments = self.check_existing_enrollment(staff_name, class_name)
-                if existing_enrollments:
-                    return "duplicate_found", existing_enrollments
-                else:
-                    return False, "Enrollment failed - unknown error"
+                # For non-SM classes, check for duplicates if database returns False
+                if not is_staff_meeting:
+                    existing_enrollments = self.check_existing_enrollment(staff_name, class_name)
+                    if existing_enrollments:
+                        return "duplicate_found", existing_enrollments
+                return False, "Enrollment failed - unknown error"
         else:
             return False, "No available slots"
 
@@ -216,7 +239,96 @@ class EnrollmentManager:
         available_slots = max_students - current_enrollment
         
         return available_slots > 0
+
+    def get_staff_meeting_enrollments(self, staff_name, class_name=None):
+        """Get all Staff Meeting enrollments for a staff member"""
+        all_enrollments = self.get_staff_enrollments(staff_name)
         
+        # Filter for Staff Meeting classes
+        sm_enrollments = []
+        for enrollment in all_enrollments:
+            enrollment_class = enrollment['class_name']
+            if self.excel.is_staff_meeting(enrollment_class):
+                # If specific class requested, filter further
+                if class_name is None or enrollment_class == class_name:
+                    sm_enrollments.append(enrollment)
+        
+        return sm_enrollments
+
+    def get_staff_meeting_count_by_class(self, staff_name):
+        """Get count of Staff Meeting enrollments grouped by class name"""
+        sm_enrollments = self.get_staff_meeting_enrollments(staff_name)
+        
+        counts = {}
+        for enrollment in sm_enrollments:
+            class_name = enrollment['class_name']
+            if class_name not in counts:
+                counts[class_name] = 0
+            counts[class_name] += 1
+        
+        return counts
+
+    def get_staff_meeting_progress(self, staff_name):
+        """Get Staff Meeting progress including total and LIVE count requirements"""
+        sm_enrollments = self.get_staff_meeting_enrollments(staff_name)
+        
+        total_sessions = len(sm_enrollments)
+        live_sessions = 0
+        virtual_sessions = 0
+        
+        # Count LIVE vs Virtual sessions
+        for enrollment in sm_enrollments:
+            meeting_type = enrollment.get('meeting_type', 'Virtual')
+            if meeting_type == 'LIVE':
+                live_sessions += 1
+            else:
+                virtual_sessions += 1
+        
+        # Calculate progress
+        total_required = 8
+        live_required = 2
+        
+        progress = {
+            'total_enrolled': total_sessions,
+            'total_required': total_required,
+            'total_remaining': max(0, total_required - total_sessions),
+            'live_enrolled': live_sessions,
+            'live_required': live_required,
+            'live_remaining': max(0, live_required - live_sessions),
+            'virtual_enrolled': virtual_sessions,
+            'total_complete': total_sessions >= total_required,
+            'live_complete': live_sessions >= live_required,
+            'all_requirements_met': total_sessions >= total_required and live_sessions >= live_required
+        }
+        
+        return progress
+
+    def format_staff_meeting_summary(self, staff_name):
+        """Get a formatted summary of Staff Meeting enrollment progress"""
+        progress = self.get_staff_meeting_progress(staff_name)
+        
+        # Build status indicators
+        total_status = "✅" if progress['total_complete'] else "🔄"
+        live_status = "✅" if progress['live_complete'] else "🔴" if progress['live_enrolled'] == 0 else "🔄"
+        
+        summary = f"{total_status} Total: {progress['total_enrolled']}/{progress['total_required']} sessions"
+        summary += f" | {live_status} LIVE: {progress['live_enrolled']}/{progress['live_required']} sessions"
+        
+        if progress['virtual_enrolled'] > 0:
+            summary += f" | 💻 Virtual: {progress['virtual_enrolled']} sessions"
+        
+        # Add completion status
+        if progress['all_requirements_met']:
+            summary += " | 🎉 All requirements complete!"
+        elif progress['total_complete']:
+            summary += f" | ⚠️ Need {progress['live_remaining']} more LIVE sessions"
+        elif progress['live_complete']:
+            summary += f" | ⚠️ Need {progress['total_remaining']} more sessions (any type)"
+        else:
+            summary += f" | ⚠️ Need {progress['total_remaining']} more total, {progress['live_remaining']} more LIVE"
+        
+        return summary
+
     def cancel_enrollment(self, enrollment_id):
         """Cancel an enrollment"""
         return self.db.cancel_enrollment(enrollment_id)

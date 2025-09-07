@@ -725,14 +725,17 @@ class UIComponents:
     def _handle_enrollment_button(button_label, button_key, has_conflict, conflict_details,
                             enrollment_manager, staff_name, class_name, date,
                             role="General", session_time=None, meeting_type=None):
-        """Handle enrollment button with conflict override dialog and duplicate checking"""
+        """Handle enrollment button with conflict override dialog and duplicate checking - UPDATED for SM classes"""
+        
+        # Check if this is a Staff Meeting class
+        is_staff_meeting = enrollment_manager.excel.is_staff_meeting(class_name)
         
         # Check if we're in the middle of handling a duplicate for this button
         duplicate_dialog_key = f"duplicate_dialog_{button_key}"
         duplicate_data_key = f"duplicate_data_{button_key}"
         
-        # If we have stored duplicate data, show the dialog
-        if duplicate_dialog_key in st.session_state and st.session_state[duplicate_dialog_key]:
+        # Only show duplicate dialog for non-SM classes
+        if not is_staff_meeting and duplicate_dialog_key in st.session_state and st.session_state[duplicate_dialog_key]:
             existing_enrollments = st.session_state.get(duplicate_data_key, [])
             
             result = UIComponents._show_duplicate_enrollment_dialog(
@@ -750,7 +753,7 @@ class UIComponents:
             
             # Dialog is still active, don't process normal button
             return False
-        
+
         if has_conflict:
             # Show button with warning color
             col1, col2 = st.columns([3, 2])
@@ -759,54 +762,52 @@ class UIComponents:
             with col2:
                 if st.button("Override", key=f"override_{button_key}"):
                     st.session_state[f"show_override_{button_key}"] = True
+                    st.rerun()
             
-            # Show override dialog if triggered
+            # Show override confirmation if triggered
             if st.session_state.get(f"show_override_{button_key}", False):
-                with st.container():
-                    st.error("**⚠️ Schedule Conflict Override**")
-                    st.write(f"**Conflict:** {conflict_details}")
-                    st.write("By proceeding, you acknowledge that:")
-                    st.write("• You are responsible for arranging a shift swap to attend this class")
-                    st.write("• You should discuss any extenuating circumstances with your manager")
-                    
-                    acknowledge = st.checkbox(
-                        "I acknowledge and will arrange for a schedule swap",
-                        key=f"ack_{button_key}"
-                    )
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("Confirm Override", key=f"confirm_{button_key}", disabled=not acknowledge):
-                            with st.spinner("Processing enrollment..."):
+                st.warning("⚠️ **Conflict Override** - This enrollment conflicts with your schedule. Do you want to proceed anyway?")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Yes, Override", key=f"confirm_override_{button_key}"):
+                        with st.spinner("Processing enrollment..."):
+                            try:
                                 result, data = enrollment_manager.enroll_staff(
                                     staff_name, class_name, date, role,
                                     meeting_type, session_time, override_conflict=True
                                 )
-                            
-                            if result == "duplicate_found":
-                                # Store duplicate data in session state
-                                st.session_state[duplicate_dialog_key] = True
-                                st.session_state[duplicate_data_key] = data
-                                # Clean up override dialog
-                                if f"show_override_{button_key}" in st.session_state:
-                                    del st.session_state[f"show_override_{button_key}"]
-                                st.rerun()
-                            elif result:
-                                # Clean up override dialog
-                                if f"show_override_{button_key}" in st.session_state:
-                                    del st.session_state[f"show_override_{button_key}"]
-                                # Set success flag in session state
-                                st.session_state['enrollment_success'] = True
-                                st.session_state['enrollment_message'] = "Enrolled with conflict override!"
-                                st.rerun()
-                            else:
-                                st.error(f"Enrollment failed: {data}")
-                    
-                    with col2:
-                        if st.button("Cancel", key=f"cancel_{button_key}"):
-                            if f"show_override_{button_key}" in st.session_state:
-                                del st.session_state[f"show_override_{button_key}"]
-                            st.rerun()
+                                
+                                if result == "duplicate_found" and not is_staff_meeting:
+                                    # Store duplicate data in session state and trigger dialog
+                                    st.session_state[duplicate_dialog_key] = True
+                                    st.session_state[duplicate_data_key] = data
+                                    if f"show_override_{button_key}" in st.session_state:
+                                        del st.session_state[f"show_override_{button_key}"]
+                                    st.rerun()
+                                elif result:
+                                    st.session_state['enrollment_success'] = True
+                                    # UPDATED: Show appropriate message for SM classes
+                                    if is_staff_meeting and "multiple Staff Meeting" in data:
+                                        st.session_state['enrollment_message'] = "✅ Successfully enrolled in additional Staff Meeting session!"
+                                    else:
+                                        st.session_state['enrollment_message'] = "Successfully enrolled with conflict override!"
+                                    if f"show_override_{button_key}" in st.session_state:
+                                        del st.session_state[f"show_override_{button_key}"]
+                                    st.rerun()
+                                else:
+                                    st.error(f"Enrollment failed: {data}")
+                            except Exception as e:
+                                st.error(f"Error during enrollment: {str(e)}")
+                                print(f"DEBUG: Exception during enrollment: {e}")
+                                import traceback
+                                traceback.print_exc()
+                
+                with col2:
+                    if st.button("Cancel", key=f"cancel_{button_key}"):
+                        if f"show_override_{button_key}" in st.session_state:
+                            del st.session_state[f"show_override_{button_key}"]
+                        st.rerun()
             
             return False
         else:
@@ -822,15 +823,19 @@ class UIComponents:
                         
                         print(f"DEBUG: Enrollment result: {result}, data: {data}")
                         
-                        if result == "duplicate_found":
-                            # Store duplicate data in session state and trigger dialog
+                        if result == "duplicate_found" and not is_staff_meeting:
+                            # Only show duplicate dialog for non-SM classes
                             st.session_state[duplicate_dialog_key] = True
                             st.session_state[duplicate_data_key] = data
                             st.rerun()
                         elif result:
-                            # Set success flag in session state instead of showing message directly
+                            # Set success flag in session state
                             st.session_state['enrollment_success'] = True
-                            st.session_state['enrollment_message'] = "Successfully enrolled!"
+                            # UPDATED: Show appropriate message for SM classes
+                            if is_staff_meeting and "multiple Staff Meeting" in data:
+                                st.session_state['enrollment_message'] = "✅ Successfully enrolled in additional Staff Meeting session!"
+                            else:
+                                st.session_state['enrollment_message'] = "Successfully enrolled!"
                             st.rerun()
                         else:
                             st.error(f"Enrollment failed: {data}")
@@ -840,7 +845,7 @@ class UIComponents:
                         import traceback
                         traceback.print_exc()
             return False
-        
+
     @staticmethod
     def _show_duplicate_enrollment_dialog(button_key, existing_enrollments, enrollment_manager, 
                                         staff_name, class_name, date, role, meeting_type, 
@@ -946,3 +951,106 @@ class UIComponents:
             del st.session_state['enrollment_success']
             if 'enrollment_message' in st.session_state:
                 del st.session_state['enrollment_message']
+    
+    @staticmethod
+    def display_staff_meeting_progress(enrollment_manager, staff_name, excel_handler):
+        """Display comprehensive Staff Meeting progress for a staff member"""
+        
+        # Check if staff has any SM classes assigned
+        assigned_classes = excel_handler.get_assigned_classes(staff_name)
+        has_staff_meetings = any(excel_handler.is_staff_meeting(cls) for cls in assigned_classes)
+        
+        if not has_staff_meetings:
+            return  # Don't show if no SM classes assigned
+        
+        # Get progress data
+        progress = enrollment_manager.get_staff_meeting_progress(staff_name)
+        
+        # Create progress display
+        st.markdown("### 📋 Staff Meeting Progress")
+        
+        # Main metrics row
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            total_color = "normal" if not progress['total_complete'] else "inverse"
+            st.metric(
+                "Total Sessions", 
+                f"{progress['total_enrolled']}/{progress['total_required']}",
+                delta=f"-{progress['total_remaining']} remaining" if progress['total_remaining'] > 0 else "Complete!",
+                delta_color=total_color
+            )
+        
+        with col2:
+            live_color = "normal" if not progress['live_complete'] else "inverse"
+            st.metric(
+                "LIVE Sessions", 
+                f"{progress['live_enrolled']}/{progress['live_required']}",
+                delta=f"-{progress['live_remaining']} remaining" if progress['live_remaining'] > 0 else "Complete!",
+                delta_color=live_color
+            )
+        
+        with col3:
+            st.metric(
+                "Virtual Sessions", 
+                progress['virtual_enrolled'],
+                delta="No limit" if progress['virtual_enrolled'] > 0 else None
+            )
+        
+        with col4:
+            if progress['all_requirements_met']:
+                st.success("🎉 All Requirements Met!")
+            elif progress['total_complete']:
+                st.warning(f"⚠️ Need {progress['live_remaining']} more LIVE")
+            elif progress['live_complete']:
+                st.warning(f"⚠️ Need {progress['total_remaining']} more sessions")
+            else:
+                st.error(f"⚠️ Need {progress['total_remaining']} total, {progress['live_remaining']} LIVE")
+        
+        # Progress bar
+        total_progress = min(100, (progress['total_enrolled'] / progress['total_required']) * 100)
+        live_progress = min(100, (progress['live_enrolled'] / progress['live_required']) * 100)
+        
+        st.markdown("**Overall Progress:**")
+        progress_col1, progress_col2 = st.columns(2)
+        
+        with progress_col1:
+            st.markdown(f"**Total Sessions:** {total_progress:.0f}%")
+            st.progress(total_progress / 100)
+        
+        with progress_col2:
+            st.markdown(f"**LIVE Requirement:** {live_progress:.0f}%")
+            st.progress(live_progress / 100)
+        
+        # Show enrolled sessions summary
+        if progress['total_enrolled'] > 0:
+            sm_enrollments = enrollment_manager.get_staff_meeting_enrollments(staff_name)
+            
+            with st.expander(f"📅 View All {progress['total_enrolled']} Enrolled Sessions"):
+                for enrollment in sm_enrollments:
+                    meeting_icon = "🔴" if enrollment.get('meeting_type') == 'LIVE' else "💻"
+                    class_name = enrollment['class_name']
+                    class_date = enrollment['class_date']
+                    meeting_type = enrollment.get('meeting_type', 'Virtual')
+                    
+                    st.write(f"{meeting_icon} **{class_name}** - {class_date} ({meeting_type})")
+        
+        st.markdown("---")
+
+    @staticmethod  
+    def display_enrollment_metrics_with_sm(assigned_classes, enrolled_classes, enrollment_manager, staff_name, excel_handler):
+        """Display enrollment metrics including enhanced Staff Meeting tracking"""
+        
+        # Standard metrics
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Total Assigned Classes", len(assigned_classes))
+        with col2:
+            st.metric("Classes Enrolled", len(enrolled_classes))
+        with col3:
+            st.metric("Classes Remaining", len(assigned_classes) - len(enrolled_classes))
+        
+        # Staff Meeting Progress (if applicable)
+        UIComponents.display_staff_meeting_progress(enrollment_manager, staff_name, excel_handler)    
+
