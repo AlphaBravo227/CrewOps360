@@ -250,7 +250,7 @@ class UIComponents:
     @staticmethod
     def display_session_enrollment_options_with_tracks(enrollment_manager, class_name, available_dates, 
                                                        selected_staff, track_manager):
-        """Display session enrollment options with track conflict information - UPDATED to keep expanded after enrollment"""
+        """Display session enrollment options with track conflict information - UPDATED to show location"""
         
         # Check if class has no available dates
         if not available_dates:
@@ -271,6 +271,9 @@ class UIComponents:
         
         enrolled_sessions = []
         
+        # Get class details to access location information
+        class_details = enrollment_manager.excel.get_class_details(class_name)
+        
         # Get current user's enrollments for this class to show their status
         user_enrollments = enrollment_manager.get_staff_enrollments(selected_staff)
         user_class_enrollments = [e for e in user_enrollments if e['class_name'] == class_name]
@@ -278,6 +281,23 @@ class UIComponents:
         # Iterate through available dates and show enrollment options
         for date in available_dates:
             st.subheader(f"📅 {date}")
+            
+            # ADDED: Show location information if available
+            if class_details:
+                # Find the location for this specific date
+                location = None
+                for i in range(1, 15):  # Check rows 1-14 for dates
+                    date_key = f'date_{i}'
+                    location_key = f'date_{i}_location'
+                    
+                    if date_key in class_details and class_details[date_key] == date:
+                        location = class_details.get(location_key, '')
+                        break
+                
+                if location and location.strip():
+                    st.write(f"### 📍 Location: {location}")
+                else:
+                    st.write(f"### 📍 Location: Not specified")
             
             # Check for track conflicts if available
             conflict_info = None
@@ -646,22 +666,34 @@ class UIComponents:
 
     @staticmethod
     def _is_user_enrolled_in_session(user_enrollments, date, option):
-        """Check if user is enrolled in this specific session and return enrollment details"""
+        """Check if user is enrolled in this specific session and return enrollment details - FIXED"""
+        print(f"DEBUG: _is_user_enrolled_in_session called with date={date}, option_type={option['type']}")
+        
         for enrollment in user_enrollments:
+            print(f"DEBUG: Checking enrollment: {enrollment}")
+            
             if enrollment['class_date'] != date:
                 continue
             
             # Check based on option type
             if option['type'] == 'staff_meeting':
                 if enrollment.get('meeting_type') == option['meeting_type']:
+                    print(f"DEBUG: Found matching staff meeting enrollment")
                     return enrollment
             elif option['type'] in ['regular', 'nurse_medic_separate']:
-                if enrollment.get('session_time') == option.get('session_time'):
+                # For multi-session classes, match by session time
+                enrollment_session = enrollment.get('session_time')
+                option_session = option.get('session_time')
+                print(f"DEBUG: Comparing session times: enrollment={enrollment_session}, option={option_session}")
+                if enrollment_session == option_session:
+                    print(f"DEBUG: Found matching session enrollment")
                     return enrollment
             elif option['type'] in ['regular_single', 'nurse_medic_separate_single']:
-                # For single sessions, just matching the date is enough
+                # For single sessions, just matching the date is enough since there's only one session
+                print(f"DEBUG: Found matching single session enrollment")
                 return enrollment
         
+        print(f"DEBUG: No matching enrollment found")
         return None
 
     @staticmethod
