@@ -391,8 +391,10 @@ class EnrollmentManager:
         
         return conflicts        
         
+# Fixed nurse/medic separate logic in enrollment_manager.py
+
     def get_available_session_options(self, class_name, class_date):
-        """Get available session options with current enrollment info and conflict status - FIXED LIVE/Virtual logic"""
+        """Get available session options with current enrollment info - FIXED nurse/medic separate logic"""
         class_details = self.excel.get_class_details(class_name)
         if not class_details:
             return []
@@ -403,6 +405,8 @@ class EnrollmentManager:
         is_staff_meeting = self.excel.is_staff_meeting(class_name)
         
         session_options = []
+        
+        print(f"DEBUG: Processing class {class_name}, nurses_medic_separate={nurses_medic_separate}")
         
         if classes_per_day > 1:
             # Multiple sessions per day
@@ -418,110 +422,141 @@ class EnrollmentManager:
                         session_time = f"{start_time}-{end_time}"
                         
                         if nurses_medic_separate:
-                            # Get current enrollments for this session
-                            nurse_enrollments = self.get_session_enrollments(class_name, class_date, session_time)
-                            medic_enrollments = self.get_session_enrollments(class_name, class_date, session_time)
+                            # FIXED: Get ALL enrollments for this session, then filter properly
+                            all_enrollments = self.get_session_enrollments(class_name, class_date, session_time)
                             
-                            # Filter by role
-                            nurses = [e for e in nurse_enrollments if e.get('role') == 'Nurse']
-                            medics = [e for e in medic_enrollments if e.get('role') == 'Medic']
+                            print(f"DEBUG: Session {i} ({session_time}) - All enrollments: {all_enrollments}")
+                            
+                            # Filter by role - FIXED: Handle None roles properly
+                            nurses = []
+                            medics = []
+                            
+                            for enrollment in all_enrollments:
+                                role = enrollment.get('role', 'General')
+                                staff_name = enrollment['staff_name']
+                                
+                                print(f"DEBUG: Processing enrollment - Staff: {staff_name}, Role: {role}")
+                                
+                                if role == 'Nurse':
+                                    nurses.append(staff_name)
+                                elif role == 'Medic':
+                                    medics.append(staff_name)
+                                else:
+                                    # Handle case where role might be 'General' but in a nurse/medic class
+                                    print(f"WARNING: Found enrollment with role '{role}' in nurse/medic separate class")
+                            
+                            print(f"DEBUG: Final lists - Nurses: {nurses}, Medics: {medics}")
                             
                             # Create options for both roles
-                            nurse_available = len(nurses) < (max_students // 2)
-                            medic_available = len(medics) < (max_students // 2)
+                            max_per_role = max_students // 2
+                            nurse_available = len(nurses) < max_per_role
+                            medic_available = len(medics) < max_per_role
                             
-                            if nurse_available or medic_available:
-                                session_options.append({
-                                    'session_time': session_time,
-                                    'display_time': f"Session {i} ({start_time}-{end_time})",
-                                    'nurses': [e['staff_name'] for e in nurses],
-                                    'medics': [e['staff_name'] for e in medics],
-                                    'nurse_available': nurse_available,
-                                    'medic_available': medic_available,
-                                    'type': 'nurse_medic_separate'
-                                })
+                            # Always show the option so users can see enrollments
+                            session_options.append({
+                                'session_time': session_time,
+                                'display_time': f"Session {i} ({start_time}-{end_time})",
+                                'nurses': nurses,
+                                'medics': medics,
+                                'nurse_available': nurse_available,
+                                'medic_available': medic_available,
+                                'type': 'nurse_medic_separate'
+                            })
                         else:
-                            # Regular multiple sessions
-                            enrollments = self.get_session_enrollments(class_name, class_date, session_time)
-                            available_slots = max_students - len(enrollments)
+                            # Regular multiple sessions (existing logic)
+                            all_enrollments = self.get_session_enrollments(class_name, class_date, session_time)
+                            enrolled_names = [e['staff_name'] for e in all_enrollments]
+                            available_slots = max_students - len(enrolled_names)
                             
-                            if available_slots > 0:
-                                session_options.append({
-                                    'session_time': session_time,
-                                    'display_time': f"Session {i} ({start_time}-{end_time})",
-                                    'enrolled': [e['staff_name'] for e in enrollments],
-                                    'available_slots': available_slots,
-                                    'type': 'regular'
-                                })
+                            session_options.append({
+                                'session_time': session_time,
+                                'display_time': f"Session {i} ({start_time}-{end_time})",
+                                'enrolled': enrolled_names,
+                                'available_slots': available_slots,
+                                'type': 'regular'
+                            })
         
         elif is_staff_meeting:
-            # FIXED: Staff meeting with LIVE/Virtual options - now properly checks has_live setting
-            
-            # Find which date this is to get the has_live setting
+            # Staff meeting logic (unchanged)
             has_live_option = False
-            for i in range(1, 15):  # Check rows 1-14 for dates
+            for i in range(1, 15):
                 date_key = f'date_{i}'
                 live_key = f'date_{i}_has_live'
                 
                 if date_key in class_details and class_details[date_key] == class_date:
                     has_live_option = class_details.get(live_key, False)
-                    print(f"DEBUG: Found LIVE setting for {class_date}: {has_live_option}")
                     break
             
-            # Only show LIVE option if has_live_option is True
-            meeting_types = ['Virtual']  # Always include Virtual
+            meeting_types = ['Virtual']
             if has_live_option:
                 meeting_types.append('LIVE')
             
-            print(f"DEBUG: Meeting types to offer for {class_date}: {meeting_types}")
-            
             for meeting_type in meeting_types:
-                enrollments = self.get_session_enrollments(class_name, class_date, None, meeting_type)
-                available_slots = max_students - len(enrollments)
+                all_enrollments = self.get_session_enrollments(class_name, class_date, None, meeting_type)
+                enrolled_names = [e['staff_name'] for e in all_enrollments]
+                available_slots = max_students - len(enrolled_names)
                 
-                if available_slots > 0:
-                    session_options.append({
-                        'meeting_type': meeting_type,
-                        'enrolled': [e['staff_name'] for e in enrollments],
-                        'available_slots': available_slots,
-                        'type': 'staff_meeting'
-                    })
+                session_options.append({
+                    'meeting_type': meeting_type,
+                    'enrolled': enrolled_names,
+                    'available_slots': available_slots,
+                    'type': 'staff_meeting'
+                })
         
         else:
             # Single session
             if nurses_medic_separate:
-                # Single session with nurse/medic separation
-                nurse_enrollments = self.get_session_enrollments(class_name, class_date)
-                medic_enrollments = self.get_session_enrollments(class_name, class_date)
+                # FIXED: Single session with nurse/medic separation
+                all_enrollments = self.get_session_enrollments(class_name, class_date)
                 
-                nurses = [e for e in nurse_enrollments if e.get('role') == 'Nurse']
-                medics = [e for e in medic_enrollments if e.get('role') == 'Medic']
+                print(f"DEBUG: Single session - All enrollments: {all_enrollments}")
                 
-                nurse_available = len(nurses) < (max_students // 2)
-                medic_available = len(medics) < (max_students // 2)
+                # Filter by role properly
+                nurses = []
+                medics = []
                 
-                if nurse_available or medic_available:
-                    session_options.append({
-                        'nurses': [e['staff_name'] for e in nurses],
-                        'medics': [e['staff_name'] for e in medics],
-                        'nurse_available': nurse_available,
-                        'medic_available': medic_available,
-                        'type': 'nurse_medic_separate_single'
-                    })
+                for enrollment in all_enrollments:
+                    role = enrollment.get('role', 'General')
+                    staff_name = enrollment['staff_name']
+                    
+                    print(f"DEBUG: Single session - Staff: {staff_name}, Role: {role}")
+                    
+                    if role == 'Nurse':
+                        nurses.append(staff_name)
+                    elif role == 'Medic':
+                        medics.append(staff_name)
+                    else:
+                        print(f"WARNING: Found enrollment with role '{role}' in nurse/medic separate class")
+                
+                print(f"DEBUG: Single session final - Nurses: {nurses}, Medics: {medics}")
+                
+                max_per_role = max_students // 2
+                nurse_available = len(nurses) < max_per_role
+                medic_available = len(medics) < max_per_role
+                
+                # Always show the option
+                session_options.append({
+                    'nurses': nurses,
+                    'medics': medics,
+                    'nurse_available': nurse_available,
+                    'medic_available': medic_available,
+                    'type': 'nurse_medic_separate_single'
+                })
             else:
-                # Single regular session
-                enrollments = self.get_session_enrollments(class_name, class_date)
-                available_slots = max_students - len(enrollments)
+                # Single regular session (existing logic)
+                all_enrollments = self.get_session_enrollments(class_name, class_date)
+                enrolled_names = [e['staff_name'] for e in all_enrollments]
+                available_slots = max_students - len(enrolled_names)
                 
-                if available_slots > 0:
-                    session_options.append({
-                        'enrolled': [e['staff_name'] for e in enrollments],
-                        'available_slots': available_slots,
-                        'type': 'regular_single'
-                    })
+                session_options.append({
+                    'enrolled': enrolled_names,
+                    'available_slots': available_slots,
+                    'type': 'regular_single'
+                })
         
+        print(f"DEBUG: Final session_options for {class_name} on {class_date}: {session_options}")
         return session_options
-        
+
     def get_enrollment_summary(self, class_name):
         """Get enrollment summary for all dates of a class"""
         class_details = self.excel.get_class_details(class_name)

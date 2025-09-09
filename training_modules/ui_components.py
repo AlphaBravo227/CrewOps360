@@ -1,4 +1,4 @@
-# training_modules/ui_components.py - Updated sections for duplicate enrollment handling
+# training_modules/ui_components.py - Updated to keep classes expanded after enrollment
 
 import streamlit as st
 from datetime import datetime
@@ -140,7 +140,6 @@ class UIComponents:
             
             return st.button("Cancel", key=unique_key)
 
-
     @staticmethod
     def display_class_info(class_details):
         """Display class information in a formatted way"""
@@ -251,7 +250,7 @@ class UIComponents:
     @staticmethod
     def display_session_enrollment_options_with_tracks(enrollment_manager, class_name, available_dates, 
                                                        selected_staff, track_manager):
-        """Display session enrollment options with track conflict information"""
+        """Display session enrollment options with track conflict information - UPDATED to show location"""
         
         # Check if class has no available dates
         if not available_dates:
@@ -272,9 +271,33 @@ class UIComponents:
         
         enrolled_sessions = []
         
+        # Get class details to access location information
+        class_details = enrollment_manager.excel.get_class_details(class_name)
+        
+        # Get current user's enrollments for this class to show their status
+        user_enrollments = enrollment_manager.get_staff_enrollments(selected_staff)
+        user_class_enrollments = [e for e in user_enrollments if e['class_name'] == class_name]
+        
         # Iterate through available dates and show enrollment options
         for date in available_dates:
             st.subheader(f"📅 {date}")
+            
+            # ADDED: Show location information if available
+            if class_details:
+                # Find the location for this specific date
+                location = None
+                for i in range(1, 15):  # Check rows 1-14 for dates
+                    date_key = f'date_{i}'
+                    location_key = f'date_{i}_location'
+                    
+                    if date_key in class_details and class_details[date_key] == date:
+                        location = class_details.get(location_key, '')
+                        break
+                
+                if location and location.strip():
+                    st.write(f"### 📍 Location: {location}")
+                else:
+                    st.write(f"### 📍 Location: Not specified")
             
             # Check for track conflicts if available
             conflict_info = None
@@ -297,7 +320,7 @@ class UIComponents:
                 
                 UIComponents._display_session_option_with_conflict(
                     option, option_key, enrollment_manager, selected_staff, 
-                    class_name, date, conflict_info
+                    class_name, date, conflict_info, user_class_enrollments
                 )
             
             st.markdown("---")
@@ -487,12 +510,15 @@ class UIComponents:
 
     @staticmethod
     def _display_session_option_with_conflict(option, option_key, enrollment_manager, 
-                                            selected_staff, class_name, date, conflict_info):
-        """Display a single session option with conflict handling"""
+                                            selected_staff, class_name, date, conflict_info, user_enrollments):
+        """Display a single session option with conflict handling - UPDATED to show user enrollment and keep expanded"""
         has_conflict = conflict_info[0] if conflict_info else False
         conflict_details = conflict_info[1] if conflict_info else ""
         
-        enrolled = False  # Track if enrollment occurred
+        # Check if user is enrolled in this specific session
+        user_enrolled_in_session = UIComponents._is_user_enrolled_in_session(
+            user_enrollments, date, option
+        )
         
         if option['type'] == 'nurse_medic_separate':
             # Multiple sessions with nurse/medic separation
@@ -503,39 +529,41 @@ class UIComponents:
                 
                 with col1:
                     st.write("**👩‍⚕️ Nurse:**")
-                    if option['nurses']:
-                        for nurse in option['nurses']:
-                            st.write(f"  • {nurse}")
-                    else:
-                        st.write("  • *Available*")
+                    UIComponents._display_enrolled_participants(option['nurses'], selected_staff, "Nurse", user_enrolled_in_session)
                     
-                    if option['nurse_available']:
+                    if option['nurse_available'] and not (user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Nurse'):
                         if UIComponents._handle_enrollment_button(
                             "Enroll as Nurse", f"nurse_{option_key}", 
                             has_conflict, conflict_details,
                             enrollment_manager, selected_staff, class_name, 
                             date, "Nurse", option.get('session_time')
                         ):
-                            enrolled = True
+                            return  # Will trigger rerun
+                    elif user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Nurse':
+                        if st.button("Cancel", key=f"cancel_nurse_{option_key}"):
+                            if enrollment_manager.cancel_enrollment(user_enrolled_in_session['id']):
+                                st.success("Enrollment cancelled!")
+                                st.rerun()
                     else:
                         st.write("*Nurse slot filled*")
                 
                 with col2:
                     st.write("**🚑 Medic:**")
-                    if option['medics']:
-                        for medic in option['medics']:
-                            st.write(f"  • {medic}")
-                    else:
-                        st.write("  • *Available*")
+                    UIComponents._display_enrolled_participants(option['medics'], selected_staff, "Medic", user_enrolled_in_session)
                     
-                    if option['medic_available']:
+                    if option['medic_available'] and not (user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Medic'):
                         if UIComponents._handle_enrollment_button(
                             "Enroll as Medic", f"medic_{option_key}",
                             has_conflict, conflict_details,
                             enrollment_manager, selected_staff, class_name,
                             date, "Medic", option.get('session_time')
                         ):
-                            enrolled = True
+                            return  # Will trigger rerun
+                    elif user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Medic':
+                        if st.button("Cancel", key=f"cancel_medic_{option_key}"):
+                            if enrollment_manager.cancel_enrollment(user_enrolled_in_session['id']):
+                                st.success("Enrollment cancelled!")
+                                st.rerun()
                     else:
                         st.write("*Medic slot filled*")
                 
@@ -547,21 +575,23 @@ class UIComponents:
                 st.write(f"**{option['display_time']}**")
                 st.write(f"**Currently enrolled ({len(option['enrolled'])}):**")
                 
-                if option['enrolled']:
-                    for person in option['enrolled']:
-                        st.write(f"  • {person}")
-                else:
-                    st.write("  • *No one enrolled yet*")
+                UIComponents._display_enrolled_participants(option['enrolled'], selected_staff, None, user_enrolled_in_session)
                 
                 st.write(f"**Available slots:** {option['available_slots']}")
                 
-                if UIComponents._handle_enrollment_button(
-                    f"Enroll in {option['display_time']}", f"enroll_{option_key}",
-                    has_conflict, conflict_details,
-                    enrollment_manager, selected_staff, class_name,
-                    date, "General", option.get('session_time')
-                ):
-                    enrolled = True
+                if not user_enrolled_in_session:
+                    if UIComponents._handle_enrollment_button(
+                        f"Enroll in {option['display_time']}", f"enroll_{option_key}",
+                        has_conflict, conflict_details,
+                        enrollment_manager, selected_staff, class_name,
+                        date, "General", option.get('session_time')
+                    ):
+                        return  # Will trigger rerun
+                else:
+                    if st.button("Cancel", key=f"cancel_{option_key}"):
+                        if enrollment_manager.cancel_enrollment(user_enrolled_in_session['id']):
+                            st.success("Enrollment cancelled!")
+                            st.rerun()
                 
                 st.markdown("---")
         
@@ -570,87 +600,158 @@ class UIComponents:
             with st.container():
                 meeting_icon = "🔴" if option['meeting_type'] == 'LIVE' else "💻"
                 st.write(f"**{meeting_icon} {option['meeting_type']} Option**")
+                
+                # Highlight user's enrolled section if they're in this meeting type
+                if user_enrolled_in_session:
+                    st.markdown("""
+                    <div style="background-color: rgba(0, 255, 0, 0.1); padding: 10px; border-radius: 5px; border-left: 4px solid #4CAF50;">
+                        <strong>✅ You are enrolled in this option</strong>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
                 st.write(f"**Currently enrolled ({len(option['enrolled'])}):**")
                 
-                if option['enrolled']:
-                    for person in option['enrolled']:
-                        st.write(f"  • {person}")
-                else:
-                    st.write("  • *No one enrolled yet*")
+                UIComponents._display_enrolled_participants(option['enrolled'], selected_staff, None, user_enrolled_in_session)
                 
                 st.write(f"**Available slots:** {option['available_slots']}")
                 
                 if option['meeting_type'] == 'LIVE':
                     st.info("🔴 **LIVE Option** - This will count toward your LIVE meeting requirement")
                 
-                if UIComponents._handle_enrollment_button(
-                    f"Enroll in {option['meeting_type']} Option", f"enroll_{option_key}",
-                    has_conflict, conflict_details,
-                    enrollment_manager, selected_staff, class_name,
-                    date, "General", None, option['meeting_type']
-                ):
-                    enrolled = True
+                if not user_enrolled_in_session:
+                    if UIComponents._handle_enrollment_button(
+                        f"Enroll in {option['meeting_type']} Option", f"enroll_{option_key}",
+                        has_conflict, conflict_details,
+                        enrollment_manager, selected_staff, class_name,
+                        date, "General", None, option['meeting_type']
+                    ):
+                        return  # Will trigger rerun
+                else:
+                    if st.button("Cancel", key=f"cancel_{option_key}"):
+                        if enrollment_manager.cancel_enrollment(user_enrolled_in_session['id']):
+                            st.success("Enrollment cancelled!")
+                            st.rerun()
                 
                 st.markdown("---")
         
         elif option['type'] in ['nurse_medic_separate_single', 'regular_single']:
-            # Handle single session types similarly
-            enrolled = UIComponents._display_single_session_option(
+            # Handle single session types
+            UIComponents._display_single_session_option(
                 option, option_key, enrollment_manager, selected_staff,
-                class_name, date, has_conflict, conflict_details
+                class_name, date, has_conflict, conflict_details, user_enrolled_in_session
             )
+
+    @staticmethod
+    def _display_enrolled_participants(participants, selected_staff, role_filter, user_enrollment):
+        """Display list of enrolled participants with user highlighted"""
+        if not participants and not user_enrollment:
+            st.write("  • *No one enrolled yet*")
+            return
         
-        # If enrollment occurred, refresh the page
-        if enrolled:
-            st.rerun()
+        # Create a set of all participants including the user if enrolled
+        all_participants = set(participants)
+        if user_enrollment:
+            # Check if this matches the role filter (for nurse/medic separate)
+            if role_filter is None or user_enrollment.get('role') == role_filter:
+                all_participants.add(selected_staff)
+        
+        if all_participants:
+            for participant in sorted(all_participants):
+                if participant == selected_staff:
+                    st.markdown("  • **You** ✅")
+                else:
+                    st.write(f"  • {participant}")
+        else:
+            st.write("  • *No one enrolled yet*")
+
+    @staticmethod
+    def _is_user_enrolled_in_session(user_enrollments, date, option):
+        """Check if user is enrolled in this specific session and return enrollment details - FIXED"""
+        print(f"DEBUG: _is_user_enrolled_in_session called with date={date}, option_type={option['type']}")
+        
+        for enrollment in user_enrollments:
+            print(f"DEBUG: Checking enrollment: {enrollment}")
+            
+            if enrollment['class_date'] != date:
+                continue
+            
+            # Check based on option type
+            if option['type'] == 'staff_meeting':
+                if enrollment.get('meeting_type') == option['meeting_type']:
+                    print(f"DEBUG: Found matching staff meeting enrollment")
+                    return enrollment
+            elif option['type'] in ['regular', 'nurse_medic_separate']:
+                # For multi-session classes, match by session time
+                enrollment_session = enrollment.get('session_time')
+                option_session = option.get('session_time')
+                print(f"DEBUG: Comparing session times: enrollment={enrollment_session}, option={option_session}")
+                if enrollment_session == option_session:
+                    print(f"DEBUG: Found matching session enrollment")
+                    return enrollment
+            elif option['type'] in ['regular_single', 'nurse_medic_separate_single']:
+                # For single sessions, just matching the date is enough since there's only one session
+                print(f"DEBUG: Found matching single session enrollment")
+                return enrollment
+        
+        print(f"DEBUG: No matching enrollment found")
+        return None
 
     @staticmethod
     def _display_single_session_option(option, option_key, enrollment_manager, selected_staff,
-                                    class_name, date, has_conflict, conflict_details):
-        """Display single session enrollment options"""
-        enrolled = False
+                                    class_name, date, has_conflict, conflict_details, user_enrollment):
+        """Display single session enrollment options - UPDATED to show user enrollment"""
         
         if option['type'] == 'nurse_medic_separate_single':
             with st.container():
                 st.write("**Current Enrollments:**")
                 
+                # Highlight if user is enrolled
+                if user_enrollment:
+                    st.markdown("""
+                    <div style="background-color: rgba(0, 255, 0, 0.1); padding: 10px; border-radius: 5px; border-left: 4px solid #4CAF50;">
+                        <strong>✅ You are enrolled in this class</strong>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
                 col1, col2 = st.columns(2)
                 
                 with col1:
                     st.write("**👩‍⚕️ Nurses:**")
-                    if option['nurses']:
-                        for nurse in option['nurses']:
-                            st.write(f"  • {nurse}")
-                    else:
-                        st.write("  • *Available*")
+                    UIComponents._display_enrolled_participants(option['nurses'], selected_staff, "Nurse", user_enrollment)
                     
-                    if option['nurse_available']:
+                    if option['nurse_available'] and not (user_enrollment and user_enrollment.get('role') == 'Nurse'):
                         if UIComponents._handle_enrollment_button(
                             "Enroll as Nurse", f"nurse_{option_key}",
                             has_conflict, conflict_details,
                             enrollment_manager, selected_staff, class_name,
                             date, "Nurse"
                         ):
-                            enrolled = True
+                            return True
+                    elif user_enrollment and user_enrollment.get('role') == 'Nurse':
+                        if st.button("Cancel", key=f"cancel_nurse_{option_key}"):
+                            if enrollment_manager.cancel_enrollment(user_enrollment['id']):
+                                st.success("Enrollment cancelled!")
+                                st.rerun()
                     else:
                         st.write("*Nurse slot filled*")
                 
                 with col2:
                     st.write("**🚑 Medics:**")
-                    if option['medics']:
-                        for medic in option['medics']:
-                            st.write(f"  • {medic}")
-                    else:
-                        st.write("  • *Available*")
+                    UIComponents._display_enrolled_participants(option['medics'], selected_staff, "Medic", user_enrollment)
                     
-                    if option['medic_available']:
+                    if option['medic_available'] and not (user_enrollment and user_enrollment.get('role') == 'Medic'):
                         if UIComponents._handle_enrollment_button(
                             "Enroll as Medic", f"medic_{option_key}",
                             has_conflict, conflict_details,
                             enrollment_manager, selected_staff, class_name,
                             date, "Medic"
                         ):
-                            enrolled = True
+                            return True
+                    elif user_enrollment and user_enrollment.get('role') == 'Medic':
+                        if st.button("Cancel", key=f"cancel_medic_{option_key}"):
+                            if enrollment_manager.cancel_enrollment(user_enrollment['id']):
+                                st.success("Enrollment cancelled!")
+                                st.rerun()
                     else:
                         st.write("*Medic slot filled*")
                 
@@ -658,25 +759,36 @@ class UIComponents:
         
         elif option['type'] == 'regular_single':
             with st.container():
+                # Highlight if user is enrolled
+                if user_enrollment:
+                    st.markdown("""
+                    <div style="background-color: rgba(0, 255, 0, 0.1); padding: 10px; border-radius: 5px; border-left: 4px solid #4CAF50;">
+                        <strong>✅ You are enrolled in this class</strong>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
                 st.write("**Currently enrolled:**")
                 
-                if option['enrolled']:
-                    for person in option['enrolled']:
-                        st.write(f"  • {person}")
-                else:
-                    st.write("  • *No one enrolled yet*")
+                UIComponents._display_enrolled_participants(option['enrolled'], selected_staff, None, user_enrollment)
                 
                 st.write(f"**Available slots:** {option['available_slots']}")
                 
-                if UIComponents._handle_enrollment_button(
-                    f"Enroll in {class_name}", f"enroll_{option_key}",
-                    has_conflict, conflict_details,
-                    enrollment_manager, selected_staff, class_name,
-                    date, "General"
-                ):
-                    enrolled = True
+                if not user_enrollment:
+                    if UIComponents._handle_enrollment_button(
+                        f"Enroll in {class_name}", f"enroll_{option_key}",
+                        has_conflict, conflict_details,
+                        enrollment_manager, selected_staff, class_name,
+                        date, "General"
+                    ):
+                        return True
+                else:
+                    if st.button("Cancel", key=f"cancel_{option_key}"):
+                        if enrollment_manager.cancel_enrollment(user_enrollment['id']):
+                            st.success("Enrollment cancelled!")
+                            st.rerun()
         
-        return enrolled
+        return False
+    
     @staticmethod
     def display_session_enrollment_options(enrollment_manager, class_name, available_dates, selected_staff):
         """Wrapper for backward compatibility - redirects to track-aware version"""
@@ -708,13 +820,17 @@ class UIComponents:
                 st.warning(f"No available slots for {date}")
                 continue
             
+            # Get current user's enrollments for this class
+            user_enrollments = enrollment_manager.get_staff_enrollments(selected_staff)
+            user_class_enrollments = [e for e in user_enrollments if e['class_name'] == class_name]
+            
             for idx, option in enumerate(session_options):
                 option_key = f"{class_name}_{date}_{idx}"
                 
                 # Display without conflict checking
                 UIComponents._display_session_option_with_conflict(
                     option, option_key, enrollment_manager, selected_staff, 
-                    class_name, date, None  # No conflict info
+                    class_name, date, None, user_class_enrollments  # No conflict info
                 )
             
             st.markdown("---")
@@ -725,7 +841,7 @@ class UIComponents:
     def _handle_enrollment_button(button_label, button_key, has_conflict, conflict_details,
                             enrollment_manager, staff_name, class_name, date,
                             role="General", session_time=None, meeting_type=None):
-        """Handle enrollment button with conflict override dialog and duplicate checking - UPDATED for SM classes"""
+        """Handle enrollment button with conflict override dialog and duplicate checking - UPDATED for success then refresh"""
         
         # Check if this is a Staff Meeting class
         is_staff_meeting = enrollment_manager.excel.is_staff_meeting(class_name)
@@ -786,14 +902,19 @@ class UIComponents:
                                         del st.session_state[f"show_override_{button_key}"]
                                     st.rerun()
                                 elif result:
-                                    st.session_state['enrollment_success'] = True
-                                    # UPDATED: Show appropriate message for SM classes
+                                    # UPDATED: Show success message first, then refresh
                                     if is_staff_meeting and "multiple Staff Meeting" in data:
-                                        st.session_state['enrollment_message'] = "✅ Successfully enrolled in additional Staff Meeting session!"
+                                        st.success("✅ Successfully enrolled in additional Staff Meeting session!")
                                     else:
-                                        st.session_state['enrollment_message'] = "Successfully enrolled with conflict override!"
+                                        st.success("✅ Successfully enrolled with conflict override!")
+                                    
+                                    # Clean up session state
                                     if f"show_override_{button_key}" in st.session_state:
                                         del st.session_state[f"show_override_{button_key}"]
+                                    
+                                    # Brief pause to show success message, then refresh
+                                    import time
+                                    time.sleep(1.5)
                                     st.rerun()
                                 else:
                                     st.error(f"Enrollment failed: {data}")
@@ -829,13 +950,15 @@ class UIComponents:
                             st.session_state[duplicate_data_key] = data
                             st.rerun()
                         elif result:
-                            # Set success flag in session state
-                            st.session_state['enrollment_success'] = True
-                            # UPDATED: Show appropriate message for SM classes
+                            # UPDATED: Show success message first, then refresh
                             if is_staff_meeting and "multiple Staff Meeting" in data:
-                                st.session_state['enrollment_message'] = "✅ Successfully enrolled in additional Staff Meeting session!"
+                                st.success("✅ Successfully enrolled in additional Staff Meeting session!")
                             else:
-                                st.session_state['enrollment_message'] = "Successfully enrolled!"
+                                st.success("✅ Successfully enrolled!")
+                            
+                            # Brief pause to show success message, then refresh
+                            import time
+                            time.sleep(1.5)
                             st.rerun()
                         else:
                             st.error(f"Enrollment failed: {data}")
@@ -896,9 +1019,9 @@ class UIComponents:
                                     del st.session_state[duplicate_dialog_key]
                                 if duplicate_data_key in st.session_state:
                                     del st.session_state[duplicate_data_key]
-                                # Force page refresh to update UI
+                                # UPDATED: Brief pause then refresh
                                 import time
-                                time.sleep(1)
+                                time.sleep(1.5)
                                 st.rerun()
                             else:
                                 st.error(f"Failed to switch sessions: {message}")
@@ -925,6 +1048,9 @@ class UIComponents:
                                             del st.session_state[duplicate_dialog_key]
                                         if duplicate_data_key in st.session_state:
                                             del st.session_state[duplicate_data_key]
+                                        # UPDATED: Brief pause then refresh
+                                        import time
+                                        time.sleep(1.5)
                                         st.rerun()
                                     else:
                                         st.error(f"Failed to switch sessions: {message}")
@@ -944,13 +1070,10 @@ class UIComponents:
     
     @staticmethod
     def display_enrollment_status():
-        """Display enrollment success/error messages from session state"""
-        if st.session_state.get('enrollment_success', False):
-            st.success(st.session_state.get('enrollment_message', 'Operation successful!'))
-            # Clear the success flag after displaying
-            del st.session_state['enrollment_success']
-            if 'enrollment_message' in st.session_state:
-                del st.session_state['enrollment_message']
+        """Display enrollment success/error messages from session state - REMOVED since we handle inline now"""
+        # This method is no longer needed since we show success messages inline
+        # and refresh immediately after
+        pass
     
     @staticmethod
     def display_staff_meeting_progress(enrollment_manager, staff_name, excel_handler):
@@ -1052,5 +1175,4 @@ class UIComponents:
             st.metric("Classes Remaining", len(assigned_classes) - len(enrolled_classes))
         
         # Staff Meeting Progress (if applicable)
-        UIComponents.display_staff_meeting_progress(enrollment_manager, staff_name, excel_handler)    
-
+        UIComponents.display_staff_meeting_progress(enrollment_manager, staff_name, excel_handler)
