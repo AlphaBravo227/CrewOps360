@@ -630,6 +630,53 @@ class EnrollmentManager:
         
         return session_options
 
+    def get_class_enrollment_summary(self, class_name):
+        """Get enrollment summary for a class with detailed statistics"""
+        enrollments = self.db.get_class_enrollments(class_name)
+        
+        # Group by date
+        summary = {}
+        for enrollment in enrollments:
+            date = enrollment['class_date']
+            if date not in summary:
+                summary[date] = {
+                    'total': 0,
+                    'roles': {},
+                    'meeting_types': {},
+                    'sessions': {},
+                    'conflicts': 0,
+                    'staff_names': []
+                }
+            
+            summary[date]['total'] += 1
+            summary[date]['staff_names'].append(enrollment['staff_name'])
+            
+            # Track conflicts
+            if enrollment.get('conflict_override'):
+                summary[date]['conflicts'] += 1
+            
+            # Track roles for nurse/medic separate classes
+            role = enrollment.get('role', 'General')
+            if role not in summary[date]['roles']:
+                summary[date]['roles'][role] = 0
+            summary[date]['roles'][role] += 1
+            
+            # Track meeting types for staff meetings
+            meeting_type = enrollment.get('meeting_type')
+            if meeting_type:
+                if meeting_type not in summary[date]['meeting_types']:
+                    summary[date]['meeting_types'][meeting_type] = 0
+                summary[date]['meeting_types'][meeting_type] += 1
+            
+            # Track sessions for multi-session classes
+            session_time = enrollment.get('session_time')
+            if session_time:
+                if session_time not in summary[date]['sessions']:
+                    summary[date]['sessions'][session_time] = []
+                summary[date]['sessions'][session_time].append(enrollment['staff_name'])
+        
+        return summary
+
     def get_session_colleagues(self, staff_name, class_name, class_date, session_time=None, meeting_type=None):
         """Get list of other staff enrolled in the same session"""
         enrollments = self.get_session_enrollments(class_name, class_date, session_time, meeting_type)
