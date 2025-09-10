@@ -2,8 +2,12 @@
 # Python
 # -------------------------
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
+*.pyc
+*.pyo
+*.pyd
 
 # Distribution / packaging
 .Python
@@ -69,14 +73,12 @@ dmypy.json
 # Profiling data
 .prof
 
-
 # -------------------------
 # macOS
 # -------------------------
 .DS_Store
 .AppleDouble
 .LSOverride
-
 # Icon must end with two \r
 Icon
 
@@ -91,7 +93,6 @@ Icon
 .fseventsd
 .DS_Store?
 .apdisk
-
 
 # -------------------------
 # Windows
@@ -115,7 +116,6 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
-
 # -------------------------
 # IDEs / Editors
 # -------------------------
@@ -125,7 +125,6 @@ $RECYCLE.BIN/
 *.sublime-workspace
 *.code-workspace
 *.iml
-
 
 # -------------------------
 # Project Data
