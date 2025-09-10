@@ -1,27 +1,133 @@
-/venv
-/training_modules/__pycache__
-/training_modules/__pycache__
-/modules/__pycache__
-/modules/__pycache__
-/training_modules/__pycache__
-/modules/__pycache__
-/training_modules/__pycache__
-/modules/__pycache__
-/modules/__pycache__
-/modules/__pycache__
-/modules/__pycache__
-*.pyc
-*.pyc
-*.pyc
-/modules/__pycache__
-*.pyc
-training/upload/~$MASTER Education Classes Roster.xlsx
-*.pyc
-*.pyc
-/data
-/training_modules/__pycache__
-training_modules/__pycache__/ui_components.cpython-313.pyc
-*.cpython-*.pyc
-*.DS_Store
-training/~$FY 26 Special Courses.xlsx
+# -------------------------
+# Python
+# -------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# MyPy / Type Checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# Profiling data
+.prof
+
+
+# -------------------------
+# macOS
+# -------------------------
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# Icon must end with two \r
+Icon
+
+# Thumbnails
+._*
+
+# Files that might appear on external disk
+.Spotlight-V100
+.Trashes
+
+# macOS system files
+.fseventsd
+.DS_Store?
+.apdisk
+
+
+# -------------------------
+# Windows
+# -------------------------
+# Windows image file caches
+Thumbs.db
+ehthumbs.db
+
+# Folder config file
+Desktop.ini
+
+# Recycle Bin used on file shares
+$RECYCLE.BIN/
+
+# Windows Installer files
+*.cab
+*.msi
+*.msm
+*.msp
+
+# Windows shortcuts
+*.lnk
+
+
+# -------------------------
+# IDEs / Editors
+# -------------------------
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+*.iml
+
+
+# -------------------------
+# Project Data
+# -------------------------
+data/
