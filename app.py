@@ -61,7 +61,10 @@ try:
     from training_modules.unified_database import UnifiedDatabase
     from training_modules.excel_handler import ExcelHandler
     from training_modules.enrollment_manager import EnrollmentManager
-    from training_modules.ui_components import UIComponents as TrainingUIComponents
+    from training_modules.ui_components import UIComponents as TrainingUIComponents  # Renamed to avoid conflict
+    from training_modules.class_display_components import ClassDisplayComponents
+    from training_modules.enrollment_session_components import EnrollmentSessionComponents
+    from training_modules.staff_meeting_components import StaffMeetingComponents
     from training_modules.track_manager import TrainingTrackManager
     from training_modules.admin_access import AdminAccess
     from training_modules.admin_excel_functions import ExcelAdminFunctions, enhance_admin_reports
@@ -387,6 +390,7 @@ def display_training_events_app():
             st.session_state.training_excel_handler
         )
 
+
 # Replace the tabs section in app.py display_training_events_app() function
 # This goes where the tab creation and content currently exists
 
@@ -427,12 +431,11 @@ def display_training_events_app():
                         for class_name in assigned_classes:
                             # Get enrollment status for this class
                             enrollment_status = TrainingUIComponents.get_class_enrollment_status(
-                                st.session_state.training_enrollment_manager, 
-                                selected_staff, 
-                                class_name, 
-                                st.session_state.training_excel_handler
-                            )
-                            
+                                                    st.session_state.training_enrollment_manager, 
+                                                    selected_staff, 
+                                                    class_name, 
+                                                    st.session_state.training_excel_handler
+                                                )
                             # Determine if class is enrolled
                             is_enrolled = class_name in enrolled_classes
                             
@@ -455,7 +458,7 @@ def display_training_events_app():
                                 
                                 if available_dates:
                                     # Use the updated enrollment display method that keeps options visible
-                                    TrainingUIComponents.display_session_enrollment_options_with_tracks(
+                                    EnrollmentSessionComponents.display_session_enrollment_options_with_tracks(
                                         st.session_state.training_enrollment_manager,
                                         class_name,
                                         available_dates,
@@ -519,7 +522,7 @@ def display_training_events_app():
                     
                     if class_details:
                         # Display detailed class information using existing method
-                        TrainingUIComponents.display_class_info(class_details)
+                        ClassDisplayComponents.display_class_info(class_details)
                     else:
                         st.error("Class details not found.")
             else:
