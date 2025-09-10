@@ -1,12 +1,16 @@
-# training_modules/admin_access.py
-import streamlit as st
-from datetime import datetime
+# Updates needed for training_modules/admin_access.py
 
+import streamlit as st
+from datetime import datetime, timedelta
+import pandas as pd
+
+# Update the AdminAccess class to include availability analyzer initialization
 class AdminAccess:
     def __init__(self):
         self.admin_pin = "9999"
         self.session_timeout = 30  # minutes
         self.excel_admin_functions = None
+        self.availability_analyzer = None  # NEW: Add availability analyzer
     
     def initialize_admin_functions(self, excel_admin_functions):
         """Initialize with ExcelAdminFunctions instance"""
@@ -208,20 +212,22 @@ class AdminAccess:
         else:
             st.error("Admin functions not initialized properly")
     
+    # REPLACE the existing _show_manage_staff method with this updated version:
     def _show_manage_staff(self):
-        """Show staff management functionality"""
+        """Show staff management functionality - UPDATED with Tab 4"""
         st.subheader("👥 Training Staff Management")
         
         if not self.excel_admin_functions:
             st.error("Admin functions not initialized")
             return
         
-        tab1, tab2, tab3 = st.tabs(["👤 Staff Overview", "📊 Compliance Status", "📝 Assignments"])
-        
+        # Updated to include Tab 4 and Tab 5
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["👤 Staff Overview", "📊 Compliance Status", "📝 Assignments", "📅 Available Staff for Events", "👨‍🏫 Available Educators for Teaching"])        
+
         with tab1:
+            # Existing Tab 1 content (Staff Overview)
             st.write("### Staff Training Overview")
             
-            # Get staff list and basic stats
             try:
                 compliance_df = self.excel_admin_functions.get_enrollment_compliance_report()
                 
@@ -260,6 +266,7 @@ class AdminAccess:
                 st.error(f"Error loading staff data: {str(e)}")
         
         with tab2:
+            # Existing Tab 2 content (Compliance Status)
             st.write("### Training Compliance Status")
             
             try:
@@ -295,9 +302,379 @@ class AdminAccess:
                 st.error(f"Error loading compliance data: {str(e)}")
         
         with tab3:
+            # Existing Tab 3 content (Assignments)
             st.write("### Staff Class Assignments")
             st.info("🚧 **Coming Soon**: Bulk assignment management")
-    
+        
+        with tab4:
+            # NEW Tab 4 - Available Staff for Events
+            self._show_available_staff_for_events()
+        
+        with tab5:
+            # NEW Tab 5 - Available Educators for Teaching (Future Implementation)
+            self._show_available_educators_for_teaching()
+
+    def _show_available_staff_for_events(self):
+        """Show available staff for events within date range - NEW TAB 4"""
+        st.write("### 📅 Available Staff for Events")
+        st.caption("Analyze staff availability for class enrollment within a date range")
+        
+        # Initialize availability analyzer if not already done
+        if not hasattr(self, 'availability_analyzer') or self.availability_analyzer is None:
+            try:
+                from training_modules.availability_analyzer import AvailabilityAnalyzer
+                
+                # Get required components from session state
+                unified_db = st.session_state.get('unified_db')
+                excel_handler = st.session_state.get('training_excel_handler')
+                enrollment_manager = st.session_state.get('training_enrollment_manager')
+                track_manager = st.session_state.get('training_track_manager')
+                
+                if not all([unified_db, excel_handler, enrollment_manager]):
+                    st.error("Required components not initialized. Please ensure training system is properly loaded.")
+                    return
+                
+                self.availability_analyzer = AvailabilityAnalyzer(
+                    unified_db, excel_handler, enrollment_manager, track_manager
+                )
+                
+            except ImportError as e:
+                st.error(f"Could not import AvailabilityAnalyzer: {str(e)}")
+                return
+            except Exception as e:
+                st.error(f"Error initializing AvailabilityAnalyzer: {str(e)}")
+                return
+        
+        # Date range selection
+        st.markdown("#### 📅 Select Date Range")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            start_date = st.date_input(
+                "Start Date",
+                value=datetime.now(),
+                key="availability_start_date"
+            )
+        
+        with col2:
+            end_date = st.date_input(
+                "End Date",
+                value=datetime.now() + timedelta(days=30),
+                key="availability_end_date"
+            )
+        
+        # Validation
+        if start_date > end_date:
+            st.error("Start date must be before or equal to end date.")
+            return
+        
+        # Options
+        st.markdown("#### ⚙️ Analysis Options")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            include_assigned_only = st.checkbox(
+                "Only analyze staff assigned to each class",
+                value=True,
+                help="If checked, only staff assigned to a class will be analyzed for availability"
+            )
+        
+        with col2:
+            include_already_enrolled = st.checkbox(
+                "Include staff already enrolled",
+                value=False,
+                help="If checked, staff already enrolled will be shown in results"
+            )
+        
+        # Generate report button
+        if st.button("📊 Analyze Staff Availability", type="primary", use_container_width=True):
+            
+            # Convert dates to string format
+            start_date_str = start_date.strftime('%Y-%m-%d')
+            end_date_str = end_date.strftime('%Y-%m-%d')
+            
+            with st.spinner(f"Analyzing staff availability from {start_date_str} to {end_date_str}..."):
+                try:
+                    # Get availability report
+                    availability_report = self.availability_analyzer.get_no_conflict_enrollment_availability(
+                        start_date_str,
+                        end_date_str,
+                        include_assigned_only,
+                        include_already_enrolled
+                    )
+                    
+                    if not availability_report:
+                        st.warning("No classes found in the selected date range or no staff assignments found.")
+                        return
+                    
+                    # Display results
+                    self._display_availability_results(availability_report, start_date_str, end_date_str)
+                    
+                except Exception as e:
+                    st.error(f"Error generating availability report: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+
+    def _display_availability_results(self, availability_report, start_date_str, end_date_str):
+        """Display the availability analysis results"""
+        
+        st.markdown("---")
+        st.markdown(f"### 📊 Availability Report: {start_date_str} to {end_date_str}")
+        
+        # Summary metrics
+        total_classes = len(availability_report)
+        total_dates = sum(len(dates) for dates in availability_report.values())
+        total_available_staff = sum(
+            sum(date_data['total_available'] for date_data in class_data.values())
+            for class_data in availability_report.values()
+        )
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Classes in Range", total_classes)
+        with col2:
+            st.metric("Total Class Dates", total_dates)
+        with col3:
+            st.metric("Total Available Assignments", total_available_staff)
+        
+        st.markdown("---")
+        
+        # Display results by class
+        for class_name, class_data in availability_report.items():
+            
+            with st.expander(f"📚 **{class_name}** ({len(class_data)} dates)", expanded=True):
+                
+                for date_str, date_data in class_data.items():
+                    
+                    # Date header with capacity info
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.markdown(f"**📅 {date_str}**")
+                    
+                    with col2:
+                        capacity_info = f"Capacity: {date_data['currently_enrolled']}/{date_data['class_capacity']}"
+                        st.write(capacity_info)
+                    
+                    with col3:
+                        availability_status = f"Available Staff: {date_data['total_available']}"
+                        if date_data['total_available'] > 0:
+                            st.success(availability_status)
+                        else:
+                            st.error(availability_status)
+                    
+                    # Staff details
+                    if date_data['staff_details']:
+                        
+                        # Create a DataFrame for better display
+                        staff_df_data = []
+                        
+                        for staff_info in date_data['staff_details']:
+                            warnings_text = "; ".join(staff_info['warnings']) if staff_info['warnings'] else "None"
+                            notes_text = "; ".join(staff_info['notes']) if staff_info['notes'] else "None"
+                            
+                            staff_df_data.append({
+                                'Staff Name': staff_info['name'],
+                                'Role': staff_info['role'],
+                                'Warnings': warnings_text,
+                                'Notes': notes_text
+                            })
+                        
+                        if staff_df_data:
+                            staff_df = pd.DataFrame(staff_df_data)
+                            st.dataframe(staff_df, use_container_width=True, hide_index=True)
+                        
+                        # Export option for this date
+                        export_key = f"export_{class_name}_{date_str}".replace(" ", "_").replace("/", "_")
+                        if st.button(f"📥 Export {class_name} - {date_str}", key=export_key):
+                            csv_data = staff_df.to_csv(index=False)
+                            download_key = f"download_{class_name}_{date_str}".replace(" ", "_").replace("/", "_")
+                            st.download_button(
+                                f"Download Available Staff CSV",
+                                csv_data,
+                                f"available_staff_{class_name}_{date_str.replace('/', '_')}.csv",
+                                "text/csv",
+                                key=download_key
+                            )
+                    else:
+                        st.info("No available staff found for this date.")
+                    
+                    st.markdown("---")
+        
+        # Overall export option
+        st.markdown("### 📥 Export Complete Report")
+        
+        if st.button("📊 Export Full Availability Report", use_container_width=True):
+            
+            # Create comprehensive CSV
+            all_data = []
+            
+            for class_name, class_data in availability_report.items():
+                for date_str, date_data in class_data.items():
+                    for staff_info in date_data['staff_details']:
+                        all_data.append({
+                            'Class Name': class_name,
+                            'Date': date_str,
+                            'Staff Name': staff_info['name'],
+                            'Role': staff_info['role'],
+                            'Warnings': "; ".join(staff_info['warnings']) if staff_info['warnings'] else "None",
+                            'Notes': "; ".join(staff_info['notes']) if staff_info['notes'] else "None",
+                            'Class Capacity': date_data['class_capacity'],
+                            'Currently Enrolled': date_data['currently_enrolled'],
+                            'Slots Remaining': date_data['slots_remaining']
+                        })
+            
+            if all_data:
+                complete_df = pd.DataFrame(all_data)
+                csv_data = complete_df.to_csv(index=False)
+                
+                filename = f"staff_availability_report_{start_date_str}_{end_date_str}.csv"
+                
+                st.download_button(
+                    "📥 Download Complete Report",
+                    csv_data,
+                    filename,
+                    "text/csv",
+                    use_container_width=True
+                )
+                st.success(f"✅ Report ready for download: {len(all_data)} staff availability records")
+            else:
+                st.warning("No data available for export.")
+
+    def _show_available_educators_for_teaching(self):
+        """Show available educators for teaching within date range - NEW TAB 5 (Future Implementation)"""
+        st.write("### 👨‍🏫 Available Educators for Teaching")
+        st.caption("Analyze educator availability for classes requiring instruction within a date range")
+        
+        # Future implementation placeholder with UI framework
+        st.info("🚧 **Coming Soon**: Educator availability analysis")
+        
+        st.markdown("""
+        **Planned Features:**
+        
+        📋 **Educator Eligibility Analysis**
+        - Staff authorized for educator roles (based on 'Educator AT' column)
+        - Classes requiring educators (instructor count > 0)
+        - Existing educator signups vs requirements
+        
+        📅 **Schedule Conflict Checking**
+        - AT shifts allowed for educators (non-blocking)
+        - Track conflicts with educator-specific rules
+        - Overlap detection with student enrollments
+        
+        📊 **Availability Reporting**
+        - Classes needing educator coverage
+        - Available authorized staff by date
+        - Educator workload distribution
+        - Coverage gap identification
+        
+        📥 **Export Capabilities**
+        - Available educator lists by class/date
+        - Coverage gap reports
+        - Educator assignment recommendations
+        """)
+        
+        # Placeholder UI elements for future development
+        st.markdown("---")
+        st.markdown("#### 🎯 Preview Interface (Non-Functional)")
+        
+        # Mock date range selector
+        col1, col2 = st.columns(2)
+        with col1:
+            placeholder_start = st.date_input(
+                "Start Date (Preview)",
+                value=datetime.now(),
+                disabled=True,
+                help="Date range selection for educator availability analysis"
+            )
+        with col2:
+            placeholder_end = st.date_input(
+                "End Date (Preview)", 
+                value=datetime.now() + timedelta(days=30),
+                disabled=True,
+                help="Date range selection for educator availability analysis"
+            )
+        
+        # Mock options
+        st.markdown("#### ⚙️ Analysis Options (Preview)")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.checkbox(
+                "Only authorized educators",
+                value=True,
+                disabled=True,
+                help="Filter to staff marked as 'Educator AT' in the roster"
+            )
+        
+        with col2:
+            st.checkbox(
+                "Show educator workload balance",
+                value=False,
+                disabled=True,
+                help="Include analysis of educator assignment distribution"
+            )
+        
+        # Mock analysis button
+        if st.button("📊 Analyze Educator Availability (Coming Soon)", disabled=True, use_container_width=True):
+            st.info("This feature will be implemented in a future update.")
+        
+        # Show current educator-enabled classes for context
+        st.markdown("---")
+        st.markdown("#### 📚 Current Classes Requiring Educators")
+        
+        # Get actual classes that need educators
+        try:
+            if hasattr(self, 'excel_admin_functions') and self.excel_admin_functions:
+                all_classes = self.excel_admin_functions.excel.get_all_classes()
+                educator_classes = []
+                
+                for class_name in all_classes:
+                    class_details = self.excel_admin_functions.excel.get_class_details(class_name)
+                    if class_details:
+                        instructor_count = class_details.get('instructors_per_day', 0)
+                        try:
+                            instructor_count = int(float(instructor_count)) if instructor_count else 0
+                        except (ValueError, TypeError):
+                            instructor_count = 0
+                        
+                        if instructor_count > 0:
+                            educator_classes.append({
+                                'Class Name': class_name,
+                                'Educators Needed': instructor_count,
+                                'Class Type': 'Staff Meeting' if 'SM' in class_name.upper() else 'Training'
+                            })
+                
+                if educator_classes:
+                    educator_df = pd.DataFrame(educator_classes)
+                    st.dataframe(educator_df, use_container_width=True, hide_index=True)
+                    st.info(f"Found {len(educator_classes)} classes that require educators")
+                else:
+                    st.info("No classes currently configured to require educators")
+                    
+        except Exception as e:
+            st.error(f"Error loading educator class information: {str(e)}")
+        
+        # Implementation roadmap
+        st.markdown("---")
+        st.markdown("#### 🗺️ Implementation Roadmap")
+        
+        roadmap_items = [
+            "✅ Tab 5 structure created",
+            "🔄 Enhance `get_no_conflict_educator_availability()` function", 
+            "🔄 Integrate educator authorization checking",
+            "🔄 Add educator-specific conflict rules (AT allowed)",
+            "🔄 Build educator workload analysis",
+            "🔄 Create educator coverage gap reporting",
+            "🔄 Add export functionality for educator reports"
+        ]
+        
+        for item in roadmap_items:
+            st.write(f"• {item}")
+
     def _show_manage_classes(self):
         """Show class management functionality"""
         st.subheader("📚 Training Class Management")
@@ -380,198 +757,3 @@ class AdminAccess:
             except Exception as e:
                 st.error(f"Error loading utilization data: {str(e)}")
         
-        with tab3:
-            st.write("### Class Schedules")
-            st.info("🚧 **Coming Soon**: Schedule management interface")
-    
-    def _show_data_management(self):
-        """Show data management functionality"""
-        st.subheader("📄 Training Data Export")
-        
-        if not self.excel_admin_functions:
-            st.error("Admin functions not initialized")
-            return
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("### Export Reports")
-            
-            if st.button("📊 Export Compliance Report", use_container_width=True):
-                try:
-                    compliance_df = self.excel_admin_functions.get_enrollment_compliance_report()
-                    csv = compliance_df.to_csv(index=False)
-                    st.download_button(
-                        "Download Compliance Report",
-                        csv,
-                        f"training_compliance_{datetime.now().strftime('%Y%m%d')}.csv",
-                        "text/csv"
-                    )
-                except Exception as e:
-                    st.error(f"Error generating report: {str(e)}")
-            
-            if st.button("📈 Export Utilization Report", use_container_width=True):
-                try:
-                    utilization_df = self.excel_admin_functions.get_class_utilization_report()
-                    csv = utilization_df.to_csv(index=False)
-                    st.download_button(
-                        "Download Utilization Report",
-                        csv,
-                        f"class_utilization_{datetime.now().strftime('%Y%m%d')}.csv",
-                        "text/csv"
-                    )
-                except Exception as e:
-                    st.error(f"Error generating report: {str(e)}")
-        
-        with col2:
-            st.write("### Export Individual Classes")
-            
-            try:
-                all_classes = self.excel_admin_functions.excel.get_all_classes()
-                selected_export_class = st.selectbox("Select class to export:", [""] + all_classes)
-                
-                if selected_export_class:
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        if st.button("Export Roster"):
-                            roster_df, title = self.excel_admin_functions.export_class_roster(selected_export_class)
-                            csv = roster_df.to_csv(index=False)
-                            st.download_button(
-                                "Download Roster",
-                                csv,
-                                f"{selected_export_class.replace(' ', '_')}_roster.csv",
-                                "text/csv"
-                            )
-                    
-                    with col2:
-                        if st.button("Export Completion Status"):
-                            completion_df = self.excel_admin_functions.get_class_completion_tracking(selected_export_class)
-                            csv = completion_df.to_csv(index=False)
-                            st.download_button(
-                                "Download Completion",
-                                csv,
-                                f"{selected_export_class.replace(' ', '_')}_completion.csv",
-                                "text/csv"
-                            )
-                            
-            except Exception as e:
-                st.error(f"Error with class export: {str(e)}")
-    
-    def _show_system_stats(self):
-        """Show system statistics with real data"""
-        st.subheader("📊 Training System Statistics")
-        
-        if not self.excel_admin_functions:
-            st.error("Admin functions not initialized")
-            return
-        
-        try:
-            # Get real statistics from the database
-            stats = st.session_state.unified_db.get_enrollment_stats()
-            all_classes = self.excel_admin_functions.excel.get_all_classes()
-            all_staff = self.excel_admin_functions.excel.get_staff_list()
-            
-            # Real-time metrics
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Staff", len(all_staff))
-            with col2:
-                st.metric("Active Classes", len(all_classes))
-            with col3:
-                st.metric("Total Enrollments", stats['total_enrollments'])
-            with col4:
-                st.metric("Conflict Overrides", stats['conflict_overrides'])
-            
-            st.markdown("---")
-            
-            # Additional insights
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write("### 📈 Quick Insights")
-                
-                # Get classes without enrollments
-                unused_classes = self.excel_admin_functions.get_classes_without_enrollments()
-                if unused_classes:
-                    st.warning(f"📚 {len(unused_classes)} classes have no enrollments")
-                    with st.expander("View classes without enrollments"):
-                        for cls in unused_classes:
-                            st.write(f"• {cls}")
-                else:
-                    st.success("✅ All classes have enrollments")
-                
-                # Get unassigned staff
-                unassigned_staff = self.excel_admin_functions.get_staff_without_assignments()
-                if unassigned_staff:
-                    st.info(f"👥 {len(unassigned_staff)} staff have no class assignments")
-                    with st.expander("View unassigned staff"):
-                        for staff in unassigned_staff:
-                            st.write(f"• {staff}")
-                else:
-                    st.success("✅ All staff have class assignments")
-            
-            with col2:
-                st.write("### ⏰ Recent Activity")
-                st.info(f"System time: {stats['current_time_eastern']}")
-                st.metric("Recent Enrollments (24h)", stats['recent_enrollments'])
-                
-                # Show recent conflicts if any
-                recent_conflicts = st.session_state.unified_db.get_conflict_override_enrollments()
-                if recent_conflicts:
-                    st.warning(f"⚠️ {len(recent_conflicts)} active conflict overrides")
-                    with st.expander("View conflict overrides"):
-                        for conflict in recent_conflicts[:5]:  # Show first 5
-                            st.write(f"• {conflict['staff_name']} - {conflict['class_name']}")
-                else:
-                    st.success("✅ No active conflict overrides")
-                    
-        except Exception as e:
-            st.error(f"Error loading system statistics: {str(e)}")
-    
-    def _show_database_maintenance(self):
-        """Show database maintenance functionality"""
-        st.subheader("🗂️ Training Database Maintenance")
-        
-        st.warning("⚠️ **Caution**: Database maintenance operations should be performed carefully")
-        
-        tab1, tab2, tab3 = st.tabs(["📊 Database Info", "🧹 Cleanup", "💾 Backup"])
-        
-        with tab1:
-            st.write("### Training Database Information")
-            
-            try:
-                # Get database statistics
-                stats = st.session_state.unified_db.get_enrollment_stats()
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Total Enrollments", stats['total_enrollments'])
-                with col2:
-                    st.metric("Conflict Overrides", stats['conflict_overrides'])
-                with col3:
-                    st.metric("Recent Activity", stats['recent_enrollments'])
-                
-                # Show database health
-                st.write("### Database Health")
-                st.success("✅ Training database is operational")
-                st.info(f"Last updated: {stats['current_time_eastern']}")
-                
-            except Exception as e:
-                st.error(f"Error checking database: {str(e)}")
-        
-        with tab2:
-            st.write("### Database Cleanup")
-            st.info("🚧 **Coming Soon**: Cleanup tools for training data")
-            st.write("Features planned:")
-            st.write("• Remove cancelled enrollments")
-            st.write("• Archive old enrollment data")
-            st.write("• Optimize database performance")
-        
-        with tab3:
-            st.write("### Backup Operations")
-            st.info("🚧 **Coming Soon**: Training-specific backup tools")
-            st.write("Features planned:")
-            st.write("• Export training data backup")
-            st.write("• Restore training data")
-            st.write("• Scheduled backups")
