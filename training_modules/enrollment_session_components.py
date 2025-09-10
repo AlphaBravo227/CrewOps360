@@ -137,39 +137,60 @@ class EnrollmentSessionComponents:
         is_two_day = option.get('is_two_day', False)
         
         if option['type'] == 'nurse_medic_separate':
-            # Multiple sessions with nurse/medic separation
-            with st.container():
-                if is_two_day:
-                    st.write(f"**{option['display_time']} - Two-Day Class**")
-                else:
-                    st.write(f"**{option['display_time']}**")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.write("**👩‍⚕️ Nurse:**")
-                    EnrollmentSessionComponents._display_enrolled_participants(option['nurses'], selected_staff, "Nurse", user_enrolled_in_session)
-                    
-                    if option['nurse_available'] and not (user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Nurse'):
-                        button_text = "Enroll as Nurse (2-Day)" if is_two_day else "Enroll as Nurse"
-                        if EnrollmentSessionComponents._handle_enrollment_button(
-                            button_text, f"medic_{option_key}",
-                            has_conflict, conflict_details,
-                            enrollment_manager, selected_staff, class_name,
-                            date, "Medic", option.get('session_time')
-                        ):
-                            return  # Will trigger rerun
-                    elif user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Medic':
-                        cancel_text = "Cancel Both Days" if is_two_day else "Cancel"
-                        if st.button(cancel_text, key=f"cancel_medic_{option_key}"):
-                            if enrollment_manager.cancel_enrollment(user_enrolled_in_session['id']):
-                                st.success("Enrollment cancelled!")
-                                st.rerun()
-                    else:
-                        st.write("*Medic slot filled*")
-                
-                st.markdown("---")
-        
+                    # Multiple sessions with nurse/medic separation
+                    with st.container():
+                        if is_two_day:
+                            st.write(f"**{option['display_time']} - Two-Day Class**")
+                        else:
+                            st.write(f"**{option['display_time']}**")
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.write("**👩‍⚕️ Nurses:**")
+                            EnrollmentSessionComponents._display_enrolled_participants(option['nurses'], selected_staff, "Nurse", user_enrolled_in_session)
+                            
+                            if option['nurse_available'] and not (user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Nurse'):
+                                button_text = "Enroll as Nurse (2-Day)" if is_two_day else "Enroll as Nurse"
+                                if EnrollmentSessionComponents._handle_enrollment_button(
+                                    button_text, f"nurse_{option_key}",
+                                    has_conflict, conflict_details,
+                                    enrollment_manager, selected_staff, class_name,
+                                    date, "Nurse", option.get('session_time')
+                                ):
+                                    return  # Will trigger rerun
+                            elif user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Nurse':
+                                cancel_text = "Cancel Both Days" if is_two_day else "Cancel"
+                                if st.button(cancel_text, key=f"cancel_nurse_{option_key}"):
+                                    if enrollment_manager.cancel_enrollment(user_enrolled_in_session['id']):
+                                        st.success("Enrollment cancelled!")
+                                        st.rerun()
+                            else:
+                                st.write("*Nurse slot filled*")
+                        
+                        with col2:
+                            st.write("**🚑 Medics:**")
+                            EnrollmentSessionComponents._display_enrolled_participants(option['medics'], selected_staff, "Medic", user_enrolled_in_session)
+                            
+                            if option['medic_available'] and not (user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Medic'):
+                                button_text = "Enroll as Medic (2-Day)" if is_two_day else "Enroll as Medic"
+                                if EnrollmentSessionComponents._handle_enrollment_button(
+                                    button_text, f"medic_{option_key}",
+                                    has_conflict, conflict_details,
+                                    enrollment_manager, selected_staff, class_name,
+                                    date, "Medic", option.get('session_time')
+                                ):
+                                    return  # Will trigger rerun
+                            elif user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Medic':
+                                cancel_text = "Cancel Both Days" if is_two_day else "Cancel"
+                                if st.button(cancel_text, key=f"cancel_medic_{option_key}"):
+                                    if enrollment_manager.cancel_enrollment(user_enrolled_in_session['id']):
+                                        st.success("Enrollment cancelled!")
+                                        st.rerun()
+                            else:
+                                st.write("*Medic slot filled*")
+                        
+                        st.markdown("---")        
         elif option['type'] == 'regular':
             # Multiple regular sessions
             with st.container():
@@ -330,7 +351,14 @@ class EnrollmentSessionComponents:
                 st.markdown("---")
         
         elif option['type'] == 'regular_single':
+            # Handle regular single session classes
             with st.container():
+                header_text = "**Current Enrollments:**"
+                if is_two_day:
+                    header_text = "**Current Enrollments (2-Day Class):**"
+                
+                st.write(header_text)
+                
                 # Highlight if user is enrolled
                 if user_enrollment:
                     enrollment_text = "✅ You are enrolled in this class"
@@ -343,14 +371,16 @@ class EnrollmentSessionComponents:
                     </div>
                     """, unsafe_allow_html=True)
                 
-                st.write("**Currently enrolled:**")
-                
+                st.write(f"**Currently enrolled ({len(option['enrolled'])}):**")
                 EnrollmentSessionComponents._display_enrolled_participants(option['enrolled'], selected_staff, None, user_enrollment)
                 
                 st.write(f"**Available slots:** {option['available_slots']}")
                 
                 if not user_enrollment:
-                    button_text = f"Enroll in {class_name}" + (" (2-Day)" if is_two_day else "")
+                    button_text = "Enroll in Class"
+                    if is_two_day:
+                        button_text += " (2-Day)"
+                    
                     if EnrollmentSessionComponents._handle_enrollment_button(
                         button_text, f"enroll_{option_key}",
                         has_conflict, conflict_details,
@@ -364,6 +394,8 @@ class EnrollmentSessionComponents:
                         if enrollment_manager.cancel_enrollment(user_enrollment['id']):
                             st.success("Enrollment cancelled!")
                             st.rerun()
+                
+                st.markdown("---")
         
         return False
 
