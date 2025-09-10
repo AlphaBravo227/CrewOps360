@@ -130,4 +130,5 @@ $RECYCLE.BIN/
 # -------------------------
 # Project Data
 # -------------------------
-data/
+data/*
+!data/.gitkeep
