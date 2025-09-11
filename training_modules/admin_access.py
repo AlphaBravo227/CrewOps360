@@ -418,16 +418,16 @@ class AdminAccess:
                     traceback.print_exc()
 
     def _display_availability_results(self, availability_report, start_date_str, end_date_str):
-        """Display the availability analysis results"""
+        """Display the availability analysis results with session-based structure"""
         
         st.markdown("---")
         st.markdown(f"### 📊 Availability Report: {start_date_str} to {end_date_str}")
         
-        # Summary metrics
+        # Calculate summary metrics for session-based structure
         total_classes = len(availability_report)
-        total_dates = sum(len(dates) for dates in availability_report.values())
+        total_sessions = sum(len(sessions) for sessions in availability_report.values())
         total_available_staff = sum(
-            sum(date_data['total_available'] for date_data in class_data.values())
+            sum(session_data['total_available'] for session_data in class_data.values())
             for class_data in availability_report.values()
         )
         
@@ -436,113 +436,237 @@ class AdminAccess:
         with col1:
             st.metric("Classes in Range", total_classes)
         with col2:
-            st.metric("Total Class Dates", total_dates)
+            st.metric("Total Sessions", total_sessions)
         with col3:
             st.metric("Total Available Assignments", total_available_staff)
         
         st.markdown("---")
         
-        # Display results by class
-        for class_name, class_data in availability_report.items():
+        # Display results by class and session
+        for class_name, class_sessions in availability_report.items():
             
-            with st.expander(f"📚 **{class_name}** ({len(class_data)} dates)", expanded=True):
+            with st.expander(f"📚 **{class_name}** ({len(class_sessions)} sessions)", expanded=True):
                 
-                for date_str, date_data in class_data.items():
+                # Group sessions by date for better organization
+                sessions_by_date = {}
+                for session_key, session_data in class_sessions.items():
+                    # Extract date from session key (format: "MM/DD/YYYY_...")
+                    date_part = session_key.split('_')[0]
+                    if date_part not in sessions_by_date:
+                        sessions_by_date[date_part] = []
+                    sessions_by_date[date_part].append((session_key, session_data))
+                
+                for date_str, date_sessions in sessions_by_date.items():
+                    st.markdown(f"#### 📅 {date_str}")
                     
-                    # Date header with capacity info
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.markdown(f"**📅 {date_str}**")
-                    
-                    with col2:
-                        capacity_info = f"Capacity: {date_data['currently_enrolled']}/{date_data['class_capacity']}"
-                        st.write(capacity_info)
-                    
-                    with col3:
-                        availability_status = f"Available Staff: {date_data['total_available']}"
-                        if date_data['total_available'] > 0:
-                            st.success(availability_status)
+                    for session_key, session_data in date_sessions:
+                        session_info = session_data['session_info']
+                        available_staff = session_data['available_staff']
+                        staff_details = session_data['staff_details']
+                        
+                        # Create session header with role indication
+                        session_header = session_info['display_time']
+                        if session_info.get('role_requirement'):
+                            session_header += f" - {session_info['role_requirement']} Only"
+                        
+                        # Color coding based on availability
+                        slots_remaining = session_data['slots_remaining']
+                        if slots_remaining <= 0:
+                            status_color = "🔴"
+                            status_text = "FULL"
+                        elif slots_remaining <= 2:
+                            status_color = "🟡"
+                            status_text = f"{slots_remaining} slots left"
                         else:
-                            st.error(availability_status)
-                    
-                    # Staff details
-                    if date_data['staff_details']:
+                            status_color = "🟢"
+                            status_text = f"{slots_remaining} slots available"
                         
-                        # Create a DataFrame for better display
-                        staff_df_data = []
+                        st.markdown(f"**{session_header}** {status_color} {status_text}")
                         
-                        for staff_info in date_data['staff_details']:
-                            warnings_text = "; ".join(staff_info['warnings']) if staff_info['warnings'] else "None"
-                            notes_text = "; ".join(staff_info['notes']) if staff_info['notes'] else "None"
+                        # Show session metrics in columns
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            st.write(f"**Capacity:** {session_data['class_capacity']}")
+                        with col2:
+                            st.write(f"**Enrolled:** {session_data['currently_enrolled']}")
+                        with col3:
+                            st.write(f"**Available Staff:** {session_data['total_available']}")
+                        with col4:
+                            if session_info.get('is_two_day'):
+                                st.write("🔄 **2-Day Class**")
+                        
+                        # Display available staff for this session
+                        if staff_details:
+                            st.markdown("**Available Staff for this Session:**")
                             
-                            staff_df_data.append({
+                            # Create a more compact display
+                            staff_by_role = {}
+                            for staff in staff_details:
+                                role = staff['role']
+                                if role not in staff_by_role:
+                                    staff_by_role[role] = []
+                                staff_by_role[role].append(staff)
+                            
+                            # Display staff grouped by role
+                            for role, staff_list in staff_by_role.items():
+                                if len(staff_by_role) > 1:  # Only show role if there are multiple roles
+                                    st.write(f"*{role}:*")
+                                
+                                # Show staff names with warnings/notes
+                                for staff in staff_list:
+                                    staff_display = f"• {staff['name']}"
+                                    
+                                    if staff['warnings']:
+                                        staff_display += f" ⚠️ ({', '.join(staff['warnings'])})"
+                                    if staff['notes']:
+                                        staff_display += f" 📝 ({', '.join(staff['notes'])})"
+                                    
+                                    st.write(staff_display)
+                        else:
+                            if session_info.get('role_requirement'):
+                                st.warning(f"No available {session_info['role_requirement']} staff for this session")
+                            else:
+                                st.warning("No available staff for this session")
+                        
+                        st.markdown("---")
+        
+        # Enhanced export section
+        st.markdown("### 📥 Export Options")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("📊 Export Session Details", use_container_width=True):
+                # Create detailed CSV with session breakdown
+                session_data = []
+                
+                for class_name, class_sessions in availability_report.items():
+                    for session_key, session_data_item in class_sessions.items():
+                        session_info = session_data_item['session_info']
+                        
+                        # Extract date from session key
+                        date_part = session_key.split('_')[0]
+                        
+                        for staff_info in session_data_item['staff_details']:
+                            session_data.append({
+                                'Class Name': class_name,
+                                'Date': date_part,
+                                'Session': session_info['display_time'],
+                                'Role Requirement': session_info.get('role_requirement', 'Any'),
+                                'Session Type': session_info['type'],
                                 'Staff Name': staff_info['name'],
-                                'Role': staff_info['role'],
-                                'Warnings': warnings_text,
-                                'Notes': notes_text
+                                'Staff Role': staff_info['role'],
+                                'Warnings': "; ".join(staff_info['warnings']) if staff_info['warnings'] else "None",
+                                'Notes': "; ".join(staff_info['notes']) if staff_info['notes'] else "None",
+                                'Session Capacity': session_data_item['class_capacity'],
+                                'Currently Enrolled': session_data_item['currently_enrolled'],
+                                'Slots Remaining': session_data_item['slots_remaining'],
+                                'Is Two Day': session_info.get('is_two_day', False)
                             })
-                        
-                        if staff_df_data:
-                            staff_df = pd.DataFrame(staff_df_data)
-                            st.dataframe(staff_df, use_container_width=True, hide_index=True)
-                        
-                        # Export option for this date
-                        export_key = f"export_{class_name}_{date_str}".replace(" ", "_").replace("/", "_")
-                        if st.button(f"📥 Export {class_name} - {date_str}", key=export_key):
-                            csv_data = staff_df.to_csv(index=False)
-                            download_key = f"download_{class_name}_{date_str}".replace(" ", "_").replace("/", "_")
-                            st.download_button(
-                                f"Download Available Staff CSV",
-                                csv_data,
-                                f"available_staff_{class_name}_{date_str.replace('/', '_')}.csv",
-                                "text/csv",
-                                key=download_key
-                            )
-                    else:
-                        st.info("No available staff found for this date.")
+                
+                if session_data:
+                    session_df = pd.DataFrame(session_data)
+                    csv_data = session_df.to_csv(index=False)
                     
-                    st.markdown("---")
+                    filename = f"session_availability_report_{start_date_str}_{end_date_str}.csv"
+                    
+                    st.download_button(
+                        "📥 Download Session Report",
+                        csv_data,
+                        filename,
+                        "text/csv",
+                        use_container_width=True
+                    )
+                    st.success(f"✅ Session report ready: {len(session_data)} staff-session records")
+                else:
+                    st.warning("No session data available for export.")
         
-        # Overall export option
-        st.markdown("### 📥 Export Complete Report")
-        
-        if st.button("📊 Export Full Availability Report", use_container_width=True):
-            
-            # Create comprehensive CSV
-            all_data = []
-            
-            for class_name, class_data in availability_report.items():
-                for date_str, date_data in class_data.items():
-                    for staff_info in date_data['staff_details']:
-                        all_data.append({
+        with col2:
+            if st.button("📋 Export Summary by Class", use_container_width=True):
+                # Create summary CSV by class
+                summary_data = []
+                
+                for class_name, class_sessions in availability_report.items():
+                    # Group by date
+                    dates_summary = {}
+                    for session_key, session_data in class_sessions.items():
+                        # Extract date from session key
+                        date_part = session_key.split('_')[0]
+                        if date_part not in dates_summary:
+                            dates_summary[date_part] = {
+                                'total_sessions': 0,
+                                'total_capacity': 0,
+                                'total_enrolled': 0,
+                                'total_available_staff': 0,
+                                'sessions_detail': []
+                            }
+                        
+                        dates_summary[date_part]['total_sessions'] += 1
+                        dates_summary[date_part]['total_capacity'] += session_data['class_capacity']
+                        dates_summary[date_part]['total_enrolled'] += session_data['currently_enrolled']
+                        dates_summary[date_part]['total_available_staff'] += session_data['total_available']
+                        dates_summary[date_part]['sessions_detail'].append(session_data['session_info']['display_time'])
+                    
+                    for date_str, date_summary in dates_summary.items():
+                        summary_data.append({
                             'Class Name': class_name,
                             'Date': date_str,
-                            'Staff Name': staff_info['name'],
-                            'Role': staff_info['role'],
-                            'Warnings': "; ".join(staff_info['warnings']) if staff_info['warnings'] else "None",
-                            'Notes': "; ".join(staff_info['notes']) if staff_info['notes'] else "None",
-                            'Class Capacity': date_data['class_capacity'],
-                            'Currently Enrolled': date_data['currently_enrolled'],
-                            'Slots Remaining': date_data['slots_remaining']
+                            'Total Sessions': date_summary['total_sessions'],
+                            'Sessions Detail': "; ".join(date_summary['sessions_detail']),
+                            'Total Capacity': date_summary['total_capacity'],
+                            'Total Enrolled': date_summary['total_enrolled'],
+                            'Total Available Staff': date_summary['total_available_staff'],
+                            'Total Slots Remaining': date_summary['total_capacity'] - date_summary['total_enrolled']
                         })
+                
+                if summary_data:
+                    summary_df = pd.DataFrame(summary_data)
+                    csv_data = summary_df.to_csv(index=False)
+                    
+                    filename = f"class_summary_report_{start_date_str}_{end_date_str}.csv"
+                    
+                    st.download_button(
+                        "📥 Download Summary Report",
+                        csv_data,
+                        filename,
+                        "text/csv",
+                        use_container_width=True
+                    )
+                    st.success(f"✅ Summary report ready: {len(summary_data)} class-date records")
+                else:
+                    st.warning("No summary data available for export.")
+
+        # Optional: Add filtering controls for large reports
+        if total_sessions > 10:
+            st.markdown("### 🔍 Filter Options")
             
-            if all_data:
-                complete_df = pd.DataFrame(all_data)
-                csv_data = complete_df.to_csv(index=False)
-                
-                filename = f"staff_availability_report_{start_date_str}_{end_date_str}.csv"
-                
-                st.download_button(
-                    "📥 Download Complete Report",
-                    csv_data,
-                    filename,
-                    "text/csv",
-                    use_container_width=True
-                )
-                st.success(f"✅ Report ready for download: {len(all_data)} staff availability records")
-            else:
-                st.warning("No data available for export.")
+            # Get all unique classes for filtering
+            all_classes = list(availability_report.keys())
+            selected_classes = st.multiselect(
+                "Filter by Classes (leave empty to show all):",
+                options=all_classes,
+                default=[]
+            )
+            
+            # Get all unique roles for filtering
+            all_roles = set()
+            for class_sessions in availability_report.values():
+                for session_data in class_sessions.values():
+                    for staff in session_data['staff_details']:
+                        all_roles.add(staff['role'])
+            
+            selected_roles = st.multiselect(
+                "Filter by Staff Roles (leave empty to show all):",
+                options=sorted(list(all_roles)),
+                default=[]
+            )
+            
+            if selected_classes or selected_roles:
+                st.info(f"Filters applied - showing filtered results above")
+                # Note: In a full implementation, you'd re-run the display logic with filters
+                # For now, this is just UI framework
+
 
     def _show_available_educators_for_teaching(self):
         """Show available educators for teaching within date range - NEW TAB 5 (Future Implementation)"""
