@@ -2,6 +2,7 @@
 """
 Availability Analyzer for Training Events
 Analyzes staff availability for class enrollment within date ranges without conflicts
+Updated to handle role-based availability constraints from Excel enrollments
 """
 from datetime import datetime, timedelta
 import sqlite3
@@ -49,8 +50,8 @@ class AvailabilityAnalyzer:
             if not eligible_classes:
                 return {}
             
-            # Get staff roles from tracks database
-            staff_roles = self._get_staff_roles()
+            # Get staff roles from Excel enrollment data
+            staff_roles = self._get_excel_enrollment_roles()
             
             availability_report = {}
             
@@ -80,9 +81,9 @@ class AvailabilityAnalyzer:
                         # Get staff role
                         role = staff_roles.get(staff_name, 'Unknown')
                         
-                        # Check weekly enrollment limits
+                        # Check role-based weekly enrollment limits
                         week_start = self._get_week_start(date_obj)
-                        if not self._check_weekly_limits(staff_name, role, week_start, date_str):
+                        if not self._check_role_weekly_limits(staff_name, role, week_start, date_str):
                             continue
                         
                         # Check for schedule conflicts
@@ -244,8 +245,9 @@ class AvailabilityAnalyzer:
     
     def _get_classes_in_date_range(self, start_dt, end_dt):
         """Get all classes that have dates within the specified range"""
-        all_classes = self.excel.get_all_classes()
         eligible_classes = {}
+        
+        all_classes = self.excel.get_all_classes()
         
         for class_name in all_classes:
             class_details = self.excel.get_class_details(class_name)
@@ -268,19 +270,19 @@ class AvailabilityAnalyzer:
                         is_two_day = class_details.get('is_two_day_class', 'No').lower() == 'yes'
                         
                         if is_two_day:
-                            # For two-day classes, check both days are in range
                             day_2 = base_date + timedelta(days=1)
-                            
                             if start_dt <= base_date <= end_dt and start_dt <= day_2 <= end_dt:
                                 class_dates.append(base_date_str)
                                 class_dates.append(day_2.strftime('%m/%d/%Y'))
+                            else:
+                                if start_dt <= base_date <= end_dt:
+                                    class_dates.append(base_date_str)
+                                    
                         else:
-                            # For single-day classes, check if date is in range
                             if start_dt <= base_date <= end_dt:
                                 class_dates.append(base_date_str)
                                 
                     except ValueError:
-                        # Skip invalid dates
                         continue
             
             if class_dates:
@@ -290,38 +292,44 @@ class AvailabilityAnalyzer:
         
         return eligible_classes
     
-    def _get_staff_roles(self):
-        """Get staff roles from the tracks database"""
+    def _get_excel_enrollment_roles(self):
+        """
+        Extract staff roles from Excel enrollment data
+        Looks for roles in column B (Role) of enrollment records
+        This is the authoritative source for training registration roles
+        """
         staff_roles = {}
         
         try:
+            # Get all enrollment records from the database (imported from Excel)
             self.db.connect()
-            self.db.cursor.execute('''
-                SELECT DISTINCT staff_name, effective_role 
-                FROM tracks 
-                WHERE is_active = 1 AND effective_role IS NOT NULL
-            ''')
             
-            results = self.db.cursor.fetchall()
+            query = """
+            SELECT DISTINCT staff_name, role
+            FROM enrollment
+            WHERE role IS NOT NULL AND role != ''
+            """
             
-            for row in results:
-                staff_name = row['staff_name']
-                role = row['effective_role']
-                
-                # Normalize role names
-                if role and isinstance(role, str):
-                    role = role.strip().title()
-                    if 'nurse' in role.lower():
-                        staff_roles[staff_name] = 'Nurse'
-                    elif 'medic' in role.lower():
-                        staff_roles[staff_name] = 'Medic'
+            cursor = self.db.connection.cursor()
+            cursor.execute(query)
+            
+            for staff_name, role in cursor.fetchall():
+                if role and role.strip():
+                    # Standardize role names from Excel
+                    role_upper = role.strip().upper()
+                    if role_upper in ['RN', 'NURSE']:
+                        staff_roles[staff_name] = 'RN'
+                    elif role_upper in ['MEDIC', 'PARAMEDIC']:
+                        staff_roles[staff_name] = 'MEDIC'
+                    elif role_upper in ['MGMT', 'MANAGEMENT', 'MANAGER']:
+                        staff_roles[staff_name] = 'MGMT'
                     else:
-                        staff_roles[staff_name] = role
+                        staff_roles[staff_name] = role_upper
             
             self.db.disconnect()
             
         except Exception as e:
-            print(f"Error getting staff roles: {str(e)}")
+            print(f"Error extracting roles from enrollment records: {str(e)}")
             if hasattr(self.db, 'disconnect'):
                 self.db.disconnect()
         
@@ -359,32 +367,47 @@ class AvailabilityAnalyzer:
         week_start = date_obj - timedelta(days=days_since_sunday)
         return week_start
     
-    def _check_weekly_limits(self, staff_name, role, week_start, exclude_date):
+    def _check_role_weekly_limits(self, staff_name, role, week_start, exclude_date):
         """
-        Check if staff member can enroll based on weekly limits
-        Medics: 1 class per week, Nurses: unlimited
+        Check if staff member can enroll based on role-specific weekly limits
+        MEDIC: 1 class per week, RN & MGMT: unlimited
+        
+        Args:
+            staff_name (str): Name of staff member
+            role (str): Staff role (MEDIC, RN, MGMT)
+            week_start (datetime): Start of week (Sunday)
+            exclude_date (str): Date being checked for enrollment (MM/DD/YYYY format)
+        
+        Returns:
+            bool: True if role constraints allow enrollment, False otherwise
         """
-        if role != 'Medic':
-            return True  # Nurses have no weekly limit
+        # RN and MGMT have no weekly enrollment constraints
+        if role in ['RN', 'MGMT']:
+            return True
         
-        # For medics, check how many classes they're enrolled in this week
-        week_end = week_start + timedelta(days=6)
+        # MEDIC staff can only enroll in 1 class per week
+        if role == 'MEDIC':
+            week_end = week_start + timedelta(days=6)
+            
+            enrollments = self.enrollment.get_staff_enrollments(staff_name)
+            weekly_count = 0
+            
+            for enrollment in enrollments:
+                try:
+                    enroll_date = datetime.strptime(enrollment['class_date'], '%m/%d/%Y')
+                    
+                    # Count enrollments in this week (excluding the date we're checking)
+                    if (week_start <= enroll_date <= week_end and 
+                        enrollment['class_date'] != exclude_date):
+                        weekly_count += 1
+                        
+                except ValueError:
+                    continue
+            
+            return weekly_count < 1  # MEDIC can only have 1 class per week
         
-        enrollments = self.enrollment.get_staff_enrollments(staff_name)
-        weekly_count = 0
-        
-        for enrollment in enrollments:
-            try:
-                enroll_date = datetime.strptime(enrollment['class_date'], '%m/%d/%Y')
-                
-                # Count enrollments in this week (excluding the date we're checking)
-                if (week_start <= enroll_date <= week_end and 
-                    enrollment['class_date'] != exclude_date):
-                    weekly_count += 1
-            except ValueError:
-                continue
-        
-        return weekly_count < 1  # Medics can only have 1 class per week
+        # Unknown roles default to no constraints (same as RN/MGMT)
+        return True
     
     def _check_staff_conflicts(self, staff_name, class_name, date_str, class_details):
         """
