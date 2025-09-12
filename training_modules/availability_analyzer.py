@@ -214,18 +214,43 @@ class AvailabilityAnalyzer:
             base_key += f"_{session_option['role_requirement']}"
         
         return base_key
-    
+
     def _analyze_session_availability(self, class_name, date_str, session_option, 
                                     assigned_staff, staff_roles, date_obj, include_already_enrolled):
         """
         Analyze staff availability for a specific session
         Filters staff by role eligibility
+        Optimized: Skip staff analysis if session is already full
+        Fixed: Check if enrolled in ANY session of the class on the same date
         """
+        # Get current enrollment count and capacity first
+        current_enrolled = self._get_session_enrollment_count(class_name, date_str, session_option)
+        max_students = session_option.get('max_students', 21)
+        slots_remaining = max_students - current_enrolled
+        
+        # Early return if session is full - no need to analyze staff availability
+        if slots_remaining <= 0:
+            return {
+                'session_info': session_option,
+                'available_staff': [],  # Empty since session is full
+                'staff_details': [],
+                'total_available': 0,
+                'class_capacity': max_students,
+                'currently_enrolled': current_enrolled,
+                'slots_remaining': 0
+            }
+        
+        # Only perform staff availability analysis if there are open slots
         available_staff = []
         staff_details = []
         
         # Get role requirement for this session
         role_requirement = session_option.get('role_requirement')
+        
+        # Check if this class has multiple sessions per day
+        class_details = self.excel.get_class_details(class_name)
+        classes_per_day = int(class_details.get('classes_per_day', 1)) if class_details else 1
+        has_multiple_sessions = classes_per_day > 1
         
         for staff_name in assigned_staff:
             # Get staff role
@@ -237,11 +262,20 @@ class AvailabilityAnalyzer:
             
             # Check if already enrolled (unless we want to include them)
             if not include_already_enrolled:
-                session_time = session_option.get('session_time')
-                meeting_type = session_option.get('meeting_type')
+                # For most classes, if someone is enrolled anywhere, they shouldn't show as available
+                # Exception: Staff Meeting classes allow multiple enrollments
+                is_staff_meeting = self.excel.is_staff_meeting(class_name)
                 
-                if self._is_enrolled_in_session(staff_name, class_name, date_str, session_time, meeting_type):
-                    continue
+                if is_staff_meeting:
+                    # For staff meetings, only check specific session enrollment
+                    session_time = session_option.get('session_time')
+                    meeting_type = session_option.get('meeting_type')
+                    if self._is_enrolled_in_session(staff_name, class_name, date_str, session_time, meeting_type):
+                        continue
+                else:
+                    # For ALL other classes (regardless of multiple sessions), check if enrolled anywhere
+                    if self._is_enrolled_in_class_anywhere(staff_name, class_name):
+                        continue
             
             # Check role-based weekly enrollment limits
             week_start = self._get_week_start(date_obj)
@@ -249,7 +283,6 @@ class AvailabilityAnalyzer:
                 continue
             
             # Check for schedule conflicts
-            class_details = self.excel.get_class_details(class_name)
             conflict_info = self._check_staff_conflicts(staff_name, class_name, date_str, class_details)
             
             # Staff is available if no blocking conflicts
@@ -264,10 +297,6 @@ class AvailabilityAnalyzer:
                 }
                 staff_details.append(staff_info)
         
-        # Get current enrollment count for this session
-        current_enrolled = self._get_session_enrollment_count(class_name, date_str, session_option)
-        max_students = session_option.get('max_students', 21)
-        
         return {
             'session_info': session_option,
             'available_staff': available_staff,
@@ -275,9 +304,25 @@ class AvailabilityAnalyzer:
             'total_available': len(available_staff),
             'class_capacity': max_students,
             'currently_enrolled': current_enrolled,
-            'slots_remaining': max_students - current_enrolled
+            'slots_remaining': slots_remaining
         }
-    
+
+    def _is_enrolled_in_class_on_date(self, staff_name, class_name, date_str):
+        """Check if staff member is enrolled in ANY session of this class on the given date"""
+        enrollments = self.enrollment.get_staff_enrollments(staff_name)
+        
+        for enrollment in enrollments:
+            if (enrollment['class_name'] == class_name and 
+                enrollment['class_date'] == date_str):
+                return True
+        
+        return False
+
+    def _is_enrolled_in_class_anywhere(self, staff_name, class_name):
+        """Check if staff member is enrolled in this class on ANY date"""
+        enrolled_classes = self.enrollment.get_enrolled_classes(staff_name)
+        return class_name in enrolled_classes
+
     def _get_session_enrollment_count(self, class_name, date_str, session_option):
         """Get current enrollment count for a specific session"""
         session_time = session_option.get('session_time')
