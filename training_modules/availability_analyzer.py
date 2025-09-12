@@ -218,10 +218,8 @@ class AvailabilityAnalyzer:
     def _analyze_session_availability(self, class_name, date_str, session_option, 
                                     assigned_staff, staff_roles, date_obj, include_already_enrolled):
         """
-        Analyze staff availability for a specific session
-        Filters staff by role eligibility
-        Optimized: Skip staff analysis if session is already full
-        Fixed: Check if enrolled in ANY session of the class on the same date
+        Simplified staff availability analysis for a specific session
+        Uses existing enrollment conflict checking logic for consistency
         """
         # Get current enrollment count and capacity first
         current_enrolled = self._get_session_enrollment_count(class_name, date_str, session_option)
@@ -244,56 +242,26 @@ class AvailabilityAnalyzer:
         available_staff = []
         staff_details = []
         
-        # Get role requirement for this session
-        role_requirement = session_option.get('role_requirement')
-        
-        # Check if this class has multiple sessions per day
-        class_details = self.excel.get_class_details(class_name)
-        classes_per_day = int(class_details.get('classes_per_day', 1)) if class_details else 1
-        has_multiple_sessions = classes_per_day > 1
-        
         for staff_name in assigned_staff:
-            # Get staff role
-            staff_role = staff_roles.get(staff_name, 'General')
-            
-            # Role filtering: skip if staff role doesn't match session requirement
-            if role_requirement and staff_role != role_requirement:
-                continue
-            
-            # Check if already enrolled (unless we want to include them)
+            # Skip if already enrolled in this class (unless we want to include them)
             if not include_already_enrolled:
-                # For most classes, if someone is enrolled anywhere, they shouldn't show as available
-                # Exception: Staff Meeting classes allow multiple enrollments
-                is_staff_meeting = self.excel.is_staff_meeting(class_name)
-                
-                if is_staff_meeting:
-                    # For staff meetings, only check specific session enrollment
-                    session_time = session_option.get('session_time')
-                    meeting_type = session_option.get('meeting_type')
-                    if self._is_enrolled_in_session(staff_name, class_name, date_str, session_time, meeting_type):
-                        continue
-                else:
-                    # For ALL other classes (regardless of multiple sessions), check if enrolled anywhere
-                    if self._is_enrolled_in_class_anywhere(staff_name, class_name):
-                        continue
+                if self._is_enrolled_in_class_anywhere(staff_name, class_name):
+                    continue
             
-            # Check role-based weekly enrollment limits
-            week_start = self._get_week_start(date_obj)
-            if not self._check_role_weekly_limits(staff_role, staff_name, week_start, date_str):
-                continue
+            # Check if they can enroll without conflict using existing enrollment logic
+            has_conflict, conflict_details = self.enrollment.check_enrollment_conflict(
+                staff_name, class_name, date_str
+            )
             
-            # Check for schedule conflicts
-            conflict_info = self._check_staff_conflicts(staff_name, class_name, date_str, class_details)
-            
-            # Staff is available if no blocking conflicts
-            if not conflict_info['blocking']:
+            # Staff is available if no conflicts
+            if not has_conflict:
                 available_staff.append(staff_name)
                 
                 staff_info = {
                     'name': staff_name,
-                    'role': staff_role,
-                    'warnings': conflict_info['warnings'],
-                    'notes': conflict_info['notes']
+                    'role': staff_roles.get(staff_name, 'General'),
+                    'warnings': [],
+                    'notes': []
                 }
                 staff_details.append(staff_info)
         
@@ -533,7 +501,7 @@ class AvailabilityAnalyzer:
             bool: True if role constraints allow enrollment, False otherwise
         """
         # RN and MGMT have no weekly enrollment constraints
-        if role in ['RN', 'MGMT']:
+        if role in ['NURSE']:
             return True
         
         # MEDIC staff can only enroll in 1 class per week
