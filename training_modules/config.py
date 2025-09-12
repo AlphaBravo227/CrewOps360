@@ -5,6 +5,8 @@
 NON_CLASS_COLUMNS = [
     'STAFF NAME',
     'Role',
+    'MGMT',
+    'DUAL',
     'Educator AT',  # This is a designation, not a class
     # All other columns (CRM, STABLE, Wed SM Q1, etc.) are classes
 ]
