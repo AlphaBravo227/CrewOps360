@@ -247,6 +247,11 @@ class AvailabilityAnalyzer:
             if not include_already_enrolled:
                 if self._is_enrolled_in_class_anywhere(staff_name, class_name):
                     continue
+            # NEW: Check weekly enrollment limit for non-MGMT medics
+            weekly_limit_ok, weekly_limit_reason = self._check_weekly_enrollment_limit_for_availability(staff_name, date_str)
+            if not weekly_limit_ok:
+                # Staff is blocked by weekly limit, don't include in available staff
+                continue
             
             # Check if they can enroll without conflict using existing enrollment logic
             has_conflict, conflict_details = self.enrollment.check_enrollment_conflict(

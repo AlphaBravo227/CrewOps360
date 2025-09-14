@@ -124,7 +124,7 @@ class EnrollmentSessionComponents:
     @staticmethod
     def _display_session_option_with_conflict(option, option_key, enrollment_manager, 
                                             selected_staff, class_name, date, conflict_info, user_enrollments):
-        """Display a single session option with conflict handling - UPDATED for two-day classes"""
+        """Display a single session option with conflict handling - UPDATED for weekly limits"""
         has_conflict = conflict_info[0] if conflict_info else False
         conflict_details = conflict_info[1] if conflict_info else ""
         
@@ -133,64 +133,84 @@ class EnrollmentSessionComponents:
             user_enrollments, date, option
         )
         
+        # NEW: Check weekly enrollment limit before displaying enrollment options
+        weekly_limit_blocked = False
+        weekly_limit_message = ""
+        
+        if not user_enrolled_in_session:
+            # Only check weekly limits if they're not already enrolled in this session
+            can_enroll, limit_error, existing_class = enrollment_manager._check_weekly_enrollment_limit(selected_staff, date)
+            if not can_enroll:
+                weekly_limit_blocked = True
+                weekly_limit_message = limit_error
+        
         # Check if this is a two-day class
         is_two_day = option.get('is_two_day', False)
         
         if option['type'] == 'nurse_medic_separate':
-                    # Multiple sessions with nurse/medic separation
-                    with st.container():
-                        if is_two_day:
-                            st.write(f"**{option['display_time']} - Two-Day Class**")
-                        else:
-                            st.write(f"**{option['display_time']}**")
-                        
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.write("**👩‍⚕️ Nurses:**")
-                            EnrollmentSessionComponents._display_enrolled_participants(option['nurses'], selected_staff, "Nurse", user_enrolled_in_session)
-                            
-                            if option['nurse_available'] and not (user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Nurse'):
-                                button_text = "Enroll as Nurse (2-Day)" if is_two_day else "Enroll as Nurse"
-                                if EnrollmentSessionComponents._handle_enrollment_button(
-                                    button_text, f"nurse_{option_key}",
-                                    has_conflict, conflict_details,
-                                    enrollment_manager, selected_staff, class_name,
-                                    date, "Nurse", option.get('session_time')
-                                ):
-                                    return  # Will trigger rerun
-                            elif user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Nurse':
-                                cancel_text = "Cancel Both Days" if is_two_day else "Cancel"
-                                if st.button(cancel_text, key=f"cancel_nurse_{option_key}"):
-                                    if enrollment_manager.cancel_enrollment(user_enrolled_in_session['id']):
-                                        st.success("Enrollment cancelled!")
-                                        st.rerun()
-                            else:
-                                st.write("*Nurse slot filled*")
-                        
-                        with col2:
-                            st.write("**🚑 Medics:**")
-                            EnrollmentSessionComponents._display_enrolled_participants(option['medics'], selected_staff, "Medic", user_enrolled_in_session)
-                            
-                            if option['medic_available'] and not (user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Medic'):
-                                button_text = "Enroll as Medic (2-Day)" if is_two_day else "Enroll as Medic"
-                                if EnrollmentSessionComponents._handle_enrollment_button(
-                                    button_text, f"medic_{option_key}",
-                                    has_conflict, conflict_details,
-                                    enrollment_manager, selected_staff, class_name,
-                                    date, "Medic", option.get('session_time')
-                                ):
-                                    return  # Will trigger rerun
-                            elif user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Medic':
-                                cancel_text = "Cancel Both Days" if is_two_day else "Cancel"
-                                if st.button(cancel_text, key=f"cancel_medic_{option_key}"):
-                                    if enrollment_manager.cancel_enrollment(user_enrolled_in_session['id']):
-                                        st.success("Enrollment cancelled!")
-                                        st.rerun()
-                            else:
-                                st.write("*Medic slot filled*")
-                        
-                        st.markdown("---")        
+            # Multiple sessions with nurse/medic separation
+            with st.container():
+                if is_two_day:
+                    st.write(f"**{option['display_time']} - Two-Day Class**")
+                else:
+                    st.write(f"**{option['display_time']}**")
+                
+                # Show weekly limit warning if applicable
+                if weekly_limit_blocked:
+                    st.warning(f"⚠️ {weekly_limit_message}")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**👩‍⚕️ Nurses:**")
+                    EnrollmentSessionComponents._display_enrolled_participants(option['nurses'], selected_staff, "Nurse", user_enrolled_in_session)
+                    
+                    if option['nurse_available'] and not (user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Nurse'):
+                        if not weekly_limit_blocked:
+                            button_text = "Enroll as Nurse (2-Day)" if is_two_day else "Enroll as Nurse"
+                            if EnrollmentSessionComponents._handle_enrollment_button(
+                                button_text, f"nurse_{option_key}",
+                                has_conflict, conflict_details,
+                                enrollment_manager, selected_staff, class_name,
+                                date, "Nurse", option.get('session_time')
+                            ):
+                                return  # Will trigger rerun
+                        # If weekly limit blocked, don't show button at all
+                    elif user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Nurse':
+                        cancel_text = "Cancel Both Days" if is_two_day else "Cancel"
+                        if st.button(cancel_text, key=f"cancel_nurse_{option_key}"):
+                            if enrollment_manager.cancel_enrollment(user_enrolled_in_session['id']):
+                                st.success("Enrollment cancelled!")
+                                st.rerun()
+                    else:
+                        st.write("*Nurse slot filled*")
+                
+                with col2:
+                    st.write("**🚑 Medics:**")
+                    EnrollmentSessionComponents._display_enrolled_participants(option['medics'], selected_staff, "Medic", user_enrolled_in_session)
+                    
+                    if option['medic_available'] and not (user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Medic'):
+                        if not weekly_limit_blocked:
+                            button_text = "Enroll as Medic (2-Day)" if is_two_day else "Enroll as Medic"
+                            if EnrollmentSessionComponents._handle_enrollment_button(
+                                button_text, f"medic_{option_key}",
+                                has_conflict, conflict_details,
+                                enrollment_manager, selected_staff, class_name,
+                                date, "Medic", option.get('session_time')
+                            ):
+                                return  # Will trigger rerun
+                        # If weekly limit blocked, don't show button at all
+                    elif user_enrolled_in_session and user_enrolled_in_session.get('role') == 'Medic':
+                        cancel_text = "Cancel Both Days" if is_two_day else "Cancel"
+                        if st.button(cancel_text, key=f"cancel_medic_{option_key}"):
+                            if enrollment_manager.cancel_enrollment(user_enrolled_in_session['id']):
+                                st.success("Enrollment cancelled!")
+                                st.rerun()
+                    else:
+                        st.write("*Medic slot filled*")
+                
+                st.markdown("---")        
+
         elif option['type'] == 'regular':
             # Multiple regular sessions
             with st.container():
@@ -199,6 +219,11 @@ class EnrollmentSessionComponents:
                     display_time += " - Two-Day Class"
                 
                 st.write(f"**{display_time}**")
+                
+                # Show weekly limit warning if applicable
+                if weekly_limit_blocked:
+                    st.warning(f"⚠️ {weekly_limit_message}")
+                
                 st.write(f"**Currently enrolled ({len(option['enrolled'])}):**")
                 
                 EnrollmentSessionComponents._display_enrolled_participants(option['enrolled'], selected_staff, None, user_enrolled_in_session)
@@ -206,14 +231,16 @@ class EnrollmentSessionComponents:
                 st.write(f"**Available slots:** {option['available_slots']}")
                 
                 if not user_enrolled_in_session:
-                    button_text = f"Enroll in {option['display_time']}" + (" (2-Day)" if is_two_day else "")
-                    if EnrollmentSessionComponents._handle_enrollment_button(
-                        button_text, f"enroll_{option_key}",
-                        has_conflict, conflict_details,
-                        enrollment_manager, selected_staff, class_name,
-                        date, "General", option.get('session_time')
-                    ):
-                        return  # Will trigger rerun
+                    if not weekly_limit_blocked:
+                        button_text = f"Enroll in {option['display_time']}" + (" (2-Day)" if is_two_day else "")
+                        if EnrollmentSessionComponents._handle_enrollment_button(
+                            button_text, f"enroll_{option_key}",
+                            has_conflict, conflict_details,
+                            enrollment_manager, selected_staff, class_name,
+                            date, "General", option.get('session_time')
+                        ):
+                            return  # Will trigger rerun
+                    # If weekly limit blocked, don't show button at all
                 else:
                     cancel_text = "Cancel Both Days" if is_two_day else "Cancel"
                     if st.button(cancel_text, key=f"cancel_{option_key}"):
@@ -233,6 +260,10 @@ class EnrollmentSessionComponents:
                 
                 st.write(f"**{meeting_display}**")
                 
+                # Show weekly limit warning if applicable
+                if weekly_limit_blocked:
+                    st.warning(f"⚠️ {weekly_limit_message}")
+                
                 # Highlight user's enrolled section if they're in this meeting type
                 if user_enrolled_in_session:
                     st.markdown("""
@@ -251,14 +282,16 @@ class EnrollmentSessionComponents:
                     st.info("🔴 **LIVE Option** - This will count toward your LIVE meeting requirement")
                 
                 if not user_enrolled_in_session:
-                    button_text = f"Enroll in {option['meeting_type']} Option" + (" (2-Day)" if is_two_day else "")
-                    if EnrollmentSessionComponents._handle_enrollment_button(
-                        button_text, f"enroll_{option_key}",
-                        has_conflict, conflict_details,
-                        enrollment_manager, selected_staff, class_name,
-                        date, "General", None, option['meeting_type']
-                    ):
-                        return  # Will trigger rerun
+                    if not weekly_limit_blocked:
+                        button_text = f"Enroll in {option['meeting_type']} Option" + (" (2-Day)" if is_two_day else "")
+                        if EnrollmentSessionComponents._handle_enrollment_button(
+                            button_text, f"enroll_{option_key}",
+                            has_conflict, conflict_details,
+                            enrollment_manager, selected_staff, class_name,
+                            date, "General", None, option['meeting_type']
+                        ):
+                            return  # Will trigger rerun
+                    # If weekly limit blocked, don't show button at all
                 else:
                     cancel_text = "Cancel Both Days" if is_two_day else "Cancel"
                     if st.button(cancel_text, key=f"cancel_{option_key}"):
@@ -269,16 +302,18 @@ class EnrollmentSessionComponents:
                 st.markdown("---")
         
         elif option['type'] in ['nurse_medic_separate_single', 'regular_single']:
-            # Handle single session types with two-day support
+            # Handle single session types with weekly limit support
             EnrollmentSessionComponents._display_single_session_option(
                 option, option_key, enrollment_manager, selected_staff,
-                class_name, date, has_conflict, conflict_details, user_enrolled_in_session
+                class_name, date, has_conflict, conflict_details, user_enrolled_in_session,
+                weekly_limit_blocked, weekly_limit_message
             )
 
     @staticmethod
     def _display_single_session_option(option, option_key, enrollment_manager, selected_staff,
-                                    class_name, date, has_conflict, conflict_details, user_enrollment):
-        """Display single session enrollment options - UPDATED for two-day classes"""
+                                     class_name, date, has_conflict, conflict_details, user_enrollment,
+                                     weekly_limit_blocked, weekly_limit_message):
+        """Display single session enrollment options - UPDATED with weekly limit support"""
         
         is_two_day = option.get('is_two_day', False)
         
@@ -289,6 +324,10 @@ class EnrollmentSessionComponents:
                     header_text = "**Current Enrollments (2-Day Class):**"
                 
                 st.write(header_text)
+                
+                # Show weekly limit warning if applicable
+                if weekly_limit_blocked:
+                    st.warning(f"⚠️ {weekly_limit_message}")
                 
                 # Highlight if user is enrolled
                 if user_enrollment:
@@ -309,14 +348,16 @@ class EnrollmentSessionComponents:
                     EnrollmentSessionComponents._display_enrolled_participants(option['nurses'], selected_staff, "Nurse", user_enrollment)
                     
                     if option['nurse_available'] and not (user_enrollment and user_enrollment.get('role') == 'Nurse'):
-                        button_text = "Enroll as Nurse (2-Day)" if is_two_day else "Enroll as Nurse"
-                        if EnrollmentSessionComponents._handle_enrollment_button(
-                            button_text, f"nurse_{option_key}",
-                            has_conflict, conflict_details,
-                            enrollment_manager, selected_staff, class_name,
-                            date, "Nurse"
-                        ):
-                            return True
+                        if not weekly_limit_blocked:
+                            button_text = "Enroll as Nurse (2-Day)" if is_two_day else "Enroll as Nurse"
+                            if EnrollmentSessionComponents._handle_enrollment_button(
+                                button_text, f"nurse_{option_key}",
+                                has_conflict, conflict_details,
+                                enrollment_manager, selected_staff, class_name,
+                                date, "Nurse"
+                            ):
+                                return True
+                        # If weekly limit blocked, don't show button at all
                     elif user_enrollment and user_enrollment.get('role') == 'Nurse':
                         cancel_text = "Cancel Both Days" if is_two_day else "Cancel"
                         if st.button(cancel_text, key=f"cancel_nurse_{option_key}"):
@@ -331,14 +372,16 @@ class EnrollmentSessionComponents:
                     EnrollmentSessionComponents._display_enrolled_participants(option['medics'], selected_staff, "Medic", user_enrollment)
                     
                     if option['medic_available'] and not (user_enrollment and user_enrollment.get('role') == 'Medic'):
-                        button_text = "Enroll as Medic (2-Day)" if is_two_day else "Enroll as Medic"
-                        if EnrollmentSessionComponents._handle_enrollment_button(
-                            button_text, f"medic_{option_key}",
-                            has_conflict, conflict_details,
-                            enrollment_manager, selected_staff, class_name,
-                            date, "Medic"
-                        ):
-                            return True
+                        if not weekly_limit_blocked:
+                            button_text = "Enroll as Medic (2-Day)" if is_two_day else "Enroll as Medic"
+                            if EnrollmentSessionComponents._handle_enrollment_button(
+                                button_text, f"medic_{option_key}",
+                                has_conflict, conflict_details,
+                                enrollment_manager, selected_staff, class_name,
+                                date, "Medic"
+                            ):
+                                return True
+                        # If weekly limit blocked, don't show button at all
                     elif user_enrollment and user_enrollment.get('role') == 'Medic':
                         cancel_text = "Cancel Both Days" if is_two_day else "Cancel"
                         if st.button(cancel_text, key=f"cancel_medic_{option_key}"):
@@ -359,6 +402,10 @@ class EnrollmentSessionComponents:
                 
                 st.write(header_text)
                 
+                # Show weekly limit warning if applicable
+                if weekly_limit_blocked:
+                    st.warning(f"⚠️ {weekly_limit_message}")
+                
                 # Highlight if user is enrolled
                 if user_enrollment:
                     enrollment_text = "✅ You are enrolled in this class"
@@ -377,17 +424,19 @@ class EnrollmentSessionComponents:
                 st.write(f"**Available slots:** {option['available_slots']}")
                 
                 if not user_enrollment:
-                    button_text = "Enroll in Class"
-                    if is_two_day:
-                        button_text += " (2-Day)"
-                    
-                    if EnrollmentSessionComponents._handle_enrollment_button(
-                        button_text, f"enroll_{option_key}",
-                        has_conflict, conflict_details,
-                        enrollment_manager, selected_staff, class_name,
-                        date, "General"
-                    ):
-                        return True
+                    if not weekly_limit_blocked:
+                        button_text = "Enroll in Class"
+                        if is_two_day:
+                            button_text += " (2-Day)"
+                        
+                        if EnrollmentSessionComponents._handle_enrollment_button(
+                            button_text, f"enroll_{option_key}",
+                            has_conflict, conflict_details,
+                            enrollment_manager, selected_staff, class_name,
+                            date, "General"
+                        ):
+                            return True
+                    # If weekly limit blocked, don't show button at all
                 else:
                     cancel_text = "Cancel Both Days" if is_two_day else "Cancel"
                     if st.button(cancel_text, key=f"cancel_{option_key}"):
@@ -621,31 +670,31 @@ class EnrollmentSessionComponents:
 
     @staticmethod
     def _display_session_enrollment_options_original(enrollment_manager, class_name, available_dates, selected_staff):
-            """Original implementation without track conflict checking"""
-            enrolled_sessions = []
+        """Original implementation without track conflict checking"""
+        enrolled_sessions = []
+        
+        for date in available_dates:
+            st.subheader(f"📅 {date}")
             
-            for date in available_dates:
-                st.subheader(f"📅 {date}")
-                
-                session_options = enrollment_manager.get_available_session_options(class_name, date)
-                
-                if not session_options:
-                    st.warning(f"No available slots for {date}")
-                    continue
-                
-                # Get current user's enrollments for this class
-                user_enrollments = enrollment_manager.get_staff_enrollments(selected_staff)
-                user_class_enrollments = [e for e in user_enrollments if e['class_name'] == class_name]
-                
-                for idx, option in enumerate(session_options):
-                    option_key = f"{class_name}_{date}_{idx}"
-                    
-                    # Display without conflict checking
-                    EnrollmentSessionComponents._display_session_option_with_conflict(
-                        option, option_key, enrollment_manager, selected_staff, 
-                        class_name, date, None, user_class_enrollments  # No conflict info
-                    )
-                
-                st.markdown("---")
+            session_options = enrollment_manager.get_available_session_options(class_name, date)
             
-            return enrolled_sessions    
+            if not session_options:
+                st.warning(f"No available slots for {date}")
+                continue
+            
+            # Get current user's enrollments for this class
+            user_enrollments = enrollment_manager.get_staff_enrollments(selected_staff)
+            user_class_enrollments = [e for e in user_enrollments if e['class_name'] == class_name]
+            
+            for idx, option in enumerate(session_options):
+                option_key = f"{class_name}_{date}_{idx}"
+                
+                # Display without conflict checking
+                EnrollmentSessionComponents._display_session_option_with_conflict(
+                    option, option_key, enrollment_manager, selected_staff, 
+                    class_name, date, None, user_class_enrollments  # No conflict info
+                )
+            
+            st.markdown("---")
+        
+        return enrolled_sessions

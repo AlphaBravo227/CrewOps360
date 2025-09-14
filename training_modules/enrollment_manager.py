@@ -42,6 +42,99 @@ class EnrollmentManager:
         existing_enrollments = [e for e in enrollments if e['class_name'] == class_name]
         return existing_enrollments
 
+    def _is_non_mgmt_medic(self, staff_name):
+        """
+        Check if staff member is a non-MGMT medic
+        Returns True if Role=MEDIC and MGMT checkbox is unchecked
+        """
+        try:
+            if not self.excel.enrollment_sheet:
+                return False
+            
+            # Find the staff member's row
+            staff_row = None
+            for row_idx, row in enumerate(self.excel.enrollment_sheet.iter_rows(min_row=2, max_col=1), start=2):
+                if row[0].value and str(row[0].value).strip() == staff_name:
+                    staff_row = row_idx
+                    break
+            
+            if not staff_row:
+                return False
+            
+            # Find Role and MGMT columns
+            role_col = None
+            mgmt_col = None
+            
+            for col_idx, col in enumerate(self.excel.enrollment_sheet.iter_cols(min_row=1, max_row=1), start=1):
+                header_value = str(col[0].value).strip() if col[0].value else ""
+                if header_value == "Role":
+                    role_col = col_idx
+                elif header_value == "MGMT":
+                    mgmt_col = col_idx
+            
+            if not role_col or not mgmt_col:
+                return False
+            
+            # Get role and MGMT values
+            role_cell = self.excel.enrollment_sheet.cell(row=staff_row, column=role_col)
+            mgmt_cell = self.excel.enrollment_sheet.cell(row=staff_row, column=mgmt_col)
+            
+            role_value = str(role_cell.value).strip().upper() if role_cell.value else ""
+            mgmt_value = mgmt_cell.value
+            
+            # Check if Role is MEDIC and MGMT is not checked
+            is_medic = role_value == "MEDIC"
+            is_mgmt = self.excel._parse_checkbox_value(mgmt_value) if hasattr(self.excel, '_parse_checkbox_value') else bool(mgmt_value)
+            
+            return is_medic and not is_mgmt
+            
+        except Exception as e:
+            print(f"Error checking non-MGMT medic status for {staff_name}: {e}")
+            return False
+
+    def _check_weekly_enrollment_limit(self, staff_name, class_date):
+        """
+        Check weekly enrollment limit for non-MGMT medics (1 class per week)
+        Returns (can_enroll, error_message, existing_class)
+        """
+        # Only apply to non-MGMT medics
+        if not self._is_non_mgmt_medic(staff_name):
+            return True, None, None
+        
+        try:
+            # Parse the target date
+            target_date = datetime.strptime(class_date, '%m/%d/%Y')
+            
+            # Calculate week boundaries (Sunday to Saturday)
+            days_since_sunday = (target_date.weekday() + 1) % 7
+            week_start = target_date - timedelta(days=days_since_sunday)
+            week_end = week_start + timedelta(days=6)
+            
+            # Get all enrollments for this staff member
+            enrollments = self.get_staff_enrollments(staff_name)
+            
+            # Check for existing enrollments in the same week
+            for enrollment in enrollments:
+                try:
+                    enrollment_date = datetime.strptime(enrollment['class_date'], '%m/%d/%Y')
+                    
+                    # If enrollment is in the same week
+                    if week_start <= enrollment_date <= week_end:
+                        # Found existing enrollment in this week
+                        existing_class = enrollment['class_name']
+                        error_message = f"Cannot enroll - you are already enrolled in {existing_class} this week and are limited to one class per week."
+                        return False, error_message, existing_class
+                        
+                except ValueError:
+                    continue  # Skip if date parsing fails
+            
+            # No existing enrollments found in this week
+            return True, None, None
+            
+        except Exception as e:
+            print(f"Error checking weekly limit for {staff_name}: {e}")
+            return True, None, None  # Allow enrollment if error occurs
+
     def enroll_staff(self, staff_name, class_name, class_date, role='General', 
                     meeting_type=None, session_time=None, override_conflict=False,
                     replace_existing=False, existing_enrollment_id=None):
@@ -59,6 +152,12 @@ class EnrollmentManager:
             print(f"DEBUG: Two-day enrollment dates: {enrollment_dates}")
         else:
             enrollment_dates = [class_date]
+        # NEW: Check weekly enrollment limit for non-MGMT medics
+        # Check each enrollment date for weekly limits
+        for date in enrollment_dates:
+            can_enroll, limit_error, existing_class = self._check_weekly_enrollment_limit(staff_name, date)
+            if not can_enroll:
+                return False, limit_error
         
         # Skip duplicate check for Staff Meeting classes (they can enroll multiple times)
         if not replace_existing and not is_staff_meeting:
