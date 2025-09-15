@@ -1,8 +1,9 @@
 # training_modules/availability_analyzer.py
 """
-Availability Analyzer for Training Events
+Availability Analyzer for Training Events - COMPLETE FIXED VERSION
 Analyzes staff availability for class enrollment within date ranges without conflicts
 Updated to handle role-based availability constraints and multiple sessions per day
+INCLUDES ALL MISSING METHODS
 """
 from datetime import datetime, timedelta
 import sqlite3
@@ -49,7 +50,10 @@ class AvailabilityAnalyzer:
             eligible_classes = self._get_classes_in_date_range(start_dt, end_dt)
             
             if not eligible_classes:
+                print("DEBUG: No eligible classes found in date range")
                 return {}
+            
+            print(f"DEBUG: Found {len(eligible_classes)} eligible classes")
             
             # Get staff roles from Excel enrollment data
             staff_roles = self._get_excel_enrollment_roles()
@@ -57,17 +61,22 @@ class AvailabilityAnalyzer:
             availability_report = {}
             
             for class_name, class_dates in eligible_classes.items():
+                print(f"DEBUG: Processing class {class_name} with dates {class_dates}")
                 availability_report[class_name] = {}
                 
                 # Get staff assigned to this class
                 assigned_staff = self._get_assigned_staff(class_name) if include_assigned_only else self.excel.get_staff_list()
                 
                 if not assigned_staff:
+                    print(f"DEBUG: No assigned staff found for {class_name}")
                     continue
+                
+                print(f"DEBUG: Found {len(assigned_staff)} assigned staff for {class_name}")
                 
                 # Get class details to understand session structure
                 class_details = self.excel.get_class_details(class_name)
                 if not class_details:
+                    print(f"DEBUG: No class details found for {class_name}")
                     continue
                 
                 for date_str in class_dates:
@@ -218,15 +227,14 @@ class AvailabilityAnalyzer:
     def _analyze_session_availability(self, class_name, date_str, session_option, 
                                     assigned_staff, staff_roles, date_obj, include_already_enrolled):
         """
-        Simplified staff availability analysis for a specific session
-        Uses existing enrollment conflict checking logic for consistency
+        Analyze staff availability for a specific session with optimization for full sessions
         """
         # Get current enrollment count and capacity first
         current_enrolled = self._get_session_enrollment_count(class_name, date_str, session_option)
         max_students = session_option.get('max_students', 21)
         slots_remaining = max_students - current_enrolled
         
-        # Early return if session is full - no need to analyze staff availability
+        # OPTIMIZATION: Early return if session is full - no need to analyze staff availability
         if slots_remaining <= 0:
             return {
                 'session_info': session_option,
@@ -247,7 +255,18 @@ class AvailabilityAnalyzer:
             if not include_already_enrolled:
                 if self._is_enrolled_in_class_anywhere(staff_name, class_name):
                     continue
-            # NEW: Check weekly enrollment limit for non-MGMT medics
+            
+            # Check role requirement if session has one
+            role_requirement = session_option.get('role_requirement')
+            if role_requirement:
+                staff_role = staff_roles.get(staff_name, 'General')
+                # Normalize role names for comparison
+                if role_requirement == 'Nurse' and staff_role not in ['NURSE', 'RN', 'Nurse']:
+                    continue
+                if role_requirement == 'Medic' and staff_role not in ['MEDIC', 'Medic']:
+                    continue
+            
+            # Check weekly enrollment limit for non-MGMT medics
             weekly_limit_ok, weekly_limit_reason = self._check_weekly_enrollment_limit_for_availability(staff_name, date_str)
             if not weekly_limit_ok:
                 # Staff is blocked by weekly limit, don't include in available staff
@@ -279,6 +298,101 @@ class AvailabilityAnalyzer:
             'currently_enrolled': current_enrolled,
             'slots_remaining': slots_remaining
         }
+
+    # ADDED MISSING METHODS:
+    
+    def _check_weekly_enrollment_limit_for_availability(self, staff_name, class_date):
+        """
+        Check weekly enrollment limit for non-MGMT medics (1 class per week)
+        Returns (can_enroll, error_message)
+        """
+        # Only apply to non-MGMT medics
+        if not self._is_non_mgmt_medic(staff_name):
+            return True, None
+        
+        try:
+            # Parse the target date
+            target_date = datetime.strptime(class_date, '%m/%d/%Y')
+            
+            # Calculate week boundaries (Sunday to Saturday)
+            days_since_sunday = (target_date.weekday() + 1) % 7
+            week_start = target_date - timedelta(days=days_since_sunday)
+            week_end = week_start + timedelta(days=6)
+            
+            # Get all enrollments for this staff member
+            enrollments = self.enrollment.get_staff_enrollments(staff_name)
+            
+            # Check for existing enrollments in the same week
+            for enrollment in enrollments:
+                try:
+                    enrollment_date = datetime.strptime(enrollment['class_date'], '%m/%d/%Y')
+                    
+                    # If enrollment is in the same week
+                    if week_start <= enrollment_date <= week_end:
+                        # Found existing enrollment in this week
+                        existing_class = enrollment['class_name']
+                        error_message = f"Already enrolled in {existing_class} this week (1 class per week limit)"
+                        return False, error_message
+                        
+                except ValueError:
+                    continue  # Skip if date parsing fails
+            
+            # No existing enrollments found in this week
+            return True, None
+            
+        except Exception as e:
+            print(f"Error checking weekly limit for {staff_name}: {e}")
+            return True, None  # Allow enrollment if error occurs
+
+    def _is_non_mgmt_medic(self, staff_name):
+        """
+        Check if staff member is a non-MGMT medic
+        Returns True if Role=MEDIC and MGMT checkbox is unchecked
+        """
+        try:
+            if not self.excel.enrollment_sheet:
+                return False
+            
+            # Find the staff member's row
+            staff_row = None
+            for row_idx, row in enumerate(self.excel.enrollment_sheet.iter_rows(min_row=2, max_col=1), start=2):
+                if row[0].value and str(row[0].value).strip() == staff_name:
+                    staff_row = row_idx
+                    break
+            
+            if not staff_row:
+                return False
+            
+            # Find Role and MGMT columns
+            role_col = None
+            mgmt_col = None
+            
+            for col_idx, col in enumerate(self.excel.enrollment_sheet.iter_cols(min_row=1, max_row=1), start=1):
+                header_value = str(col[0].value).strip() if col[0].value else ""
+                if header_value == "Role":
+                    role_col = col_idx
+                elif header_value == "MGMT":
+                    mgmt_col = col_idx
+            
+            if not role_col or not mgmt_col:
+                return False
+            
+            # Get role and MGMT values
+            role_cell = self.excel.enrollment_sheet.cell(row=staff_row, column=role_col)
+            mgmt_cell = self.excel.enrollment_sheet.cell(row=staff_row, column=mgmt_col)
+            
+            role_value = str(role_cell.value).strip().upper() if role_cell.value else ""
+            mgmt_value = mgmt_cell.value
+            
+            # Check if Role is MEDIC and MGMT is not checked
+            is_medic = role_value == "MEDIC"
+            is_mgmt = self.excel._parse_checkbox_value(mgmt_value) if hasattr(self.excel, '_parse_checkbox_value') else bool(mgmt_value)
+            
+            return is_medic and not is_mgmt
+            
+        except Exception as e:
+            print(f"Error checking non-MGMT medic status for {staff_name}: {e}")
+            return False
 
     def _is_enrolled_in_class_on_date(self, staff_name, class_name, date_str):
         """Check if staff member is enrolled in ANY session of this class on the given date"""
@@ -348,7 +462,6 @@ class AvailabilityAnalyzer:
             return False
         return class_details.get('is_two_day_class', 'No').lower() == 'yes'
     
-    # Keep all existing methods unchanged
     def get_no_conflict_educator_availability(self, start_date, end_date):
         """
         Analyze educator availability for classes requiring instruction within date range
@@ -437,22 +550,44 @@ class AvailabilityAnalyzer:
         return eligible_classes
     
     def _get_excel_enrollment_roles(self):
-        """Get staff roles from Excel enrollment data"""
+        """Get staff roles from Excel enrollment data - FIXED VERSION"""
         staff_roles = {}
         
         try:
-            # Get enrollment data from Excel
-            enrollment_data = self.excel.get_enrollment_data()
-            if enrollment_data is not None and not enrollment_data.empty:
-                for _, row in enrollment_data.iterrows():
-                    staff_name = row.get('Staff Name')
-                    role = row.get('Role', 'General')
-                    if staff_name and pd.notna(staff_name):
-                        staff_roles[staff_name] = role
+            if not self.excel.enrollment_sheet:
+                print("No enrollment sheet available")
+                return staff_roles
+            
+            # Find the Role column
+            role_col = None
+            for col_idx, col in enumerate(self.excel.enrollment_sheet.iter_cols(min_row=1, max_row=1), start=1):
+                header_value = str(col[0].value).strip() if col[0].value else ""
+                if header_value == "Role":
+                    role_col = col_idx
+                    break
+            
+            if not role_col:
+                print("Role column not found")
+                return staff_roles
+            
+            # Read staff names and roles
+            for row in self.excel.enrollment_sheet.iter_rows(min_row=2):
+                staff_name_cell = row[0].value
+                role_cell = row[role_col - 1].value if len(row) >= role_col else None
+                
+                if staff_name_cell:
+                    staff_name = str(staff_name_cell).strip()
+                    role = str(role_cell).strip() if role_cell else 'General'
+                    staff_roles[staff_name] = role
+            
+            print(f"DEBUG: Loaded roles for {len(staff_roles)} staff members")
+            return staff_roles
+            
         except Exception as e:
             print(f"Error getting staff roles: {e}")
-        
-        return staff_roles
+            import traceback
+            traceback.print_exc()
+            return staff_roles
     
     def _get_assigned_staff(self, class_name):
         """Get list of staff assigned to a specific class"""
