@@ -494,7 +494,7 @@ class AdminAccess:
                             st.write(f"**Available Staff:** {session_data['total_available']}")
                         with col4:
                             if session_info.get('is_two_day'):
-                                st.write("🔄 **2-Day Class**")
+                                st.write("📄 **2-Day Class**")
                         
                         # Display available staff for this session
                         if staff_details:
@@ -513,16 +513,22 @@ class AdminAccess:
                                 if len(staff_by_role) > 1:  # Only show role if there are multiple roles
                                     st.write(f"*{role}:*")
                                 
-                                # Show staff names with warnings/notes
+                                # Show staff names with warnings/notes - FIXED VERSION
                                 for staff in staff_list:
-                                    staff_display = f"• {staff['name']}"
+                                    role_text = f" ({staff['role']})" if staff.get('role') and staff['role'] != 'General' else ""
+                                    staff_display = f"• {staff['name']}{role_text}"
                                     
-                                    if staff['warnings']:
+                                    # SINGLE SOURCE: Only show warnings from the warnings list
+                                    # Remove the duplicate has_conflict check
+                                    if staff.get('warnings'):
                                         staff_display += f" ⚠️ ({', '.join(staff['warnings'])})"
-                                    if staff['notes']:
+                                    
+                                    # Keep notes if any
+                                    if staff.get('notes'):
                                         staff_display += f" 📝 ({', '.join(staff['notes'])})"
                                     
                                     st.write(staff_display)
+
                         else:
                             if session_info.get('role_requirement'):
                                 st.warning(f"No available {session_info['role_requirement']} staff for this session")
@@ -531,7 +537,7 @@ class AdminAccess:
                         
                         st.markdown("---")
         
-        # Enhanced export section
+        # Enhanced export section (rest of the method remains the same)
         st.markdown("### 📥 Export Options")
         
         col1, col2 = st.columns(2)
@@ -666,7 +672,6 @@ class AdminAccess:
                 st.info(f"Filters applied - showing filtered results above")
                 # Note: In a full implementation, you'd re-run the display logic with filters
                 # For now, this is just UI framework
-
 
     def _show_available_educators_for_teaching(self):
         """Show available educators for teaching within date range - NEW TAB 5 (Future Implementation)"""
