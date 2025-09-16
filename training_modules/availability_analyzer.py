@@ -225,20 +225,18 @@ class AvailabilityAnalyzer:
         return base_key
 
     def _analyze_session_availability(self, class_name, date_str, session_option, 
-                                    assigned_staff, staff_roles, date_obj, include_already_enrolled):
-        """
-        Analyze staff availability for a specific session with optimization for full sessions
-        """
+                            assigned_staff, staff_roles, date_obj, include_already_enrolled):
+
         # Get current enrollment count and capacity first
         current_enrolled = self._get_session_enrollment_count(class_name, date_str, session_option)
         max_students = session_option.get('max_students', 21)
         slots_remaining = max_students - current_enrolled
         
-        # OPTIMIZATION: Early return if session is full - no need to analyze staff availability
+        # Early return if session is full
         if slots_remaining <= 0:
             return {
                 'session_info': session_option,
-                'available_staff': [],  # Empty since session is full
+                'available_staff': [],
                 'staff_details': [],
                 'total_available': 0,
                 'class_capacity': max_students,
@@ -246,12 +244,16 @@ class AvailabilityAnalyzer:
                 'slots_remaining': 0
             }
         
-        # Only perform staff availability analysis if there are open slots
+        # Check if this is a 2-day class
+        class_details = self.excel.get_class_details(class_name)
+        is_two_day = class_details.get('is_two_day_class', 'No').lower() == 'yes' if class_details else False
+        
+        # Analyze all assigned staff
         available_staff = []
         staff_details = []
         
         for staff_name in assigned_staff:
-            # Skip if already enrolled in this class (unless we want to include them)
+            # Skip if already enrolled (unless we want to include them)
             if not include_already_enrolled:
                 if self._is_enrolled_in_class_anywhere(staff_name, class_name):
                     continue
@@ -260,46 +262,105 @@ class AvailabilityAnalyzer:
             role_requirement = session_option.get('role_requirement')
             if role_requirement:
                 staff_role = staff_roles.get(staff_name, 'General')
-                # Normalize role names for comparison
                 if role_requirement == 'Nurse' and staff_role not in ['NURSE', 'RN', 'Nurse']:
                     continue
                 if role_requirement == 'Medic' and staff_role not in ['MEDIC', 'Medic']:
                     continue
             
-            # Check weekly enrollment limit for non-MGMT medics
+            # Check weekly enrollment limit
             weekly_limit_ok, weekly_limit_reason = self._check_weekly_enrollment_limit_for_availability(staff_name, date_str)
             if not weekly_limit_ok:
-                # Staff is blocked by weekly limit, don't include in available staff
-                continue
-            
-            # Check if they can enroll without conflict using existing enrollment logic
-            has_conflict, conflict_details = self.enrollment.check_enrollment_conflict(
-                staff_name, class_name, date_str
-            )
-            
-            # Staff is available if no conflicts
-            if not has_conflict:
-                available_staff.append(staff_name)
-                
-                staff_info = {
+                # Add to staff details with weekly limit warning (shown in admin view)
+                staff_details.append({
                     'name': staff_name,
                     'role': staff_roles.get(staff_name, 'General'),
-                    'warnings': [],
-                    'notes': []
-                }
-                staff_details.append(staff_info)
+                    'warnings': [weekly_limit_reason],
+                    'notes': [],
+                    'has_conflict': True,
+                    'conflict_details': weekly_limit_reason,
+                    'can_override': False
+                })
+                continue
+            
+            # Enhanced conflict checking for 2-day classes
+            has_conflict = False
+            conflict_details = ""
+            
+            if is_two_day:
+                # For 2-day classes, check BOTH days for conflicts
+                both_days = self._get_two_day_dates(date_str)
+                day_conflicts = []
+                
+                for i, day in enumerate(both_days):
+                    has_day_conflict, day_conflict_details = self.enrollment.check_enrollment_conflict(
+                        staff_name, class_name, day
+                    )
+                    
+                    if has_day_conflict:
+                        day_label = f"Day {i+1} ({day})"
+                        day_conflicts.append(f"{day_label}: {day_conflict_details}")
+                
+                if day_conflicts:
+                    has_conflict = True
+                    conflict_details = "; ".join(day_conflicts)
+            else:
+                # Single-day classes
+                has_conflict, conflict_details = self.enrollment.check_enrollment_conflict(
+                    staff_name, class_name, date_str
+                )
+            
+            # Add ALL staff to available list (including those with conflicts)
+            available_staff.append(staff_name)
+            
+            # Create staff detail entry for ADMIN VIEW display
+            staff_detail = {
+                'name': staff_name,
+                'role': staff_roles.get(staff_name, 'General'),
+                'warnings': [],
+                'notes': [],
+                'has_conflict': has_conflict,
+                'conflict_details': conflict_details if has_conflict else "No conflicts",
+                'can_override': True
+            }
+            
+            # SINGLE PLACE for conflict display - only add warning here
+            if has_conflict:
+                if is_two_day:
+                    staff_detail['warnings'].append("Schedule conflicts on 2-day class")
+                else:
+                    staff_detail['warnings'].append("Schedule conflict")
+            
+            staff_details.append(staff_detail)
         
         return {
             'session_info': session_option,
             'available_staff': available_staff,
             'staff_details': staff_details,
-            'total_available': len(available_staff),
+            'total_available': len([s for s in staff_details if not s['has_conflict']]),
+            'total_with_conflicts': len([s for s in staff_details if s['has_conflict']]),
             'class_capacity': max_students,
             'currently_enrolled': current_enrolled,
             'slots_remaining': slots_remaining
         }
 
-    # ADDED MISSING METHODS:
+    def _get_two_day_dates(self, base_date):
+        """
+        Get both days for a two-day class
+        
+        Args:
+            base_date (str): Base date in MM/DD/YYYY format
+            
+        Returns:
+            list: List of both dates [day1, day2]
+        """
+        try:
+            from datetime import datetime, timedelta
+            date_obj = datetime.strptime(base_date, '%m/%d/%Y')
+            day_1 = date_obj.strftime('%m/%d/%Y')
+            day_2 = (date_obj + timedelta(days=1)).strftime('%m/%d/%Y')
+            return [day_1, day_2]
+        except ValueError:
+            return [base_date]
     
     def _check_weekly_enrollment_limit_for_availability(self, staff_name, class_date):
         """
