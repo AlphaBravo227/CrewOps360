@@ -120,6 +120,10 @@ class AdminExportManager:
     def combine_preferences(self, original_prefs_df: pd.DataFrame, app_prefs_df: pd.DataFrame) -> pd.DataFrame:
         """
         Combine original and app preferences with source tracking
+        Boolean preferences (Reduced Rest OK, N to D Flex) follow priority:
+        1. user_boolean_preferences table (user edits)
+        2. uploaded preferences file (backup)
+        3. default values (0 for Reduced Rest, "No" for N to D Flex)
         
         Args:
             original_prefs_df: Original Excel preferences
@@ -132,10 +136,13 @@ class AdminExportManager:
             st.error("Original preferences DataFrame is empty")
             return pd.DataFrame()
         
+        # Get boolean preferences from database for all staff
+        boolean_prefs_dict = self._get_all_boolean_preferences()
+        
         # Create combined preferences list
         combined_prefs = []
         
-        # Create lookup for app preferences
+        # Create lookup for app preferences (shift preferences only)
         app_prefs_dict = {}
         if not app_prefs_df.empty:
             for _, row in app_prefs_df.iterrows():
@@ -146,42 +153,51 @@ class AdminExportManager:
             staff_name = original_row['STAFF NAME']
             staff_name_lower = staff_name.lower()
             
-            # Check if staff has app updates
-            app_pref = app_prefs_dict.get(staff_name_lower)
-            
-            if app_pref:
-                # Use app preferences (most recent)
+            # Check if this staff has app-updated shift preferences
+            if staff_name_lower in app_prefs_dict:
+                app_pref = app_prefs_dict[staff_name_lower]
+                
+                # Get boolean preferences with priority logic
+                reduced_rest, n_to_d_flex = self._get_boolean_preferences_with_priority(
+                    staff_name, boolean_prefs_dict, original_row
+                )
+                
+                # Use app preferences with boolean preferences from priority logic
                 combined_row = {
                     'STAFF NAME': staff_name,
-                    'ROLE': original_row.get('ROLE', ''),  # Keep original role
+                    'ROLE': original_row.get('ROLE', ''),
                     'SOURCE': 'App Updated',
                     'LAST UPDATED': app_pref.get('last_updated', ''),
-                    'No Matrix': original_row.get('No Matrix', 0),  # Keep original metadata
+                    'No Matrix': original_row.get('No Matrix', 0),
                     'Seniority': original_row.get('Seniority', 0),
-                    'Reduced Rest OK': original_row.get('Reduced Rest OK', 0),
-                    # Use app preferences for shift scores, fallback to original
-                    'D7B': app_pref.get('d7b', original_row.get('D7B', 0)),
-                    'GR': app_pref.get('gr', original_row.get('GR', 0)),
-                    'D11B': app_pref.get('d11b', original_row.get('D11B', 0)),
-                    'FW': app_pref.get('fw', original_row.get('FW', 0)),
-                    'D9L': app_pref.get('d9l', original_row.get('D9L', 0)),
-                    'LG': app_pref.get('lg', original_row.get('LG', 0)),
-                    'D7P': app_pref.get('d7p', original_row.get('D7P', 0)),
-                    'PG': app_pref.get('pg', original_row.get('PG', 0)),
-                    'D11M': app_pref.get('d11m', original_row.get('D11M', 0)),
-                    'MG': app_pref.get('mg', original_row.get('MG', 0)),
-                    'N7B': app_pref.get('n7b', original_row.get('N7B', 0)),
-                    'NG': app_pref.get('ng', original_row.get('NG', 0)),
-                    'N9L': app_pref.get('n9l', original_row.get('N9L', 0)),
-                    'N7P': app_pref.get('n7p', original_row.get('N7P', 0)),
-                    'NP': app_pref.get('np', original_row.get('NP', 0))
+                    'Reduced Rest OK': reduced_rest,  # Priority logic applied
+                    'N to D Flex': n_to_d_flex,     # Priority logic applied
+                    'D7B': app_pref.get('d7b', 0),
+                    'GR': app_pref.get('gr', 0),
+                    'D11B': app_pref.get('d11b', 0),
+                    'FW': app_pref.get('fw', 0),
+                    'D9L': app_pref.get('d9l', 0),
+                    'LG': app_pref.get('lg', 0),
+                    'D7P': app_pref.get('d7p', 0),
+                    'PG': app_pref.get('pg', 0),
+                    'D11M': app_pref.get('d11m', 0),
+                    'MG': app_pref.get('mg', 0),
+                    'N7B': app_pref.get('n7b', 0),
+                    'NG': app_pref.get('ng', 0),
+                    'N9L': app_pref.get('n9l', 0),
+                    'N7P': app_pref.get('n7p', 0),
+                    'NP': app_pref.get('np', 0)
                 }
                 
                 # Remove from app dict to track processed entries
                 del app_prefs_dict[staff_name_lower]
                 
             else:
-                # Use original preferences (no app update)
+                # Use original preferences but still apply boolean preference priority logic
+                reduced_rest, n_to_d_flex = self._get_boolean_preferences_with_priority(
+                    staff_name, boolean_prefs_dict, original_row
+                )
+                
                 combined_row = {
                     'STAFF NAME': staff_name,
                     'ROLE': original_row.get('ROLE', ''),
@@ -189,7 +205,8 @@ class AdminExportManager:
                     'LAST UPDATED': 'N/A',
                     'No Matrix': original_row.get('No Matrix', 0),
                     'Seniority': original_row.get('Seniority', 0),
-                    'Reduced Rest OK': original_row.get('Reduced Rest OK', 0),
+                    'Reduced Rest OK': reduced_rest,  # Priority logic applied
+                    'N to D Flex': n_to_d_flex,     # Priority logic applied
                     'D7B': original_row.get('D7B', 0),
                     'GR': original_row.get('GR', 0),
                     'D11B': original_row.get('D11B', 0),
@@ -211,14 +228,22 @@ class AdminExportManager:
         
         # Add any remaining app-only preferences (staff who only exist in app)
         for staff_name_lower, app_pref in app_prefs_dict.items():
+            staff_name = app_pref['staff_name']
+            
+            # For app-only staff, get boolean preferences from database (or defaults)
+            reduced_rest, n_to_d_flex = self._get_boolean_preferences_with_priority(
+                staff_name, boolean_prefs_dict, None  # No original row
+            )
+            
             combined_row = {
-                'STAFF NAME': app_pref['staff_name'],
+                'STAFF NAME': staff_name,
                 'ROLE': 'Unknown',  # No role info in app preferences
                 'SOURCE': 'App Only',
                 'LAST UPDATED': app_pref.get('last_updated', ''),
                 'No Matrix': 0,
                 'Seniority': 0,
-                'Reduced Rest OK': 0,
+                'Reduced Rest OK': reduced_rest,  # From database or default
+                'N to D Flex': n_to_d_flex,     # From database or default
                 'D7B': app_pref.get('d7b', 0),
                 'GR': app_pref.get('gr', 0),
                 'D11B': app_pref.get('d11b', 0),
@@ -238,7 +263,115 @@ class AdminExportManager:
             combined_prefs.append(combined_row)
         
         return pd.DataFrame(combined_prefs)
-    
+
+    def _get_all_boolean_preferences(self) -> dict:
+        """
+        Get all boolean preferences from the database
+        
+        Returns:
+            dict: {staff_name_lower: {pref_name: pref_value}}
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Check if boolean preferences table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_boolean_preferences'")
+            table_exists = cursor.fetchone()
+            
+            if not table_exists:
+                conn.close()
+                return {}
+            
+            # Get all active boolean preferences
+            cursor.execute("""
+                SELECT staff_name, preference_name, preference_value
+                FROM user_boolean_preferences 
+                WHERE is_active = 1
+            """)
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            # Organize by staff name
+            boolean_prefs = {}
+            for staff_name, pref_name, pref_value in rows:
+                staff_key = staff_name.lower()
+                if staff_key not in boolean_prefs:
+                    boolean_prefs[staff_key] = {}
+                boolean_prefs[staff_key][pref_name] = pref_value
+            
+            return boolean_prefs
+            
+        except Exception as e:
+            print(f"Error getting boolean preferences: {str(e)}")
+            return {}
+
+    def _get_boolean_preferences_with_priority(self, staff_name: str, boolean_prefs_dict: dict, original_row) -> tuple:
+        """
+        Get boolean preferences with priority logic:
+        1. user_boolean_preferences table
+        2. uploaded preferences file
+        3. defaults
+        
+        Args:
+            staff_name: Staff member name
+            boolean_prefs_dict: Dictionary of all database boolean preferences
+            original_row: Original Excel row (can be None for app-only staff)
+            
+        Returns:
+            tuple: (reduced_rest_value, n_to_d_flex_value)
+        """
+        staff_key = staff_name.lower()
+        
+        # Default values
+        reduced_rest = 0  # Default to "No"
+        n_to_d_flex = "No"  # Default to "No"
+        
+        # Check database first (highest priority)
+        if staff_key in boolean_prefs_dict:
+            db_prefs = boolean_prefs_dict[staff_key]
+            
+            if 'Reduced Rest OK' in db_prefs:
+                # Convert database value to 0/1
+                db_value = db_prefs['Reduced Rest OK']
+                if isinstance(db_value, str) and db_value.isdigit():
+                    reduced_rest = int(db_value)
+                elif isinstance(db_value, bool):
+                    reduced_rest = 1 if db_value else 0
+                elif isinstance(db_value, (int, float)):
+                    reduced_rest = 1 if db_value else 0
+            
+            if 'N to D Flex' in db_prefs:
+                # N to D Flex is stored as string in database
+                n_to_d_flex = str(db_prefs['N to D Flex'])
+        
+        # If not found in database, check original file (backup)
+        else:
+            if original_row is not None:
+                # Get from original Excel file
+                file_reduced_rest = original_row.get('Reduced Rest OK', 0)
+                file_n_to_d_flex = original_row.get('N to D Flex', 0)
+                
+                # Convert file values to proper format
+                if isinstance(file_reduced_rest, (int, float)):
+                    reduced_rest = 1 if file_reduced_rest else 0
+                elif isinstance(file_reduced_rest, str):
+                    reduced_rest = 1 if file_reduced_rest.lower() in ['1', 'yes', 'true'] else 0
+                
+                # Convert N to D Flex from file format
+                if isinstance(file_n_to_d_flex, str):
+                    n_to_d_flex = file_n_to_d_flex
+                elif file_n_to_d_flex == 1:
+                    n_to_d_flex = "Yes"
+                elif file_n_to_d_flex == 0:
+                    n_to_d_flex = "No"
+                else:
+                    n_to_d_flex = "Maybe"
+            # If no original_row (app-only staff), defaults are already set above
+        
+        return reduced_rest, n_to_d_flex
+
     def generate_summary_stats(self, combined_df: pd.DataFrame) -> Dict:
         """Generate summary statistics for the combined preferences"""
         if combined_df.empty:
