@@ -168,7 +168,7 @@ class ExcelAdminFunctions:
         return df
     
     def get_comprehensive_education_schedule_report(self, start_date, end_date):
-        """Generate comprehensive education schedule report for a date range"""
+        """Generate comprehensive education schedule report for a date range - UPDATED to include all staff with roles"""
         try:
             # Parse date strings to datetime objects for comparison
             start_dt = datetime.strptime(start_date, '%Y-%m-%d') if isinstance(start_date, str) else start_date
@@ -181,16 +181,17 @@ class ExcelAdminFunctions:
                 date_range.append(current_date.strftime('%m/%d/%y'))
                 current_date += timedelta(days=1)
             
-            # Get all staff from the database - this returns a list of staff names
-            all_staff_names = self._get_all_staff_from_database()
+            # Get all staff with their roles - this now includes ALL staff from Excel roster
+            all_staff_with_roles = self._get_all_staff_from_database()
             
             # Initialize report data
             report_data = []
             
-            for staff_name in all_staff_names:  # staff_name is now a string, not a dict
-                # Initialize row data
+            for staff_name, role in all_staff_with_roles:  # Now we have both name and role
+                # Initialize row data with staff name and role as separate columns
                 row_data = {
                     'STAFF NAME': staff_name,
+                    'ROLE': role,
                 }
                 
                 # Get all enrollments for this staff member
@@ -225,11 +226,11 @@ class ExcelAdminFunctions:
                 report_data.append(row_data)
             
             # Create DataFrame
-            columns = ['STAFF NAME'] + date_range
+            columns = ['STAFF NAME', 'ROLE'] + date_range
             df = pd.DataFrame(report_data, columns=columns)
             
-            # Sort by staff name
-            df = df.sort_values('STAFF NAME')
+            # Sort by staff name first, then by role
+            df = df.sort_values(['STAFF NAME', 'ROLE'])
             
             return df
             
@@ -240,7 +241,7 @@ class ExcelAdminFunctions:
             return pd.DataFrame()
 
     def export_comprehensive_schedule_to_excel(self, schedule_df, start_date, end_date):
-        """Export comprehensive schedule report to Excel format with class details as comments using openpyxl"""
+        """Export comprehensive schedule report to Excel format with class details as comments using openpyxl - UPDATED for Role column"""
         try:
             from io import BytesIO
             import openpyxl
@@ -266,6 +267,7 @@ class ExcelAdminFunctions:
             )
             
             staff_name_font = Font(bold=True)
+            role_font = Font(color="666666")  # Gray color for roles
             date_alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
             educator_font = Font(color="0066CC")  # Blue color for educator entries
             
@@ -295,11 +297,12 @@ class ExcelAdminFunctions:
             
             # Set column widths
             worksheet.column_dimensions['A'].width = 25  # Staff Name
+            worksheet.column_dimensions['B'].width = 12  # Role column
             
             # Date columns - make them narrower but tall enough for wrapped text
-            date_columns = len(schedule_df.columns) - 1  # Subtract STAFF NAME column
+            date_columns = len(schedule_df.columns) - 2  # Subtract STAFF NAME and ROLE columns
             if date_columns > 0:
-                for col_num in range(2, 2 + date_columns):
+                for col_num in range(3, 3 + date_columns):  # Start from column C (3rd column)
                     col_letter = openpyxl.utils.get_column_letter(col_num)
                     worksheet.column_dimensions[col_letter].width = 15
             
@@ -313,6 +316,9 @@ class ExcelAdminFunctions:
                     if column_name == 'STAFF NAME':
                         cell.font = staff_name_font
                         cell.alignment = Alignment(horizontal='left', vertical='center')
+                    elif column_name == 'ROLE':
+                        cell.font = role_font
+                        cell.alignment = Alignment(horizontal='center', vertical='center')
                     else:
                         # Date columns - check if contains activities and add comments
                         cell.alignment = date_alignment
@@ -329,12 +335,28 @@ class ExcelAdminFunctions:
                             if 'EDU:' in cell_value:
                                 cell.font = educator_font
                             
-                            # Add comment if we have details
+                            # Add Excel COMMENT (purple triangle) if we have details
                             if comment_text:
-                                comment = Comment(comment_text, "System")
-                                comment.width = 300
-                                comment.height = 100
-                                cell.comment = comment
+                                try:
+                                    # Create traditional Excel comment (purple triangle), not note (yellow)
+                                    comment = Comment(comment_text, "Training System")
+                                    
+                                    # Set properties to ensure it's a traditional comment
+                                    comment.width = 400
+                                    comment.height = 120
+                                    comment.author = "Training System"
+                                    
+                                    # Force traditional comment format by ensuring these properties are set
+                                    comment._parent = cell
+                                    
+                                    # Assign the comment to the cell
+                                    cell.comment = comment
+                                    
+                                    print(f"DEBUG: Added comment to {cell.coordinate} for {staff_name}")
+                                except Exception as comment_error:
+                                    print(f"Error adding comment to cell {cell.coordinate}: {comment_error}")
+                                    import traceback
+                                    traceback.print_exc()
             
             # Set row heights for better readability
             for row in range(start_row + 1, start_row + 1 + len(schedule_df)):
@@ -346,7 +368,8 @@ class ExcelAdminFunctions:
             worksheet.cell(row=legend_row + 1, column=1, value='Regular text = Student enrollment')
             legend_cell = worksheet.cell(row=legend_row + 2, column=1, value='EDU: prefix = Educator signup')
             legend_cell.font = educator_font
-            worksheet.cell(row=legend_row + 3, column=1, value='Hover over cells with activities to see class details')
+            worksheet.cell(row=legend_row + 3, column=1, value='Purple triangles = Class time & location details (hover to view)')
+            worksheet.cell(row=legend_row + 4, column=1, value='Sort by Role column to group staff by their roles')
             
             # Save to BytesIO buffer
             output = BytesIO()
@@ -362,7 +385,7 @@ class ExcelAdminFunctions:
             return None
 
     def _generate_class_details_comment(self, activities, date_str, staff_name):
-        """Generate comment text with class details for activities"""
+        """Generate comment text with class details for activities - IMPROVED formatting"""
         try:
             comment_lines = []
             
@@ -404,38 +427,43 @@ class ExcelAdminFunctions:
                             staff_name, class_name, full_date_str, class_details
                         )
                     
-                    # Build comment for this activity
+                    # Build comment for this activity with improved formatting
                     if len(activities) > 1:
                         # Multiple activities - include class name and type header
-                        activity_comment = f"{class_name} ({activity_type}):\n"
+                        activity_comment = f"=== {class_name} ({activity_type}) ===\n"
                         activity_comment += f"Time: {time_info}\n"
                         activity_comment += f"Location: {location_info}"
                     else:
-                        # Single activity - just time and location
-                        activity_comment = f"Time: {time_info}\n"
+                        # Single activity - more concise format
+                        activity_comment = f"{class_name} - {activity_type}\n"
+                        activity_comment += f"Time: {time_info}\n"
                         activity_comment += f"Location: {location_info}"
                     
                     comment_lines.append(activity_comment)
                 else:
                     # Fallback if class details not found
                     if len(activities) > 1:
-                        # Multiple activities - include class name and type header
-                        activity_comment = f"{class_name} ({activity_type}):\n"
+                        activity_comment = f"=== {class_name} ({activity_type}) ===\n"
                         activity_comment += "Time: Not specified\n"
                         activity_comment += "Location: Not specified"
                     else:
-                        # Single activity - just time and location
-                        activity_comment = "Time: Not specified\n"
+                        activity_comment = f"{class_name} - {activity_type}\n"
+                        activity_comment += "Time: Not specified\n"
                         activity_comment += "Location: Not specified"
                     
                     comment_lines.append(activity_comment)
             
-            # Join all activity comments
-            return '\n\n'.join(comment_lines) if comment_lines else None
-            
+            # Join all activity comments with separator for multiple activities
+            if len(comment_lines) > 1:
+                return '\n\n'.join(comment_lines)
+            elif comment_lines:
+                return comment_lines[0]
+            else:
+                return None
+                
         except Exception as e:
             print(f"Error generating class details comment: {e}")
-            return None
+            return f"Class: {', '.join(activities)}\nDetails unavailable"
 
     def _get_specific_enrollment_details(self, staff_name, class_name, class_date, class_details):
         """Get time and location details for a specific staff enrollment"""
@@ -550,12 +578,25 @@ class ExcelAdminFunctions:
             return "Not specified"
 
     def _get_all_staff_from_database(self):
-        """Get all unique staff names from the database (enrollments and educator signups)"""
+        """Get all staff names with their roles - includes ALL staff from Excel roster plus any database-only staff"""
         try:
-            all_staff = set()  # Use set to avoid duplicates
+            all_staff_with_roles = {}  # Dictionary to store staff_name: role
             
-            # Get all staff from training enrollments
+            # FIRST: Get all staff from Excel roster (this ensures we include everyone)
+            excel_staff = self.excel.get_staff_list()
+            print(f"Found {len(excel_staff)} staff in Excel roster")
+            
+            for staff_name in excel_staff:
+                if staff_name:
+                    # Get role from Excel roster
+                    role = self._get_staff_role_from_excel(staff_name)
+                    all_staff_with_roles[staff_name] = role
+                    print(f"DEBUG: Added from Excel: {staff_name} - {role}")
+            
+            # SECOND: Get any additional staff from database who might not be in Excel roster
             self.db.connect()
+            
+            # Get staff from training enrollments
             self.db.cursor.execute('''
                 SELECT DISTINCT staff_name FROM training_enrollments 
                 WHERE status = 'active'
@@ -564,11 +605,13 @@ class ExcelAdminFunctions:
             
             for row in enrollment_staff:
                 staff_name = row['staff_name']
-                if staff_name:
-                    all_staff.add(staff_name)
-                    print(f"DEBUG: Found staff from enrollments: {staff_name}")
+                if staff_name and staff_name not in all_staff_with_roles:
+                    # This staff member is in database but not in Excel roster
+                    role = self._get_staff_role_from_excel(staff_name) or "Unknown"
+                    all_staff_with_roles[staff_name] = role
+                    print(f"DEBUG: Added from enrollments DB: {staff_name} - {role}")
             
-            # Get all staff from educator signups if educator manager is available
+            # Get staff from educator signups
             if self.educator:
                 self.db.cursor.execute('''
                     SELECT DISTINCT staff_name FROM training_educator_signups 
@@ -578,17 +621,20 @@ class ExcelAdminFunctions:
                 
                 for row in educator_staff:
                     staff_name = row['staff_name']
-                    if staff_name:
-                        all_staff.add(staff_name)
-                        print(f"DEBUG: Found staff from educator signups: {staff_name}")
+                    if staff_name and staff_name not in all_staff_with_roles:
+                        # This staff member is in database but not in Excel roster
+                        role = self._get_staff_role_from_excel(staff_name) or "Unknown"
+                        all_staff_with_roles[staff_name] = role
+                        print(f"DEBUG: Added from educator DB: {staff_name} - {role}")
             
             self.db.disconnect()
             
-            # Convert to sorted list
-            staff_list = sorted(list(all_staff))
+            # Convert to list of tuples (name, role) and sort by name
+            staff_with_roles = [(name, role) for name, role in all_staff_with_roles.items()]
+            staff_with_roles.sort(key=lambda x: x[0])  # Sort by name
             
-            print(f"Found {len(staff_list)} unique staff members from database: {staff_list}")
-            return staff_list
+            print(f"Final count: {len(staff_with_roles)} staff members with roles")
+            return staff_with_roles
             
         except Exception as e:
             print(f"Error getting staff from database: {e}")
@@ -598,87 +644,42 @@ class ExcelAdminFunctions:
                 self.db.disconnect()
             return []
 
-    def _get_class_time_for_date(self, class_details):
-        """Extract time information from class details"""
+    def _get_staff_role_from_excel(self, staff_name):
+        """Get staff member's role from Excel enrollment sheet"""
         try:
-            # Get the first time slot (most common case)
-            start_time = class_details.get('time_1_start')
-            end_time = class_details.get('time_1_end')
+            if not self.excel.enrollment_sheet:
+                return "Unknown"
             
-            if start_time and end_time:
-                time_info = f"{start_time} - {end_time}"
-            elif start_time:
-                time_info = f"Starts: {start_time}"
-            elif end_time:
-                time_info = f"Ends: {end_time}"
-            else:
-                time_info = "Not specified"
+            # Find the staff member's row
+            staff_row = None
+            for row_idx, row in enumerate(self.excel.enrollment_sheet.iter_rows(min_row=2, max_col=1), start=2):
+                if row[0].value and str(row[0].value).strip() == staff_name:
+                    staff_row = row_idx
+                    break
             
-            # Check for multiple sessions
-            classes_per_day = int(class_details.get('classes_per_day', 1))
-            if classes_per_day > 1:
-                sessions = []
-                for i in range(1, min(classes_per_day + 1, 5)):  # Max 4 sessions
-                    start_key = f'time_{i}_start'
-                    end_key = f'time_{i}_end'
-                    
-                    session_start = class_details.get(start_key)
-                    session_end = class_details.get(end_key)
-                    
-                    if session_start and session_end:
-                        sessions.append(f"Session {i}: {session_start} - {session_end}")
-                
-                if sessions:
-                    time_info = '; '.join(sessions)
+            if not staff_row:
+                return "Unknown"
             
-            return time_info
+            # Find the Role column
+            role_col = None
+            for col_idx, col in enumerate(self.excel.enrollment_sheet.iter_cols(min_row=1, max_row=1), start=1):
+                header_value = str(col[0].value).strip() if col[0].value else ""
+                if header_value == "Role":
+                    role_col = col_idx
+                    break
+            
+            if not role_col:
+                return "Unknown"
+            
+            # Get role value
+            role_cell = self.excel.enrollment_sheet.cell(row=staff_row, column=role_col)
+            role_value = str(role_cell.value).strip() if role_cell.value else "Unknown"
+            
+            return role_value
             
         except Exception as e:
-            print(f"Error getting class time: {e}")
-            return "Not specified"
-
-    def _get_class_time_for_date(self, class_details):
-        """Extract general time information from class details"""
-        try:
-            # Get the first time slot (most common case)
-            start_time = class_details.get('time_1_start')
-            end_time = class_details.get('time_1_end')
-            
-            if start_time and end_time:
-                time_info = f"{start_time} - {end_time}"
-            elif start_time:
-                time_info = f"Starts: {start_time}"
-            elif end_time:
-                time_info = f"Ends: {end_time}"
-            else:
-                time_info = "Not specified"
-            
-            return time_info
-            
-        except Exception as e:
-            print(f"Error getting class time: {e}")
-            return "Not specified"
-        """Get location information for a specific date"""
-        try:
-            # Search through date rows to find matching date and its location
-            for i in range(1, 15):  # Check rows 1-14 for dates
-                date_key = f'date_{i}'
-                location_key = f'date_{i}_location'
-                
-                if date_key in class_details and class_details[date_key]:
-                    stored_date = class_details[date_key]
-                    
-                    # Compare dates (handle different formats)
-                    if stored_date == target_date:
-                        location = class_details.get(location_key, '')
-                        return location.strip() if location else "Not specified"
-            
-            # If no specific location found for the date
-            return "Not specified"
-            
-        except Exception as e:
-            print(f"Error getting class location: {e}")
-            return "Not specified"
+            print(f"Error getting role for {staff_name}: {e}")
+            return "Unknown"
 
     def _get_class_time_for_date(self, class_details):
         """Extract time information from class details"""
