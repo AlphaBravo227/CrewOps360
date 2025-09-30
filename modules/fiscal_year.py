@@ -4,6 +4,7 @@ Fiscal Year 2026 Track Display Module - ENHANCED WITH STAFF FILTERING
 To be integrated with existing app.py
 Place this file in your project root or modules/ directory
 UPDATED: Added staff member filtering functionality alongside role filtering
+UPDATED: Added Master Tracks tab and Version tab to Excel export
 """
 
 import streamlit as st
@@ -17,6 +18,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.comments import Comment
 import base64
 import json
+import pytz
 
 class FiscalYearDisplay:
     """Fiscal Year display component for integration with existing app"""
@@ -619,7 +621,7 @@ class FiscalYearDisplay:
             st.error(f"❌ {message}")
     
     def export_to_excel(self, role_filter=None, staff_filter=None):
-        """Export fiscal year to Excel with role and staff filtering"""
+        """Export fiscal year to Excel with role and staff filtering, Master Tracks tab, and Version tab"""
         tracks_data, staff_roles = self.load_tracks_from_db()
         
         if not tracks_data:
@@ -645,6 +647,12 @@ class FiscalYearDisplay:
             if 'Sheet' in wb.sheetnames:
                 wb.remove(wb['Sheet'])
             
+            # Store creation timestamp in Eastern Time
+            eastern = pytz.timezone('US/Eastern')
+            now_eastern = datetime.now(eastern)
+            # Format with timezone abbreviation (EST or EDT)
+            creation_timestamp = now_eastern.strftime("%Y-%m-%d %H:%M:%S %Z")
+            
             # Define styles
             header_font = Font(bold=True, size=12)
             role_font = Font(bold=True, size=10)
@@ -662,32 +670,77 @@ class FiscalYearDisplay:
                 'Medic': PatternFill(start_color="F0F0FF", end_color="F0F0FF", fill_type="solid")
             }
             
+            # ========================================
+            # TAB 1: MASTER TRACKS (42-Day Pattern)
+            # ========================================
+            master_ws = wb.create_sheet(title="Master Tracks", index=0)
+            
+            # Generate 42 pattern days
+            pattern_days = []
+            days_of_week = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+            week_letters = ["A", "A", "B", "B", "C", "C"]
+            week_numbers = [1, 2, 3, 4, 5, 6]
+            
+            for week_idx in range(6):
+                for day_idx in range(7):
+                    pattern_day = f"{days_of_week[day_idx]} {week_letters[week_idx]} {week_numbers[week_idx]}"
+                    pattern_days.append(pattern_day)
+            
+            # Headers for Master Tracks
+            master_ws['A1'] = 'Staff Name'
+            master_ws['B1'] = 'Role'
+            master_ws['A1'].font = header_font
+            master_ws['B1'].font = header_font
+            
+            # Pattern day headers
+            for col_idx, pattern_day in enumerate(pattern_days, start=3):
+                cell = master_ws.cell(row=1, column=col_idx, value=pattern_day)
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal='center', text_rotation=90)
+                master_ws.column_dimensions[get_column_letter(col_idx)].width = 4
+            
+            # Sort staff by role then name
+            sorted_staff = sorted(tracks_data.keys(), key=lambda x: (staff_roles.get(x, 'Unknown'), x))
+            
+            # Populate Master Tracks data
+            row_idx = 2
+            for staff_name in sorted_staff:
+                role = staff_roles.get(staff_name, 'Unknown')
+                
+                # Staff name and role
+                name_cell = master_ws.cell(row=row_idx, column=1, value=staff_name)
+                role_cell = master_ws.cell(row=row_idx, column=2, value=role)
+                
+                # Apply role-based background color
+                if role in role_fills:
+                    name_cell.fill = role_fills[role]
+                    role_cell.fill = role_fills[role]
+                
+                # Fill in shifts for each pattern day
+                for col_idx, pattern_day in enumerate(pattern_days, start=3):
+                    shift = tracks_data.get(staff_name, {}).get(pattern_day, '')
+                    cell = master_ws.cell(row=row_idx, column=col_idx, value=shift)
+                    
+                    # Apply shift-based styling
+                    if shift in shift_fills:
+                        cell.fill = shift_fills[shift]
+                    
+                    cell.alignment = Alignment(horizontal='center')
+                
+                row_idx += 1
+            
+            # Freeze panes for Master Tracks
+            master_ws.freeze_panes = 'C2'
+            
+            # Set column widths
+            master_ws.column_dimensions['A'].width = 18
+            master_ws.column_dimensions['B'].width = 12
+            
             fiscal_months = self.get_fiscal_year_months()
             
-            # Create overview sheet
-            overview_ws = wb.create_sheet(title="Overview")
-            overview_ws['A1'] = 'Fiscal Year 2026 Track Overview'
-            overview_ws['A1'].font = Font(bold=True, size=14)
-            
-            # Add filtering information
-            if role_filter and role_filter != 'All Roles':
-                overview_ws['A3'] = f'Filtered by Role: {role_filter}'
-                overview_ws['A3'].font = role_font
-            if staff_filter and staff_filter != 'All Staff':
-                overview_ws['A4'] = f'Filtered by Staff: {staff_filter}'
-                overview_ws['A4'].font = role_font
-            
-            # Add role statistics
-            overview_ws['A6'] = 'Staff Role Summary:'
-            overview_ws['A6'].font = role_font
-            
-            role_stats = self.get_role_statistics(staff_roles)
-            row = 7
-            for role, stats in role_stats.items():
-                overview_ws[f'A{row}'] = f'{role}:'
-                overview_ws[f'B{row}'] = f"{stats['count']} ({stats['percentage']}%)"
-                row += 1
-            
+            # ========================================
+            # MONTHLY SHEETS
+            # ========================================
             # Create sheet for each month
             for month_info in fiscal_months:
                 month_name = month_info['name'].replace(' ', '_')
@@ -772,6 +825,14 @@ class FiscalYearDisplay:
                 ws.column_dimensions['B'].width = 12
                 for col in range(3, col_idx):
                     ws.column_dimensions[get_column_letter(col)].width = 6
+            
+            # ========================================
+            # LAST TAB: VERSION
+            # ========================================
+            version_ws = wb.create_sheet(title="Version")
+            version_ws['A1'] = f"Created: {creation_timestamp}"
+            version_ws['A1'].font = Font(bold=True, size=11)
+            version_ws.column_dimensions['A'].width = 30
             
             # Save to temp file
             export_dir = 'exports'
@@ -1001,11 +1062,14 @@ def display_integration_guide():
        - Export filtered data only
        - Filename includes filter information
        - Admin panel with filtering support
+       - Master Tracks tab (42-day pattern view)
+       - Version tab with EST timestamp
     
     ### Integration Steps:
     
     1. Replace your existing `fiscal_year.py` with this enhanced version
-    2. Update your `app.py` to use the new functions:
+    2. Ensure `pytz` is installed: `pip install pytz`
+    3. Update your `app.py` to use the new functions:
        ```python
        from fiscal_year import add_fiscal_year_display_to_app
        
@@ -1013,7 +1077,7 @@ def display_integration_guide():
        add_fiscal_year_display_to_app()
        ```
     
-    3. For admin functionality:
+    4. For admin functionality:
        ```python
        from fiscal_year import add_fiscal_year_export_to_admin
        
@@ -1024,6 +1088,12 @@ def display_integration_guide():
     ### New Session State Variables:
     - `fy_staff_filter`: Current staff filter selection
     - `fy_selected_staff`: List of individually selected staff members
+    
+    ### Excel Export Tab Order:
+    1. Master Tracks (42-day pattern)
+    2. Overview
+    3. Monthly sheets (September 2025 - September 2026)
+    4. Version (creation timestamp in EST)
     
     All existing functionality is preserved while adding these new filtering capabilities!
     """)
