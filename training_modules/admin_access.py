@@ -104,7 +104,8 @@ class AdminAccess:
             ("📚 Manage Classes", "manage_classes", "Configure class settings and schedules"),
             ("📄 Data Export", "data_management", "Export training data"),
             ("📊 System Statistics", "system_stats", "View training system usage"),
-            ("🗂️ Database Maintenance", "database_maintenance", "Training database operations")
+            ("🗂️ Database Maintenance", "database_maintenance", "Training database operations"),
+            ("🔄 Track Status Manager", "track_status_manager", "Activate/deactivate staff tracks"),  # <-- ADD THIS LINE
         ]
         
         for label, key, description in admin_sections:
@@ -120,7 +121,8 @@ class AdminAccess:
                         st.rerun()
                 
                 st.markdown("---")
-    
+
+
     def logout_admin(self):
         """Logout admin user"""
         keys_to_remove = [
@@ -198,9 +200,12 @@ class AdminAccess:
             self._show_system_stats()
         elif function_key == "database_maintenance":
             self._show_database_maintenance()
+        elif function_key == "track_status_manager":  # <-- ADD THIS BLOCK
+            self._show_track_status_manager()
         else:
             st.error("Unknown admin function")
-    
+
+
     def _show_enrollment_reports(self):
         """Show enrollment reports functionality"""
         if self.excel_admin_functions:
@@ -886,3 +891,14 @@ class AdminAccess:
             except Exception as e:
                 st.error(f"Error loading utilization data: {str(e)}")
         
+    def _show_track_status_manager(self):
+        """Show track status management functionality"""
+        st.subheader("🔄 Track Status Manager")
+        
+        from modules.admin_track_status import display_track_status_manager
+        
+        try:
+            display_track_status_manager()
+        except Exception as e:
+            st.error(f"Error loading track status manager: {str(e)}")
+            st.info("Make sure modules/admin_track_status.py exists and is properly configured")
