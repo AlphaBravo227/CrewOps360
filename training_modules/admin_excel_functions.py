@@ -776,6 +776,9 @@ class ExcelAdminFunctions:
             
             max_students = int(class_details.get('students_per_class', 21))
             instructor_requirement = class_details.get('instructors_per_day', 0)
+            classes_per_day = int(class_details.get('classes_per_day', 1))
+            is_two_day = class_details.get('is_two_day_class', 'No').lower() == 'yes'
+            is_nurse_medic_separate = class_details.get('nurses_medic_separate', 'No').lower() == 'yes'
             
             total_capacity = 0
             total_enrolled = 0
@@ -783,16 +786,50 @@ class ExcelAdminFunctions:
             total_educator_signups = 0
             educator_coverage = 0
             
+            # Calculate capacity per date offering
+            if is_nurse_medic_separate:
+                # nurse/medic separate: slots per session × 2 roles × sessions per day
+                capacity_per_date = max_students * classes_per_day
+            else:
+                # regular or single session: slots per session × sessions per day
+                capacity_per_date = max_students * classes_per_day
+            
             # Calculate across all dates
-            for i in range(1, 9):
+            for i in range(1, 15):  # Check rows 1-14
                 date_key = f'date_{i}'
                 if date_key in class_details and class_details[date_key]:
-                    total_dates += 1
-                    total_capacity += max_students
-                    
                     date_str = class_details[date_key]
-                    if date_str in enrollment_summary:
-                        total_enrolled += enrollment_summary[date_str]['total']
+                    
+                    # For two-day classes, each configured date represents one offering
+                    # but we need to count enrollments for both days
+                    if is_two_day:
+                        try:
+                            date_obj = datetime.strptime(date_str, '%m/%d/%Y')
+                            day_1 = date_obj.strftime('%m/%d/%Y')
+                            day_2 = (date_obj + timedelta(days=1)).strftime('%m/%d/%Y')
+                            
+                            # Count this as ONE date offering with ONE capacity
+                            total_dates += 1
+                            total_capacity += capacity_per_date
+                            
+                            # But count enrollments from both days
+                            if day_1 in enrollment_summary:
+                                total_enrolled += enrollment_summary[day_1]['total']
+                            if day_2 in enrollment_summary:
+                                total_enrolled += enrollment_summary[day_2]['total']
+                        except:
+                            # Fallback if date parsing fails
+                            total_dates += 1
+                            total_capacity += capacity_per_date
+                            if date_str in enrollment_summary:
+                                total_enrolled += enrollment_summary[date_str]['total']
+                    else:
+                        # Regular single-day class
+                        total_dates += 1
+                        total_capacity += capacity_per_date
+                        
+                        if date_str in enrollment_summary:
+                            total_enrolled += enrollment_summary[date_str]['total']
                     
                     # Add educator data if available
                     if self.educator and instructor_requirement > 0:
@@ -818,7 +855,7 @@ class ExcelAdminFunctions:
             })
             
         return pd.DataFrame(utilization_data)
-    
+
     def get_conflict_analysis_report(self):
         """Analyze schedule conflicts and overrides (including educator conflicts)"""
         all_staff = self.excel.get_staff_list()
@@ -918,7 +955,7 @@ class ExcelAdminFunctions:
                 issues.append(f"Class '{class_name}' has no scheduled dates")
         
         return issues if issues else ["✅ Excel structure validation passed"]
-    
+
     def get_individual_class_report(self, class_name):
         """Generate comprehensive report for a specific class"""
         class_details = self.excel.get_class_details(class_name)
@@ -942,14 +979,20 @@ class ExcelAdminFunctions:
             'educator_analysis': {}
         }
         
-        # Get all scheduled dates and their details - now dynamically checks rows 1-14
+        # Check if this is a two-day class
+        is_two_day = report['is_two_day_class'].lower() == 'yes'
+        is_nurse_medic_separate = report['nurses_medic_separate'].lower() == 'yes'
+        classes_per_day = report['classes_per_day']
+        max_students_per_session = report['max_students_per_session']
+        
+        # Get all scheduled dates and their details
         total_capacity = 0
         total_enrolled = 0
         total_conflicts = 0
         total_educator_signups = 0
         total_educator_conflicts = 0
         
-        for i in range(1, 15):  # Check rows 1-14 for dates (only process the ones that exist)
+        for i in range(1, 15):  # Check rows 1-14 for dates
             date_key = f'date_{i}'
             if date_key in class_details and class_details[date_key]:
                 date_str = class_details[date_key]
@@ -957,48 +1000,82 @@ class ExcelAdminFunctions:
                 has_live = class_details.get(f'date_{i}_has_live', False)
                 can_work_n_prior = class_details.get(f'date_{i}_can_work_n_prior', False)
                 
-                # Get enrollments for this date
-                date_enrollments = self.db.get_class_enrollments(class_name, date_str)
-                enrolled_count = len(date_enrollments)
-                conflict_count = sum(1 for e in date_enrollments if e.get('conflict_override', False))
+                # For two-day classes, expand to both days
+                dates_to_process = []
+                if is_two_day:
+                    try:
+                        date_obj = datetime.strptime(date_str, '%m/%d/%Y')
+                        day_1 = date_obj.strftime('%m/%d/%Y')
+                        day_2 = (date_obj + timedelta(days=1)).strftime('%m/%d/%Y')
+                        dates_to_process = [
+                            (day_1, 'Day 1'),
+                            (day_2, 'Day 2')
+                        ]
+                    except:
+                        dates_to_process = [(date_str, '')]
+                else:
+                    dates_to_process = [(date_str, '')]
                 
-                # Get educator signups for this date
-                educator_signups = 0
-                educator_conflicts = 0
-                educator_names = []
-                if self.educator:
-                    educator_signups = self.db.get_educator_signup_count(class_name, date_str)
-                    educator_roster = self.educator.get_class_educator_roster(class_name, date_str)
-                    educator_conflicts = sum(1 for e in educator_roster if e.get('has_conflict', False))
-                    educator_names = [e['staff_name'] for e in educator_roster if e['status'] == 'active']
-                
-                max_students = int(class_details.get('students_per_class', 21))
-                capacity = max_students
-                
-                date_info = {
-                    'date': date_str,
-                    'location': location,
-                    'has_live_option': has_live,
-                    'night_shift_ok': can_work_n_prior,
-                    'total_enrolled': enrolled_count,
-                    'total_capacity': capacity,
-                    'utilization_rate': (enrolled_count / capacity * 100) if capacity > 0 else 0,
-                    'conflicts': conflict_count,
-                    'available_slots': capacity - enrolled_count,
-                    'enrollments': date_enrollments,
-                    'educator_signups': educator_signups,
-                    'educator_requirement': report['instructor_requirement'],
-                    'educator_conflicts': educator_conflicts,
-                    'educator_names': educator_names,
-                    'educator_coverage_rate': (educator_signups / report['instructor_requirement'] * 100) if report['instructor_requirement'] > 0 else 0
-                }
-                
-                report['dates'].append(date_info)
-                total_capacity += capacity
-                total_enrolled += enrolled_count
-                total_conflicts += conflict_count
-                total_educator_signups += educator_signups
-                total_educator_conflicts += educator_conflicts
+                # Process each day (for two-day classes, this will be 2 iterations)
+                for process_date, day_label in dates_to_process:
+                    # Get enrollments for this specific date
+                    date_enrollments = self.db.get_class_enrollments(class_name, process_date)
+                    enrolled_count = len(date_enrollments)
+                    conflict_count = sum(1 for e in date_enrollments if e.get('conflict_override', False))
+                    
+                    # Get educator signups for this specific date
+                    educator_signups = 0
+                    educator_conflicts = 0
+                    educator_names = []
+                    if self.educator:
+                        educator_signups = self.db.get_educator_signup_count(class_name, process_date)
+                        educator_roster = self.educator.get_class_educator_roster(class_name, process_date)
+                        educator_conflicts = sum(1 for e in educator_roster if e.get('has_conflict', False))
+                        educator_names = [e['staff_name'] for e in educator_roster if e['status'] == 'active']
+                    
+                    # ✅ CORRECTED CAPACITY CALCULATION
+                    if is_nurse_medic_separate:
+                        # nurse/medic separate: slots per session × 2 roles × sessions per day
+                        capacity = max_students_per_session * classes_per_day
+                    else:
+                        # regular or single session: slots per session × sessions per day
+                        capacity = max_students_per_session * classes_per_day
+                    
+                    # ✅ NEW: For two-day classes, only count Day 1 for capacity/enrollment tracking
+                    # Day 2 is shown for display purposes but doesn't add to totals
+                    should_count_in_totals = not is_two_day or day_label == 'Day 1'
+                    
+                    # Create display label for date
+                    display_date = f"{process_date} ({day_label})" if day_label else process_date
+                    
+                    date_info = {
+                        'date': process_date,
+                        'display_date': display_date,
+                        'location': location,
+                        'has_live_option': has_live,
+                        'night_shift_ok': can_work_n_prior,
+                        'total_enrolled': enrolled_count,
+                        'total_capacity': capacity,
+                        'utilization_rate': (enrolled_count / capacity * 100) if capacity > 0 else 0,
+                        'conflicts': conflict_count,
+                        'available_slots': capacity - enrolled_count,
+                        'enrollments': date_enrollments,
+                        'educator_signups': educator_signups,
+                        'educator_requirement': report['instructor_requirement'],
+                        'educator_conflicts': educator_conflicts,
+                        'educator_names': educator_names,
+                        'educator_coverage_rate': (educator_signups / report['instructor_requirement'] * 100) if report['instructor_requirement'] > 0 else 0
+                    }
+                    
+                    report['dates'].append(date_info)
+                    
+                    # ✅ Only add to totals for Day 1 of two-day classes
+                    if should_count_in_totals:
+                        total_capacity += capacity
+                        total_enrolled += enrolled_count
+                        total_conflicts += conflict_count
+                        total_educator_signups += educator_signups
+                        total_educator_conflicts += educator_conflicts                
         
         # Overall statistics
         total_educator_requirement = len(report['dates']) * report['instructor_requirement']
@@ -1386,7 +1463,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
         # Individual classes tab
         individual_tab_idx = tab5 if has_educator else tab4
         with individual_tab_idx:
-            st.write("### Individual Class Reports")
+            st.write("### Enhanced Individual Class Reports")
             
             try:
                 # Class selection
@@ -1397,7 +1474,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                     class_report = excel_admin_functions.get_individual_class_report(selected_class)
                     
                     if class_report:
-                        # Class overview
+                        # Class overview header
                         st.write(f"## 📚 {class_report['class_name']}")
                         
                         col1, col2, col3, col4 = st.columns(4)
@@ -1413,7 +1490,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                         
                         # Educator overview (if applicable)
                         if has_educator and class_report['instructor_requirement'] > 0:
-                            st.write("### 👨‍🏫 Educator Coverage")
+                            st.write("### 👨‍🏫 Educator Coverage Overview")
                             
                             col1, col2, col3, col4 = st.columns(4)
                             with col1:
@@ -1425,69 +1502,115 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                             with col4:
                                 coverage_rate = class_report['overall_stats']['educator_coverage_rate']
                                 st.metric("Coverage Rate", f"{coverage_rate:.1f}%")
+                        
+                        # Enhanced detailed breakdown by date/session
+                        st.write("### 📅 Detailed Breakdown by Date and Session")
+                        
+                        if class_report['dates']:
+                            # Create tabs for each date
+                            date_tabs = st.tabs([f"📅 {date_info['date']}" for date_info in class_report['dates']])
                             
-                            # Show unique educators
-                            if class_report['educator_analysis']['educator_names']:
-                                st.write("**Educators signed up:**")
-                                for educator in class_report['educator_analysis']['educator_names']:
-                                    st.write(f"• {educator}")
-                        
-                        # Staff assignment analysis
-                        st.write("### 👥 Staff Assignment Analysis")
-                        staff_stats = class_report['staff_analysis']
-                        
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Staff Assigned", staff_stats['total_assigned'])
-                        with col2:
-                            st.metric("Staff Enrolled", staff_stats['total_enrolled'])
-                        with col3:
-                            enrollment_rate = staff_stats['enrollment_rate']
-                            st.metric("Enrollment Rate", f"{enrollment_rate:.1f}%")
-                        
-                        # Show staff not yet enrolled
-                        if staff_stats['assigned_but_not_enrolled']:
-                            st.warning("Staff assigned but not enrolled:")
-                            for staff in staff_stats['assigned_but_not_enrolled']:
-                                st.write(f"• {staff}")
+                            for tab_idx, date_info in enumerate(class_report['dates']):
+                                with date_tabs[tab_idx]:
+                                    _display_enhanced_date_breakdown(
+                                        date_info, selected_class, excel_admin_functions, 
+                                        class_report, has_educator
+                                    )
+                        else:
+                            st.warning("No dates configured for this class")
                         
                         # Export options
                         st.write("### 📥 Export Options")
                         col1, col2, col3 = st.columns(3)
-                        
+
                         with col1:
                             if st.button("Export Class Roster"):
                                 roster_df, title = excel_admin_functions.export_class_roster(selected_class)
-                                csv = roster_df.to_csv(index=False)
+                                
+                                # Create Excel file instead of CSV
+                                from io import BytesIO
+                                output = BytesIO()
+                                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                    roster_df.to_excel(writer, sheet_name='Class Roster', index=False)
+                                    
+                                    # Auto-adjust column widths
+                                    worksheet = writer.sheets['Class Roster']
+                                    for idx, col in enumerate(roster_df.columns):
+                                        max_length = max(
+                                            roster_df[col].astype(str).apply(len).max(),
+                                            len(col)
+                                        ) + 2
+                                        worksheet.column_dimensions[chr(65 + idx)].width = min(max_length, 50)
+                                
+                                excel_data = output.getvalue()
+                                
                                 st.download_button(
-                                    "Download Roster CSV",
-                                    csv,
-                                    f"{selected_class.replace(' ', '_')}_roster_{datetime.now().strftime('%Y%m%d')}.csv",
-                                    "text/csv"
+                                    "Download Roster Excel",
+                                    excel_data,
+                                    f"{selected_class.replace(' ', '_')}_roster_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    use_container_width=True
                                 )
-                        
+
                         with col2:
                             if st.button("Export Completion Tracking"):
                                 completion_df = excel_admin_functions.get_class_completion_tracking(selected_class)
-                                csv = completion_df.to_csv(index=False)
+                                
+                                # Create Excel file instead of CSV
+                                from io import BytesIO
+                                output = BytesIO()
+                                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                    completion_df.to_excel(writer, sheet_name='Completion Tracking', index=False)
+                                    
+                                    # Auto-adjust column widths
+                                    worksheet = writer.sheets['Completion Tracking']
+                                    for idx, col in enumerate(completion_df.columns):
+                                        max_length = max(
+                                            completion_df[col].astype(str).apply(len).max(),
+                                            len(col)
+                                        ) + 2
+                                        worksheet.column_dimensions[chr(65 + idx)].width = min(max_length, 50)
+                                
+                                excel_data = output.getvalue()
+                                
                                 st.download_button(
-                                    "Download Completion CSV",
-                                    csv,
-                                    f"{selected_class.replace(' ', '_')}_completion_{datetime.now().strftime('%Y%m%d')}.csv",
-                                    "text/csv"
+                                    "Download Completion Excel",
+                                    excel_data,
+                                    f"{selected_class.replace(' ', '_')}_completion_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    use_container_width=True
                                 )
-                        
+
                         with col3:
                             if has_educator and class_report['instructor_requirement'] > 0:
                                 if st.button("Export Educator Roster"):
                                     educator_df, title = excel_admin_functions.export_educator_roster(selected_class)
-                                    csv = educator_df.to_csv(index=False)
+                                    
+                                    # Create Excel file instead of CSV
+                                    from io import BytesIO
+                                    output = BytesIO()
+                                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                        educator_df.to_excel(writer, sheet_name='Educator Roster', index=False)
+                                        
+                                        # Auto-adjust column widths
+                                        worksheet = writer.sheets['Educator Roster']
+                                        for idx, col in enumerate(educator_df.columns):
+                                            max_length = max(
+                                                educator_df[col].astype(str).apply(len).max(),
+                                                len(col)
+                                            ) + 2
+                                            worksheet.column_dimensions[chr(65 + idx)].width = min(max_length, 50)
+                                    
+                                    excel_data = output.getvalue()
+                                    
                                     st.download_button(
-                                        "Download Educator CSV",
-                                        csv,
-                                        f"{selected_class.replace(' ', '_')}_educators_{datetime.now().strftime('%Y%m%d')}.csv",
-                                        "text/csv"
+                                        "Download Educator Excel",
+                                        excel_data,
+                                        f"{selected_class.replace(' ', '_')}_educators_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        use_container_width=True
                                     )
+
                     else:
                         st.error(f"Could not generate report for {selected_class}")
             except Exception as e:
@@ -1666,7 +1789,194 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                 st.error(f"Error generating report: {str(e)}")
                 import traceback
                 traceback.print_exc()
-    
-    # Replace the existing method
+
+    def _display_enhanced_date_breakdown(date_info, class_name, excel_admin_functions, class_report, has_educator):
+        """Display enhanced breakdown for a specific date with sessions and participants"""
+        
+        date_str = date_info['date']
+        location = date_info.get('location', 'Not specified')
+        has_live_option = date_info.get('has_live_option', False)
+        night_shift_ok = date_info.get('night_shift_ok', False)
+        is_two_day = class_report.get('is_two_day_class', 'No').lower() == 'yes'
+        
+        # Date header with metadata
+        st.write(f"#### 📍 Location: {location}")
+        
+        if night_shift_ok:
+            st.info("🌙 Night shift prior OK for this date")
+        
+        if is_two_day:
+            st.info("📅 Two-Day Class: Enrollment covers consecutive days")
+        
+        # Get session options for this date
+        session_options = excel_admin_functions.enrollment.get_available_session_options(class_name, date_str)
+        
+        if not session_options:
+            st.warning("No session data available for this date")
+            return
+        
+        # Display sessions
+        for session_idx, session_option in enumerate(session_options):
+            session_type = session_option.get('type', 'unknown')
+            
+            # Create session header
+            if session_type == 'staff_meeting':
+                _display_staff_meeting_session(session_option, date_str, class_name, excel_admin_functions, has_educator, class_report)
+            elif session_type in ['nurse_medic_separate', 'nurse_medic_separate_single']:
+                _display_nurse_medic_session(session_option, date_str, class_name, excel_admin_functions, has_educator, class_report)
+            elif session_type in ['regular', 'regular_single']:
+                _display_regular_session(session_option, date_str, class_name, excel_admin_functions, has_educator, class_report)
+            else:
+                st.warning(f"Unknown session type: {session_type}")
+
+    def _display_nurse_medic_session(session_option, date_str, class_name, excel_admin_functions, has_educator, class_report):
+        """Display nurse/medic separated session breakdown"""
+        session_time = session_option.get('session_time')
+        display_time = session_option.get('display_time', 'Session')
+        
+        with st.expander(f"⚕️ **{display_time}** (Role-Separated)", expanded=True):
+            nurses = session_option.get('nurses', [])
+            medics = session_option.get('medics', [])
+            nurse_available = session_option.get('nurse_available', True)
+            medic_available = session_option.get('medic_available', True)
+            
+            # FIXED: For nurse/medic separate, max_students_per_session is the TOTAL capacity
+            # which is split equally between nurses and medics
+            max_students_per_session = class_report['max_students_per_session']
+            nurse_capacity = max_students_per_session // 2  # Half for nurses
+            medic_capacity = max_students_per_session // 2  # Half for medics
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.write("**👩‍⚕️ Nurses**")
+                nurse_spots_remaining = max(0, nurse_capacity - len(nurses))
+                st.write(f"**Enrolled:** {len(nurses)}/{nurse_capacity}")
+                st.write(f"**Spots Remaining:** {nurse_spots_remaining}")
+                
+                if nurses:
+                    st.write("**Nurse Participants:**")
+                    for nurse in sorted(nurses):
+                        st.write(f"• {nurse}")
+                else:
+                    st.write("*No nurses enrolled*")
+            
+            with col2:
+                st.write("**🚑 Medics**")
+                medic_spots_remaining = max(0, medic_capacity - len(medics))
+                st.write(f"**Enrolled:** {len(medics)}/{medic_capacity}")
+                st.write(f"**Spots Remaining:** {medic_spots_remaining}")
+                
+                if medics:
+                    st.write("**Medic Participants:**")
+                    for medic in sorted(medics):
+                        st.write(f"• {medic}")
+                else:
+                    st.write("*No medics enrolled*")
+            
+            with col3:
+                if has_educator and class_report['instructor_requirement'] > 0:
+                    _display_educator_breakdown(date_str, class_name, excel_admin_functions, class_report)
+
+    def _display_regular_session(session_option, date_str, class_name, excel_admin_functions, has_educator, class_report):
+        """Display regular session breakdown"""
+        session_time = session_option.get('session_time')
+        display_time = session_option.get('display_time', 'Regular Session')
+        enrolled_participants = session_option.get('enrolled', [])
+        available_slots = session_option.get('available_slots', 0)
+        max_capacity = len(enrolled_participants) + available_slots
+        
+        session_header = f"📚 **{display_time}**" if session_time else "📚 **Regular Class Session**"
+        
+        with st.expander(session_header, expanded=True):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**👥 Attendees**")
+                st.write(f"**Enrolled:** {len(enrolled_participants)}/{max_capacity}")
+                st.write(f"**Spots Remaining:** {available_slots}")
+                
+                if enrolled_participants:
+                    st.write("**Participant List:**")
+                    for participant in sorted(enrolled_participants):
+                        st.write(f"• {participant}")
+                else:
+                    st.write("*No participants enrolled*")
+            
+            with col2:
+                if has_educator and class_report['instructor_requirement'] > 0:
+                    _display_educator_breakdown(date_str, class_name, excel_admin_functions, class_report)
+
+    def _display_educator_breakdown(date_str, class_name, excel_admin_functions, class_report):
+        """Display educator breakdown for a specific date"""
+        st.write("**👨‍🏫 Educators**")
+        
+        instructor_requirement = class_report['instructor_requirement']
+        
+        # Get educator roster for this date
+        educator_roster = []
+        if excel_admin_functions.educator:
+            educator_roster = excel_admin_functions.educator.get_class_educator_roster(class_name, date_str)
+        
+        current_signups = len([e for e in educator_roster if e['status'] == 'active'])
+        spots_remaining = max(0, instructor_requirement - current_signups)
+        
+        st.write(f"**Signed Up:** {current_signups}/{instructor_requirement}")
+        st.write(f"**Spots Remaining:** {spots_remaining}")
+        
+        if educator_roster:
+            active_educators = [e for e in educator_roster if e['status'] == 'active']
+            if active_educators:
+                st.write("**Educator List:**")
+                for educator in sorted(active_educators, key=lambda x: x['staff_name']):
+                    educator_display = f"• {educator['staff_name']}"
+                    if educator.get('has_conflict'):
+                        educator_display += " ⚠️"
+                    st.write(educator_display)
+            else:
+                st.write("*No educators signed up*")
+        else:
+            st.write("*No educators signed up*")
+        
+        # Show status indicator
+        if current_signups >= instructor_requirement:
+            st.success("✅ Fully Staffed")
+        elif current_signups >= instructor_requirement * 0.5:
+            st.warning("🟡 Partially Staffed")
+        else:
+            st.error("🔴 Needs Educators")   
+
+    def _display_staff_meeting_session(session_option, date_str, class_name, excel_admin_functions, has_educator, class_report):
+        """Display staff meeting session breakdown"""
+        meeting_type = session_option.get('meeting_type', 'Virtual')
+        meeting_icon = "🔴" if meeting_type == 'LIVE' else "💻"
+        
+        with st.expander(f"{meeting_icon} **{meeting_type} Staff Meeting Session**", expanded=True):
+            # Get enrolled participants
+            enrolled_participants = session_option.get('enrolled', [])
+            available_slots = session_option.get('available_slots', 0)
+            max_capacity = len(enrolled_participants) + available_slots
+            
+            # Attendee breakdown
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**👥 Attendees**")
+                st.write(f"**Enrolled:** {len(enrolled_participants)}/{max_capacity}")
+                st.write(f"**Spots Remaining:** {available_slots}")
+                
+                if enrolled_participants:
+                    st.write("**Participant List:**")
+                    for participant in sorted(enrolled_participants):
+                        st.write(f"• {participant}")
+                else:
+                    st.write("*No participants enrolled*")
+            
+            with col2:
+                if has_educator and class_report['instructor_requirement'] > 0:
+                    _display_educator_breakdown(date_str, class_name, excel_admin_functions, class_report)
+                else:
+                    st.write("**ℹ️ No educators required for staff meetings**")
+                    
     admin_access_instance._show_enhanced_enrollment_reports = _show_enhanced_enrollment_reports
                     
