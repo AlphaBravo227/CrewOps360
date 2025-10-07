@@ -1331,7 +1331,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                     st.dataframe(compliance_df, use_container_width=True)
                     
                     # Export functionality
-                    if st.button("ðŸ"¥ Export Compliance Report"):
+                    if st.button("📥 Export Compliance Report"):
                         try:
                             from io import BytesIO
                             from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -1406,11 +1406,11 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                                 cell = worksheet.cell(row=row_idx, column=status_col_idx)
                                                 status_value = str(cell.value) if cell.value else ''
                                                 
-                                                if 'âœ…' in status_value or 'Complete' in status_value:
+                                                if '✅' in status_value or 'Complete' in status_value:
                                                     cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-                                                elif 'ðŸŸ¡' in status_value or 'Nearly' in status_value:
+                                                elif '🟡' in status_value or 'Nearly' in status_value:
                                                     cell.fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-                                                elif 'ðŸ"´' in status_value or 'Behind' in status_value:
+                                                elif '🔴' in status_value or 'Behind' in status_value:
                                                     cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
                                     except Exception as color_error:
                                         print(f"Error color coding Status column: {color_error}")
@@ -1420,13 +1420,13 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                 
                                 # Provide download button
                                 st.download_button(
-                                    label="ðŸ"Š Download Compliance Report (Excel)",
+                                    label="📊 Download Compliance Report (Excel)",
                                     data=excel_data,
                                     file_name=f"compliance_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     use_container_width=True
                                 )
-                                st.success("âœ… Excel report ready for download!")
+                                st.success("✅ Excel report ready for download!")
                                 
                         except Exception as e:
                             st.error(f"Error generating Excel export: {str(e)}")
@@ -1438,7 +1438,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                             st.warning("Falling back to CSV export...")
                             csv = compliance_df.to_csv(index=False)
                             st.download_button(
-                                label="ðŸ"„ Download as CSV (Fallback)",
+                                label="📄 Download as CSV (Fallback)",
                                 data=csv,
                                 file_name=f"compliance_report_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                                 mime="text/csv",
