@@ -35,13 +35,21 @@ class UnifiedDatabase:
             # Assume it's Eastern time if no timezone
             dt = self.eastern_tz.localize(dt)
         return dt.strftime('%Y-%m-%d %H:%M:%S %Z')
-        
     def connect(self):
-        """Establish database connection with proper row factory - FIXED"""
-        self.conn = sqlite3.connect(self.db_path)
+        """Establish database connection with proper row factory and thread safety - FIXED"""
+        # Close any existing connection first to ensure clean state
+        if self.conn:
+            try:
+                self.conn.close()
+            except:
+                pass
+        
+        # Create new connection with check_same_thread=False for Streamlit compatibility
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         # CRITICAL: Always ensure row factory is set for dictionary access
         self.conn.row_factory = sqlite3.Row
-        self.cursor = self.conn.cursor()
+        self.cursor = self.conn.cursor()        
+
         
     def disconnect(self):
         """Close database connection"""
@@ -433,51 +441,6 @@ class UnifiedDatabase:
         finally:
             self.disconnect()
     
-    def get_staff_educator_signups(self, staff_name):
-        """Get all educator signups for a staff member - COMPLETELY FIXED"""
-        self.connect()
-        
-        # Explicit column selection ensures proper ordering
-        self.cursor.execute('''
-            SELECT id, staff_name, class_name, class_date, conflict_override, 
-                   conflict_details, override_acknowledged, signup_date, status
-            FROM training_educator_signups
-            WHERE staff_name = ? AND status = 'active'
-            ORDER BY class_date
-        ''', (staff_name,))
-        
-        rows = self.cursor.fetchall()
-        signups = []
-        
-        for row in rows:
-            # Explicit dictionary creation to ensure all fields are captured
-            signup_dict = {
-                'id': row['id'],
-                'staff_name': row['staff_name'],
-                'class_name': row['class_name'],
-                'class_date': row['class_date'],
-                'conflict_override': row['conflict_override'],
-                'conflict_details': row['conflict_details'],
-                'override_acknowledged': row['override_acknowledged'],
-                'signup_date': row['signup_date'],
-                'status': row['status']
-            }
-            
-            # Convert timestamps for display
-            if signup_dict.get('signup_date'):
-                signup_dict['signup_date_display'] = self._parse_and_format_timestamp(
-                    signup_dict['signup_date']
-                )
-            if signup_dict.get('override_acknowledged'):
-                signup_dict['override_acknowledged_display'] = self._parse_and_format_timestamp(
-                    signup_dict['override_acknowledged']
-                )
-            
-            signups.append(signup_dict)
-        
-        self.disconnect()
-        return signups
-    
     def get_educator_signups_for_class(self, class_name, class_date=None):
         """Get all educator signups for a class - FIXED"""
         self.connect()
@@ -551,55 +514,59 @@ class UnifiedDatabase:
         return None
     
     # EXISTING ENROLLMENT METHODS - FIXED
+
     def get_staff_enrollments(self, staff_name):
-        """Get all training enrollments for a staff member - COMPLETELY FIXED"""
+        """Get all training enrollments for a staff member - FIXED connection management"""
         self.connect()
         
-        # Explicit column selection
-        self.cursor.execute('''
-            SELECT id, staff_name, class_name, class_date, role, meeting_type, 
-                   session_time, conflict_override, conflict_details, 
-                   override_acknowledged, enrollment_date, status
-            FROM training_enrollments
-            WHERE staff_name = ? AND status = 'active'
-            ORDER BY class_date
-        ''', (staff_name,))
-        
-        rows = self.cursor.fetchall()
-        enrollments = []
-        
-        for row in rows:
-            # Explicit dictionary creation
-            enrollment_dict = {
-                'id': row['id'],
-                'staff_name': row['staff_name'],
-                'class_name': row['class_name'],
-                'class_date': row['class_date'],
-                'role': row['role'],
-                'meeting_type': row['meeting_type'],
-                'session_time': row['session_time'],
-                'conflict_override': row['conflict_override'],
-                'conflict_details': row['conflict_details'],
-                'override_acknowledged': row['override_acknowledged'],
-                'enrollment_date': row['enrollment_date'],
-                'status': row['status']
-            }
+        try:
+            # Explicit column selection
+            self.cursor.execute('''
+                SELECT id, staff_name, class_name, class_date, role, meeting_type, 
+                    session_time, conflict_override, conflict_details, 
+                    override_acknowledged, enrollment_date, status
+                FROM training_enrollments
+                WHERE staff_name = ? AND status = 'active'
+                ORDER BY class_date
+            ''', (staff_name,))
             
-            # Convert timestamps for display
-            if enrollment_dict.get('enrollment_date'):
-                enrollment_dict['enrollment_date_display'] = self._parse_and_format_timestamp(
-                    enrollment_dict['enrollment_date']
-                )
-            if enrollment_dict.get('override_acknowledged'):
-                enrollment_dict['override_acknowledged_display'] = self._parse_and_format_timestamp(
-                    enrollment_dict['override_acknowledged']
-                )
+            rows = self.cursor.fetchall()
+            enrollments = []
             
-            enrollments.append(enrollment_dict)
-        
-        self.disconnect()
-        return enrollments
-        
+            for row in rows:
+                # Explicit dictionary creation
+                enrollment_dict = {
+                    'id': row['id'],
+                    'staff_name': row['staff_name'],
+                    'class_name': row['class_name'],
+                    'class_date': row['class_date'],
+                    'role': row['role'],
+                    'meeting_type': row['meeting_type'],
+                    'session_time': row['session_time'],
+                    'conflict_override': row['conflict_override'],
+                    'conflict_details': row['conflict_details'],
+                    'override_acknowledged': row['override_acknowledged'],
+                    'enrollment_date': row['enrollment_date'],
+                    'status': row['status']
+                }
+                
+                # Convert timestamps for display
+                if enrollment_dict.get('enrollment_date'):
+                    enrollment_dict['enrollment_date_display'] = self._parse_and_format_timestamp(
+                        enrollment_dict['enrollment_date']
+                    )
+                if enrollment_dict.get('override_acknowledged'):
+                    enrollment_dict['override_acknowledged_display'] = self._parse_and_format_timestamp(
+                        enrollment_dict['override_acknowledged']
+                    )
+                
+                enrollments.append(enrollment_dict)
+            
+            return enrollments
+            
+        finally:
+            self.disconnect()
+
     def get_class_enrollments(self, class_name, class_date=None):
         """Get all training enrollments for a class"""
         self.connect()
@@ -706,107 +673,6 @@ class UnifiedDatabase:
         self.disconnect()
         return enrollments
         
-    def get_live_staff_meeting_count(self, staff_name):
-        """Get count of LIVE staff meetings for a staff member"""
-        self.connect()
-        self.cursor.execute('''
-            SELECT COUNT(*) as count FROM training_enrollments
-            WHERE staff_name = ? AND meeting_type = 'LIVE' AND status = 'active'
-        ''', (staff_name,))
-        count = self.cursor.fetchone()['count']
-        self.disconnect()
-        return count
-        
-    def get_conflict_override_enrollments(self, staff_name=None):
-        """Get all training enrollments with conflict overrides"""
-        self.connect()
-        
-        if staff_name:
-            self.cursor.execute('''
-                SELECT id, staff_name, class_name, class_date, role, meeting_type,
-                       conflict_override, conflict_details, override_acknowledged
-                FROM training_enrollments
-                WHERE staff_name = ? AND conflict_override = 1 AND status = 'active'
-                ORDER BY class_date
-            ''', (staff_name,))
-        else:
-            self.cursor.execute('''
-                SELECT id, staff_name, class_name, class_date, role, meeting_type,
-                       conflict_override, conflict_details, override_acknowledged
-                FROM training_enrollments
-                WHERE conflict_override = 1 AND status = 'active'
-                ORDER BY staff_name, class_date
-            ''')
-            
-        rows = self.cursor.fetchall()
-        enrollments = []
-        for row in rows:
-            enrollment_dict = {
-                'id': row['id'],
-                'staff_name': row['staff_name'],
-                'class_name': row['class_name'],
-                'class_date': row['class_date'],
-                'role': row['role'],
-                'meeting_type': row['meeting_type'],
-                'conflict_override': row['conflict_override'],
-                'conflict_details': row['conflict_details'],
-                'override_acknowledged': row['override_acknowledged']
-            }
-            
-            if enrollment_dict.get('override_acknowledged'):
-                enrollment_dict['override_acknowledged_display'] = self._parse_and_format_timestamp(
-                    enrollment_dict['override_acknowledged']
-                )
-            
-            enrollments.append(enrollment_dict)
-        
-        self.disconnect()
-        return enrollments
-    
-    def get_conflict_override_educator_signups(self, staff_name=None):
-        """Get all educator signups with conflict overrides"""
-        self.connect()
-        
-        if staff_name:
-            self.cursor.execute('''
-                SELECT id, staff_name, class_name, class_date, conflict_override,
-                       conflict_details, override_acknowledged
-                FROM training_educator_signups
-                WHERE staff_name = ? AND conflict_override = 1 AND status = 'active'
-                ORDER BY class_date
-            ''', (staff_name,))
-        else:
-            self.cursor.execute('''
-                SELECT id, staff_name, class_name, class_date, conflict_override,
-                       conflict_details, override_acknowledged
-                FROM training_educator_signups
-                WHERE conflict_override = 1 AND status = 'active'
-                ORDER BY staff_name, class_date
-            ''')
-            
-        rows = self.cursor.fetchall()
-        signups = []
-        for row in rows:
-            signup_dict = {
-                'id': row['id'],
-                'staff_name': row['staff_name'],
-                'class_name': row['class_name'],
-                'class_date': row['class_date'],
-                'conflict_override': row['conflict_override'],
-                'conflict_details': row['conflict_details'],
-                'override_acknowledged': row['override_acknowledged']
-            }
-            
-            if signup_dict.get('override_acknowledged'):
-                signup_dict['override_acknowledged_display'] = self._parse_and_format_timestamp(
-                    signup_dict['override_acknowledged']
-                )
-            
-            signups.append(signup_dict)
-        
-        self.disconnect()
-        return signups
-        
     def _parse_and_format_timestamp(self, timestamp_str):
         """Parse stored timestamp and format for display"""
         if not timestamp_str:
@@ -882,3 +748,157 @@ class UnifiedDatabase:
             'recent_educator_signups': recent_educator_signups,
             'current_time_eastern': current_time.strftime('%m/%d/%Y %I:%M %p %Z')
         }
+
+    def get_live_staff_meeting_count(self, staff_name):
+        """Get count of LIVE staff meetings for a staff member - FIXED"""
+        self.connect()
+        try:
+            self.cursor.execute('''
+                SELECT COUNT(*) as count FROM training_enrollments
+                WHERE staff_name = ? AND meeting_type = 'LIVE' AND status = 'active'
+            ''', (staff_name,))
+            count = self.cursor.fetchone()['count']
+            return count
+        finally:
+            self.disconnect()
+
+    def get_conflict_override_enrollments(self, staff_name=None):
+        """Get all training enrollments with conflict overrides - FIXED"""
+        self.connect()
+        
+        try:
+            if staff_name:
+                self.cursor.execute('''
+                    SELECT id, staff_name, class_name, class_date, role, meeting_type,
+                        conflict_override, conflict_details, override_acknowledged
+                    FROM training_enrollments
+                    WHERE staff_name = ? AND conflict_override = 1 AND status = 'active'
+                    ORDER BY class_date
+                ''', (staff_name,))
+            else:
+                self.cursor.execute('''
+                    SELECT id, staff_name, class_name, class_date, role, meeting_type,
+                        conflict_override, conflict_details, override_acknowledged
+                    FROM training_enrollments
+                    WHERE conflict_override = 1 AND status = 'active'
+                    ORDER BY staff_name, class_date
+                ''')
+                
+            rows = self.cursor.fetchall()
+            enrollments = []
+            for row in rows:
+                enrollment_dict = {
+                    'id': row['id'],
+                    'staff_name': row['staff_name'],
+                    'class_name': row['class_name'],
+                    'class_date': row['class_date'],
+                    'role': row['role'],
+                    'meeting_type': row['meeting_type'],
+                    'conflict_override': row['conflict_override'],
+                    'conflict_details': row['conflict_details'],
+                    'override_acknowledged': row['override_acknowledged']
+                }
+                
+                if enrollment_dict.get('override_acknowledged'):
+                    enrollment_dict['override_acknowledged_display'] = self._parse_and_format_timestamp(
+                        enrollment_dict['override_acknowledged']
+                    )
+                
+                enrollments.append(enrollment_dict)
+            
+            return enrollments
+        finally:
+            self.disconnect()
+
+    def get_conflict_override_educator_signups(self, staff_name=None):
+        """Get all educator signups with conflict overrides - FIXED"""
+        self.connect()
+        
+        try:
+            if staff_name:
+                self.cursor.execute('''
+                    SELECT id, staff_name, class_name, class_date, conflict_override,
+                        conflict_details, override_acknowledged
+                    FROM training_educator_signups
+                    WHERE staff_name = ? AND conflict_override = 1 AND status = 'active'
+                    ORDER BY class_date
+                ''', (staff_name,))
+            else:
+                self.cursor.execute('''
+                    SELECT id, staff_name, class_name, class_date, conflict_override,
+                        conflict_details, override_acknowledged
+                    FROM training_educator_signups
+                    WHERE conflict_override = 1 AND status = 'active'
+                    ORDER BY staff_name, class_date
+                ''')
+                
+            rows = self.cursor.fetchall()
+            signups = []
+            for row in rows:
+                signup_dict = {
+                    'id': row['id'],
+                    'staff_name': row['staff_name'],
+                    'class_name': row['class_name'],
+                    'class_date': row['class_date'],
+                    'conflict_override': row['conflict_override'],
+                    'conflict_details': row['conflict_details'],
+                    'override_acknowledged': row['override_acknowledged']
+                }
+                
+                if signup_dict.get('override_acknowledged'):
+                    signup_dict['override_acknowledged_display'] = self._parse_and_format_timestamp(
+                        signup_dict['override_acknowledged']
+                    )
+                
+                signups.append(signup_dict)
+            
+            return signups
+        finally:
+            self.disconnect()
+
+    def get_staff_educator_signups(self, staff_name):
+        """Get all educator signups for a staff member - FIXED"""
+        self.connect()
+        
+        try:
+            # Explicit column selection ensures proper ordering
+            self.cursor.execute('''
+                SELECT id, staff_name, class_name, class_date, conflict_override, 
+                    conflict_details, override_acknowledged, signup_date, status
+                FROM training_educator_signups
+                WHERE staff_name = ? AND status = 'active'
+                ORDER BY class_date
+            ''', (staff_name,))
+            
+            rows = self.cursor.fetchall()
+            signups = []
+            
+            for row in rows:
+                # Explicit dictionary creation to ensure all fields are captured
+                signup_dict = {
+                    'id': row['id'],
+                    'staff_name': row['staff_name'],
+                    'class_name': row['class_name'],
+                    'class_date': row['class_date'],
+                    'conflict_override': row['conflict_override'],
+                    'conflict_details': row['conflict_details'],
+                    'override_acknowledged': row['override_acknowledged'],
+                    'signup_date': row['signup_date'],
+                    'status': row['status']
+                }
+                
+                # Convert timestamps for display
+                if signup_dict.get('signup_date'):
+                    signup_dict['signup_date_display'] = self._parse_and_format_timestamp(
+                        signup_dict['signup_date']
+                    )
+                if signup_dict.get('override_acknowledged'):
+                    signup_dict['override_acknowledged_display'] = self._parse_and_format_timestamp(
+                        signup_dict['override_acknowledged']
+                    )
+                
+                signups.append(signup_dict)
+            
+            return signups
+        finally:
+            self.disconnect()

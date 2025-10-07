@@ -14,20 +14,30 @@ class ExcelAdminFunctions:
         self.educator = educator_manager
         
     def get_enrollment_compliance_report(self):
-        """Generate compliance report showing enrollment status vs assignments"""
+        """Generate compliance report showing enrollment status vs assignments - FIXED for cursor recursion"""
         staff_list = self.excel.get_staff_list()
         report_data = []
         
         for staff_name in staff_list:
             # Get assigned classes
             assigned_classes = self.excel.get_assigned_classes(staff_name)
-            enrolled_classes = self.enrollment.get_enrolled_classes(staff_name)
+            
+            # Get enrolled classes - fetch all data first to avoid cursor recursion
+            all_enrollments = self.enrollment.get_enrolled_classes(staff_name)
+            enrolled_classes = all_enrollments
+            
+            # Get live meeting count - use a separate method call
             live_meeting_count = self.enrollment.get_live_staff_meeting_count(staff_name)
             
-            # Get educator signups if available
+            # Get educator signups if available - call once and store
             educator_signups = 0
             if self.educator:
-                educator_signups = len(self.educator.get_staff_educator_signups(staff_name))
+                try:
+                    educator_signup_list = self.educator.get_staff_educator_signups(staff_name)
+                    educator_signups = len(educator_signup_list)
+                except Exception as e:
+                    print(f"Error getting educator signups for {staff_name}: {e}")
+                    educator_signups = 0
             
             # Calculate completion metrics
             total_assigned = len(assigned_classes)
@@ -39,11 +49,19 @@ class ExcelAdminFunctions:
                                     if self.excel.is_staff_meeting(cls)]
             staff_meeting_compliance = live_meeting_count >= 2 if staff_meetings_assigned else True
             
-            # Get conflict overrides
-            conflict_enrollments = self.db.get_conflict_override_enrollments(staff_name)
+            # Get conflict overrides - fetch all at once
+            conflict_enrollments = []
             educator_conflicts = []
+            try:
+                conflict_enrollments = self.db.get_conflict_override_enrollments(staff_name)
+            except Exception as e:
+                print(f"Error getting conflict enrollments for {staff_name}: {e}")
+            
             if self.educator:
-                educator_conflicts = self.db.get_conflict_override_educator_signups(staff_name)
+                try:
+                    educator_conflicts = self.db.get_conflict_override_educator_signups(staff_name)
+                except Exception as e:
+                    print(f"Error getting educator conflicts for {staff_name}: {e}")
             
             report_data.append({
                 'Staff Name': staff_name,
@@ -60,7 +78,7 @@ class ExcelAdminFunctions:
             })
             
         return pd.DataFrame(report_data)
-    
+
     def get_educator_coverage_report(self):
         """Generate report showing educator coverage for classes that need educators"""
         if not self.educator:
@@ -1283,6 +1301,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                 "📋 Individual Classes", "🔍 Validation", "📅 Schedule Report"
             ])
         
+
         with tab1:
             st.write("### Staff Enrollment Compliance")
             try:
@@ -1292,7 +1311,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                     # Summary metrics
                     col1, col2, col3, col4 = st.columns(4)
                     with col1:
-                        complete_count = len(compliance_df[compliance_df['Status'] == '✅ Complete'])
+                        complete_count = len(compliance_df[compliance_df['Status'] == 'âœ… Complete'])
                         st.metric("Fully Compliant", f"{complete_count}/{len(compliance_df)}")
                     with col2:
                         avg_completion = compliance_df['Completion Rate'].str.rstrip('%').astype(float).mean()
@@ -1305,7 +1324,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                             total_educator_signups = compliance_df['Educator Signups'].sum()
                             st.metric("Educator Signups", total_educator_signups)
                         else:
-                            behind_schedule = len(compliance_df[compliance_df['Status'] == '🔴 Behind Schedule'])
+                            behind_schedule = len(compliance_df[compliance_df['Status'] == 'ðŸ"´ Behind Schedule'])
                             st.metric("Behind Schedule", behind_schedule)
                     
                     # Detailed table
@@ -1313,18 +1332,124 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                     
                     # Export functionality
                     if st.button("📥 Export Compliance Report"):
-                        csv = compliance_df.to_csv(index=False)
-                        st.download_button(
-                            "Download CSV",
-                            csv,
-                            f"compliance_report_{datetime.now().strftime('%Y%m%d')}.csv",
-                            "text/csv"
-                        )
+                        try:
+                            from io import BytesIO
+                            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+                            
+                            with st.spinner("Generating Excel report..."):
+                                # Create Excel file
+                                output = BytesIO()
+                                
+                                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                    # Write the dataframe
+                                    compliance_df.to_excel(writer, sheet_name='Compliance Report', index=False)
+                                    
+                                    # Get the worksheet to format it
+                                    workbook = writer.book
+                                    worksheet = workbook['Compliance Report']
+                                    
+                                    # Auto-adjust column widths
+                                    for idx, col in enumerate(compliance_df.columns):
+                                        try:
+                                            max_length = max(
+                                                compliance_df[col].astype(str).apply(len).max(),
+                                                len(col)
+                                            ) + 2
+                                            # Convert column index to letter (A, B, C, etc.)
+                                            if idx < 26:
+                                                column_letter = chr(65 + idx)
+                                            else:
+                                                # Handle columns beyond Z (AA, AB, etc.)
+                                                column_letter = chr(64 + idx // 26) + chr(65 + idx % 26)
+                                            
+                                            worksheet.column_dimensions[column_letter].width = min(max_length, 50)
+                                        except Exception as col_error:
+                                            print(f"Error setting width for column {idx}: {col_error}")
+                                            # Set default width if error
+                                            if idx < 26:
+                                                worksheet.column_dimensions[chr(65 + idx)].width = 15
+                                    
+                                    # Format header row
+                                    try:
+                                        header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
+                                        header_font = Font(color="FFFFFF", bold=True)
+                                        
+                                        for cell in worksheet[1]:
+                                            cell.fill = header_fill
+                                            cell.font = header_font
+                                            cell.alignment = Alignment(horizontal='center', vertical='center')
+                                    except Exception as header_error:
+                                        print(f"Error formatting header: {header_error}")
+                                    
+                                    # Add borders to all cells
+                                    try:
+                                        thin_border = Border(
+                                            left=Side(style='thin'),
+                                            right=Side(style='thin'),
+                                            top=Side(style='thin'),
+                                            bottom=Side(style='thin')
+                                        )
+                                        
+                                        for row in worksheet.iter_rows(min_row=1, max_row=worksheet.max_row, 
+                                                                    min_col=1, max_col=worksheet.max_column):
+                                            for cell in row:
+                                                cell.border = thin_border
+                                    except Exception as border_error:
+                                        print(f"Error adding borders: {border_error}")
+                                    
+                                    # Color code the Status column
+                                    try:
+                                        if 'Status' in compliance_df.columns:
+                                            status_col_idx = list(compliance_df.columns).index('Status') + 1
+                                            
+                                            for row_idx in range(2, worksheet.max_row + 1):
+                                                cell = worksheet.cell(row=row_idx, column=status_col_idx)
+                                                status_value = str(cell.value) if cell.value else ''
+                                                
+                                                if '✅' in status_value or 'Complete' in status_value:
+                                                    cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+                                                elif '🟡' in status_value or 'Nearly' in status_value:
+                                                    cell.fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+                                                elif '🔴' in status_value or 'Behind' in status_value:
+                                                    cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+                                    except Exception as color_error:
+                                        print(f"Error color coding Status column: {color_error}")
+                                
+                                # Get the Excel data
+                                excel_data = output.getvalue()
+                                
+                                # Provide download button
+                                st.download_button(
+                                    label="📊 Download Compliance Report (Excel)",
+                                    data=excel_data,
+                                    file_name=f"compliance_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    use_container_width=True
+                                )
+                                st.success("✅ Excel report ready for download!")
+                                
+                        except Exception as e:
+                            st.error(f"Error generating Excel export: {str(e)}")
+                            print(f"Excel Export Error: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            
+                            # Fallback to CSV export
+                            st.warning("Falling back to CSV export...")
+                            csv = compliance_df.to_csv(index=False)
+                            st.download_button(
+                                label="📄 Download as CSV (Fallback)",
+                                data=csv,
+                                file_name=f"compliance_report_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                                mime="text/csv",
+                                use_container_width=True
+                            )
                 else:
                     st.info("No compliance data available")
+                    
             except Exception as e:
-                st.error(f"Error generating compliance report: {str(e)}")
-        
+                st.error(f"Error loading compliance data: {str(e)}")        
+
         with tab2:
             st.write("### Class Utilization Analysis")
             try:
