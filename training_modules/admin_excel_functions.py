@@ -97,6 +97,13 @@ class ExcelAdminFunctions:
             
             # Determine which classes are not enrolled
             classes_not_enrolled = [cls for cls in assigned_classes if cls not in enrolled_classes]
+
+            # ===== NEW: Filter out SM classes if staff member is fully SM compliant =====
+            if total_sm_compliance and staff_meeting_compliance:
+                # Both SM requirements met - remove all SM classes from "not enrolled" list
+                classes_not_enrolled = [cls for cls in classes_not_enrolled 
+                                    if not self.excel.is_staff_meeting(cls)]
+
             classes_not_enrolled_str = ', '.join(classes_not_enrolled) if classes_not_enrolled else ''
 
             report_data.append({
@@ -814,7 +821,7 @@ class ExcelAdminFunctions:
     # EXISTING METHODS (unchanged but enhanced with educator data)
     def _get_compliance_status(self, completion_rate, meeting_compliance):
         """Determine overall compliance status"""
-        if completion_rate == 100 and meeting_compliance:
+        if completion_rate >= 100 and meeting_compliance:
             return "✅ Complete"
         elif completion_rate >= 80 and meeting_compliance:
             return "🟡 Nearly Complete"
