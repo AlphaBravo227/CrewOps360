@@ -1311,7 +1311,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                     # Summary metrics
                     col1, col2, col3, col4 = st.columns(4)
                     with col1:
-                        complete_count = len(compliance_df[compliance_df['Status'] == 'âœ… Complete'])
+                        complete_count = len(compliance_df[compliance_df['Status'].str.contains('Complete', na=False)])
                         st.metric("Fully Compliant", f"{complete_count}/{len(compliance_df)}")
                     with col2:
                         avg_completion = compliance_df['Completion Rate'].str.rstrip('%').astype(float).mean()
