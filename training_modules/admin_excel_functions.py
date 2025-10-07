@@ -62,6 +62,11 @@ class ExcelAdminFunctions:
                     educator_conflicts = self.db.get_conflict_override_educator_signups(staff_name)
                 except Exception as e:
                     print(f"Error getting educator conflicts for {staff_name}: {e}")
+
+            # Determine which classes are not enrolled
+            classes_not_enrolled = [cls for cls in assigned_classes if cls not in enrolled_classes]
+            classes_not_enrolled_str = ', '.join(classes_not_enrolled) if classes_not_enrolled else ''
+
             
             report_data.append({
                 'Staff Name': staff_name,
@@ -69,8 +74,9 @@ class ExcelAdminFunctions:
                 'Total Enrolled': total_enrolled,
                 'Completion Rate': f"{completion_rate:.1f}%",
                 'Classes Remaining': total_assigned - total_enrolled,
-                'LIVE Meetings': f"{live_meeting_count}/2" if staff_meetings_assigned else "N/A",
-                'Meeting Compliance': "✅" if staff_meeting_compliance else "❌",
+                'Classes Not Enrolled': classes_not_enrolled_str,
+                'LIVE SM Meetings': f"{live_meeting_count}/2" if staff_meetings_assigned else "N/A",
+                'LIVE SM Meeting Compliance': "✅" if staff_meeting_compliance else "❌",
                 'Conflict Overrides': len(conflict_enrollments),
                 'Educator Signups': educator_signups,
                 'Educator Conflicts': len(educator_conflicts),
