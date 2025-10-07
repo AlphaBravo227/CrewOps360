@@ -22,9 +22,11 @@ class ExcelAdminFunctions:
             # Get assigned classes
             assigned_classes = self.excel.get_assigned_classes(staff_name)
             
-            # Get enrolled classes - fetch all data first to avoid cursor recursion
-            all_enrollments = self.enrollment.get_enrolled_classes(staff_name)
-            enrolled_classes = all_enrollments
+            # Get enrolled classes - this returns a list of class names
+            enrolled_classes = self.enrollment.get_enrolled_classes(staff_name)
+            
+            # Get ALL enrollment records (with full details) from database
+            staff_enrollments = self.db.get_staff_enrollments(staff_name)
             
             # Get live meeting count - use a separate method call
             live_meeting_count = self.enrollment.get_live_staff_meeting_count(staff_name)
@@ -39,15 +41,45 @@ class ExcelAdminFunctions:
                     print(f"Error getting educator signups for {staff_name}: {e}")
                     educator_signups = 0
             
-            # Calculate completion metrics
+            # ===== UPDATED SECTION: Calculate completion metrics =====
             total_assigned = len(assigned_classes)
-            total_enrolled = len(enrolled_classes)
+            
+            # Count total enrollments including multiple SM enrollments
+            # For staff meetings, count each enrollment separately
+            # For regular classes, count unique enrollments only
+            total_enrolled = 0
+            for cls in assigned_classes:
+                if self.excel.is_staff_meeting(cls):
+                    # Count all SM enrollments for this class (can be multiple)
+                    sm_enrollments = [e for e in staff_enrollments 
+                                    if e['class_name'] == cls]
+                    total_enrolled += len(sm_enrollments)
+                else:
+                    # For regular classes, count as 1 if enrolled
+                    if cls in enrolled_classes:
+                        total_enrolled += 1
+            
             completion_rate = (total_enrolled / total_assigned * 100) if total_assigned > 0 else 0
+            # ===== END OF UPDATED SECTION =====
             
             # Check staff meeting requirement
             staff_meetings_assigned = [cls for cls in assigned_classes 
                                     if self.excel.is_staff_meeting(cls)]
             staff_meeting_compliance = live_meeting_count >= 2 if staff_meetings_assigned else True
+
+            # Calculate total staff meeting enrollments (LIVE + Virtual)
+            # Count all SM enrollments including multiple enrollments in the same SM
+            staff_enrollments = self.db.get_staff_enrollments(staff_name)
+            total_sm_enrolled = len([enrollment for enrollment in staff_enrollments 
+                                    if self.excel.is_staff_meeting(enrollment['class_name'])])
+            total_sm_assigned = len(staff_meetings_assigned)
+
+            # Format Total SM display
+            total_sm_display = f"{total_sm_enrolled}/{total_sm_assigned}" if staff_meetings_assigned else ''
+
+            # Determine Total SM Compliance
+            total_sm_compliance = total_sm_enrolled >= total_sm_assigned if staff_meetings_assigned else True
+            total_sm_compliance_display = "✅" if total_sm_compliance and staff_meetings_assigned else ("❌" if staff_meetings_assigned else '')            
             
             # Get conflict overrides - fetch all at once
             conflict_enrollments = []
@@ -68,6 +100,17 @@ class ExcelAdminFunctions:
             classes_not_enrolled_str = ', '.join(classes_not_enrolled) if classes_not_enrolled else ''
 
             
+            # Determine which classes are not enrolled
+            classes_not_enrolled = [cls for cls in assigned_classes if cls not in enrolled_classes]
+
+            # ===== NEW: Filter out SM classes if staff member is fully SM compliant =====
+            if total_sm_compliance and staff_meeting_compliance:
+                # Both SM requirements met - remove all SM classes from "not enrolled" list
+                classes_not_enrolled = [cls for cls in classes_not_enrolled 
+                                    if not self.excel.is_staff_meeting(cls)]
+
+            classes_not_enrolled_str = ', '.join(classes_not_enrolled) if classes_not_enrolled else ''
+
             report_data.append({
                 'Staff Name': staff_name,
                 'Total Assigned': total_assigned,
@@ -75,6 +118,10 @@ class ExcelAdminFunctions:
                 'Completion Rate': f"{completion_rate:.1f}%",
                 'Classes Remaining': total_assigned - total_enrolled,
                 'Classes Not Enrolled': classes_not_enrolled_str,
+                'Total SM': total_sm_display,
+                'Total SM Compliance': total_sm_compliance_display,
+                'LIVE Meetings': f"{live_meeting_count}/2" if staff_meetings_assigned else "N/A",
+                'Meeting Compliance': "✅" if staff_meeting_compliance else "❌",
                 'LIVE SM Meetings': f"{live_meeting_count}/2" if staff_meetings_assigned else "N/A",
                 'LIVE SM Meeting Compliance': "✅" if staff_meeting_compliance else "❌",
                 'Conflict Overrides': len(conflict_enrollments),
@@ -84,6 +131,7 @@ class ExcelAdminFunctions:
             })
             
         return pd.DataFrame(report_data)
+
 
     def get_educator_coverage_report(self):
         """Generate report showing educator coverage for classes that need educators"""
@@ -780,7 +828,7 @@ class ExcelAdminFunctions:
     # EXISTING METHODS (unchanged but enhanced with educator data)
     def _get_compliance_status(self, completion_rate, meeting_compliance):
         """Determine overall compliance status"""
-        if completion_rate == 100 and meeting_compliance:
+        if completion_rate >= 100 and meeting_compliance:
             return "✅ Complete"
         elif completion_rate >= 80 and meeting_compliance:
             return "🟡 Nearly Complete"
