@@ -16,6 +16,20 @@ class ExcelAdminFunctions:
     def get_enrollment_compliance_report(self):
         """Generate compliance report showing enrollment status vs assignments - FIXED for cursor recursion"""
         staff_list = self.excel.get_staff_list()
+        
+        # NEW: Get manager information from direct_reports table
+        manager_dict = {}
+        try:
+            self.db.connect()
+            self.db.cursor.execute('SELECT staff_name, manager_initials FROM direct_reports')
+            for row in self.db.cursor.fetchall():
+                manager_dict[row['staff_name']] = row['manager_initials'] if row['manager_initials'] else ''
+            self.db.disconnect()
+        except Exception as e:
+            print(f"Error loading manager data: {e}")
+            if hasattr(self.db, 'disconnect'):
+                self.db.disconnect()
+        
         report_data = []
         
         for staff_name in staff_list:
@@ -97,11 +111,6 @@ class ExcelAdminFunctions:
 
             # Determine which classes are not enrolled
             classes_not_enrolled = [cls for cls in assigned_classes if cls not in enrolled_classes]
-            classes_not_enrolled_str = ', '.join(classes_not_enrolled) if classes_not_enrolled else ''
-
-            
-            # Determine which classes are not enrolled
-            classes_not_enrolled = [cls for cls in assigned_classes if cls not in enrolled_classes]
 
             # ===== NEW: Filter out SM classes if staff member is fully SM compliant =====
             if total_sm_compliance and staff_meeting_compliance:
@@ -113,6 +122,7 @@ class ExcelAdminFunctions:
 
             report_data.append({
                 'Staff Name': staff_name,
+                'Manager': manager_dict.get(staff_name, 'N/A'),  # NEW: Add manager column
                 'Total Assigned': total_assigned,
                 'Total Enrolled': total_enrolled,
                 'Completion Rate': completion_rate / 100,
@@ -129,7 +139,8 @@ class ExcelAdminFunctions:
                 'Educator Conflicts': len(educator_conflicts),
                 'Status': self._get_compliance_status(completion_rate, staff_meeting_compliance)
             })
-            
+        
+        # Return sorted by Staff Name only
         return pd.DataFrame(report_data)
 
 
