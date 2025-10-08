@@ -115,7 +115,7 @@ class ExcelAdminFunctions:
                 'Staff Name': staff_name,
                 'Total Assigned': total_assigned,
                 'Total Enrolled': total_enrolled,
-                'Completion Rate': f"{completion_rate:.1f}%",
+                'Completion Rate': completion_rate / 100,
                 'Classes Remaining': total_assigned - total_enrolled,
                 'Classes Not Enrolled': classes_not_enrolled_str,
                 'Total SM': total_sm_display,
@@ -1368,7 +1368,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                         complete_count = len(compliance_df[compliance_df['Status'].str.contains('Complete', na=False)])
                         st.metric("Fully Compliant", f"{complete_count}/{len(compliance_df)}")
                     with col2:
-                        avg_completion = compliance_df['Completion Rate'].str.rstrip('%').astype(float).mean()
+                        avg_completion = compliance_df['Completion Rate'].mean() * 100
                         st.metric("Avg Completion", f"{avg_completion:.1f}%")
                     with col3:
                         total_conflicts = compliance_df['Conflict Overrides'].sum()
@@ -1382,7 +1382,9 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                             st.metric("Behind Schedule", behind_schedule)
                     
                     # Detailed table
-                    st.dataframe(compliance_df, use_container_width=True)
+                    display_df = compliance_df.copy()
+                    display_df['Completion Rate'] = display_df['Completion Rate'].apply(lambda x: f"{x*100:.1f}%")
+                    st.dataframe(display_df, use_container_width=True)
                     
                     # Export functionality
                     if st.button("📥 Export Compliance Report"):
@@ -1402,6 +1404,15 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                     workbook = writer.book
                                     worksheet = workbook['Compliance Report']
                                     
+                                    # Format Completion Rate column as percentage
+                                    if 'Completion Rate' in compliance_df.columns:
+                                        from openpyxl.styles import numbers
+                                        completion_rate_col_idx = list(compliance_df.columns).index('Completion Rate') + 1
+                                        
+                                        for row_idx in range(2, worksheet.max_row + 1):
+                                            cell = worksheet.cell(row=row_idx, column=completion_rate_col_idx)
+                                            cell.number_format = numbers.FORMAT_PERCENTAGE
+
                                     # Auto-adjust column widths
                                     for idx, col in enumerate(compliance_df.columns):
                                         try:
