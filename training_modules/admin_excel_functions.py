@@ -1391,6 +1391,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                         try:
                             from io import BytesIO
                             from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+                            from openpyxl.worksheet.table import Table, TableStyleInfo
                             
                             with st.spinner("Generating Excel report..."):
                                 # Create Excel file
@@ -1434,8 +1435,36 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                             if idx < 26:
                                                 worksheet.column_dimensions[chr(65 + idx)].width = 15
                                     
-                                    # Format header row
+                                    # ===== NEW: Create Excel Table =====
                                     try:
+                                        # Define table range (from A1 to last column and row)
+                                        last_col_letter = openpyxl.utils.get_column_letter(len(compliance_df.columns))
+                                        last_row = len(compliance_df) + 1  # +1 for header row
+                                        table_ref = f"A1:{last_col_letter}{last_row}"
+                                        
+                                        # Create table with a unique name
+                                        table = Table(displayName="ComplianceTable", ref=table_ref)
+                                        
+                                        # Add table style with filter buttons and banded rows
+                                        style = TableStyleInfo(
+                                            name="TableStyleMedium9",  # Blue theme that matches existing header color
+                                            showFirstColumn=False,
+                                            showLastColumn=False,
+                                            showRowStripes=True,  # Banded rows
+                                            showColumnStripes=False
+                                        )
+                                        table.tableStyleInfo = style
+                                        
+                                        # Add the table to the worksheet
+                                        worksheet.add_table(table)
+                                        
+                                        print(f"DEBUG: Added Excel table with range {table_ref}")
+                                        
+                                    except Exception as table_error:
+                                        print(f"Error creating Excel table: {table_error}")
+                                        import traceback
+                                        traceback.print_exc()
+                                        # Fall back to manual header formatting if table creation fails
                                         header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
                                         header_font = Font(color="FFFFFF", bold=True)
                                         
@@ -1443,10 +1472,9 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                             cell.fill = header_fill
                                             cell.font = header_font
                                             cell.alignment = Alignment(horizontal='center', vertical='center')
-                                    except Exception as header_error:
-                                        print(f"Error formatting header: {header_error}")
+                                    # ===== END NEW TABLE CODE =====
                                     
-                                    # Add borders to all cells
+                                    # Add borders to all cells (still useful even with table)
                                     try:
                                         thin_border = Border(
                                             left=Side(style='thin'),
