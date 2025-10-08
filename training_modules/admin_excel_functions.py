@@ -120,16 +120,16 @@ class ExcelAdminFunctions:
 
             classes_not_enrolled_str = ', '.join(classes_not_enrolled) if classes_not_enrolled else ''
             
-            # ===== NEW: Filter classes ending within 6 months (180 days) =====
-            classes_ending_soon = []
+            # ===== NEW: Filter classes starting within 90 days (or already started) =====
+            classes_starting_soon = []
             current_date = datetime.now()
-            six_months_out = current_date + timedelta(days=180)
-            
+            ninety_days_out = current_date + timedelta(days=90)
+
             for cls in classes_not_enrolled:
                 class_details = self.excel.get_class_details(cls)
                 if class_details:
-                    # Find the latest date for this class
-                    latest_date = None
+                    # Find the earliest date for this class (first date)
+                    earliest_date = None
                     for i in range(1, 15):  # Check rows 1-14 for dates
                         date_key = f'date_{i}'
                         if date_key in class_details and class_details[date_key]:
@@ -138,17 +138,19 @@ class ExcelAdminFunctions:
                                 date_obj = datetime.strptime(date_str, '%m/%d/%Y')
                                 
                                 # For two-day classes, use Day 1 as the date
-                                if latest_date is None or date_obj > latest_date:
-                                    latest_date = date_obj
+                                if earliest_date is None or date_obj < earliest_date:
+                                    earliest_date = date_obj
                             except Exception as e:
                                 print(f"Error parsing date for {cls}: {e}")
                                 continue
                     
-                    # Check if latest date is within 180 days
-                    if latest_date and current_date <= latest_date <= six_months_out:
-                        classes_ending_soon.append(cls)
-            
-            classes_ending_soon_str = ', '.join(classes_ending_soon) if classes_ending_soon else ''
+                    # Show if: first date is in the past OR first date is within 90 days
+                    # Don't show if: first date is more than 90 days in the future
+                    if earliest_date:
+                        if earliest_date < current_date or earliest_date <= ninety_days_out:
+                            classes_starting_soon.append(cls)
+
+            classes_starting_soon_str = ', '.join(classes_starting_soon) if classes_starting_soon else ''
 
             report_data.append({
                 'Staff Name': staff_name,
@@ -157,7 +159,7 @@ class ExcelAdminFunctions:
                 'Total Enrolled': total_enrolled,
                 'Completion Rate': completion_rate / 100,
                 'Classes Remaining': total_assigned - total_enrolled,
-                'Unenrolled Classes Ending within 180 Days': classes_ending_soon_str,
+                'Unenrolled Classes Starting within 90 Days': classes_starting_soon_str,
                 'All Classes Not Enrolled': classes_not_enrolled_str,
                 'Total SM': total_sm_display,
                 'Total SM Compliance': total_sm_compliance_display,
