@@ -357,12 +357,13 @@ class ExcelAdminFunctions:
             return pd.DataFrame()
 
     def export_comprehensive_schedule_to_excel(self, schedule_df, start_date, end_date):
-        """Export comprehensive schedule report to Excel format as a Table"""
+        """Export comprehensive schedule report to Excel format as a Table with class detail comments"""
         try:
             from io import BytesIO
             import openpyxl
             from openpyxl.styles import Font, Alignment
             from openpyxl.worksheet.table import Table, TableStyleInfo
+            from openpyxl.comments import Comment
             
             if schedule_df.empty:
                 return None
@@ -403,11 +404,41 @@ class ExcelAdminFunctions:
                     col_letter = openpyxl.utils.get_column_letter(col_num)
                     worksheet.column_dimensions[col_letter].width = 15
             
-            # Write data
+            # Write data with comments
             for row_num, (index, row) in enumerate(schedule_df.iterrows(), start_row + 1):
                 for col_num, (column_name, value) in enumerate(row.items(), 1):
                     cell_value = str(value) if pd.notna(value) and value != '' else ''
                     cell = worksheet.cell(row=row_num, column=col_num, value=cell_value)
+                    
+                    # Add comments to date columns that have activities
+                    if column_name not in ['STAFF NAME', 'ROLE']:
+                        if cell_value and cell_value.strip():
+                            # Parse activities (comma-separated)
+                            activities = [activity.strip() for activity in cell_value.split(',') if activity.strip()]
+                            
+                            # Generate comment with class details
+                            staff_name = row.iloc[0]  # Get staff name from first column
+                            comment_text = self._generate_class_details_comment(activities, column_name, staff_name)
+                            
+                            # Add Excel COMMENT (purple triangle) if we have details
+                            if comment_text:
+                                try:
+                                    # Create traditional Excel comment (purple triangle)
+                                    comment = Comment(comment_text, "Training System")
+                                    comment.width = 400
+                                    comment.height = 120
+                                    comment.author = "Training System"
+                                    cell.comment = comment
+                                    
+                                    print(f"DEBUG: Added comment to {cell.coordinate} for {staff_name}")
+                                except Exception as comment_error:
+                                    print(f"Error adding comment to cell {cell.coordinate}: {comment_error}")
+                                    import traceback
+                                    traceback.print_exc()
+            
+            # Set row heights for better readability
+            for row in range(start_row + 1, start_row + 1 + len(schedule_df)):
+                worksheet.row_dimensions[row].height = 30
             
             # Create Excel Table
             last_row = start_row + len(schedule_df)
@@ -428,6 +459,14 @@ class ExcelAdminFunctions:
             table.tableStyleInfo = style
             
             worksheet.add_table(table)
+            
+            # Add a legend
+            legend_row = start_row + len(schedule_df) + 2
+            worksheet.cell(row=legend_row, column=1, value='Legend:').font = Font(bold=True)
+            worksheet.cell(row=legend_row + 1, column=1, value='Regular text = Student enrollment')
+            worksheet.cell(row=legend_row + 2, column=1, value='EDU: prefix = Educator signup')
+            worksheet.cell(row=legend_row + 3, column=1, value='Purple triangles = Class time & location details (hover to view)')
+            worksheet.cell(row=legend_row + 4, column=1, value='Sort by Role column to group staff by their roles')
             
             # Save to BytesIO buffer
             output = BytesIO()
