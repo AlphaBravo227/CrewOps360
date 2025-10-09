@@ -357,12 +357,12 @@ class ExcelAdminFunctions:
             return pd.DataFrame()
 
     def export_comprehensive_schedule_to_excel(self, schedule_df, start_date, end_date):
-        """Export comprehensive schedule report to Excel format with class details as comments using openpyxl - UPDATED for Role column"""
+        """Export comprehensive schedule report to Excel format as a Table"""
         try:
             from io import BytesIO
             import openpyxl
-            from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
-            from openpyxl.comments import Comment
+            from openpyxl.styles import Font, Alignment
+            from openpyxl.worksheet.table import Table, TableStyleInfo
             
             if schedule_df.empty:
                 return None
@@ -371,21 +371,6 @@ class ExcelAdminFunctions:
             workbook = openpyxl.Workbook()
             worksheet = workbook.active
             worksheet.title = 'Education Schedule'
-            
-            # Define styles
-            header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
-            header_font = Font(color="FFFFFF", bold=True)
-            border = Border(
-                left=Side(style='thin'),
-                right=Side(style='thin'),
-                top=Side(style='thin'),
-                bottom=Side(style='thin')
-            )
-            
-            staff_name_font = Font(bold=True)
-            role_font = Font(color="666666")  # Gray color for roles
-            date_alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
-            educator_font = Font(color="0066CC")  # Blue color for educator entries
             
             # Write title and date range
             worksheet.merge_cells('A1:E1')
@@ -406,86 +391,43 @@ class ExcelAdminFunctions:
             # Write headers
             for col_num, column_name in enumerate(schedule_df.columns, 1):
                 cell = worksheet.cell(row=start_row, column=col_num, value=column_name)
-                cell.fill = header_fill
-                cell.font = header_font
-                cell.border = border
-                cell.alignment = Alignment(horizontal='center', vertical='center')
             
             # Set column widths
             worksheet.column_dimensions['A'].width = 25  # Staff Name
             worksheet.column_dimensions['B'].width = 12  # Role column
             
-            # Date columns - make them narrower but tall enough for wrapped text
+            # Date columns
             date_columns = len(schedule_df.columns) - 2  # Subtract STAFF NAME and ROLE columns
             if date_columns > 0:
                 for col_num in range(3, 3 + date_columns):  # Start from column C (3rd column)
                     col_letter = openpyxl.utils.get_column_letter(col_num)
                     worksheet.column_dimensions[col_letter].width = 15
             
-            # Write data with comments
+            # Write data
             for row_num, (index, row) in enumerate(schedule_df.iterrows(), start_row + 1):
                 for col_num, (column_name, value) in enumerate(row.items(), 1):
                     cell_value = str(value) if pd.notna(value) and value != '' else ''
                     cell = worksheet.cell(row=row_num, column=col_num, value=cell_value)
-                    cell.border = border
-                    
-                    if column_name == 'STAFF NAME':
-                        cell.font = staff_name_font
-                        cell.alignment = Alignment(horizontal='left', vertical='center')
-                    elif column_name == 'ROLE':
-                        cell.font = role_font
-                        cell.alignment = Alignment(horizontal='center', vertical='center')
-                    else:
-                        # Date columns - check if contains activities and add comments
-                        cell.alignment = date_alignment
-                        
-                        if cell_value and cell_value.strip():
-                            # Parse activities (comma-separated)
-                            activities = [activity.strip() for activity in cell_value.split(',') if activity.strip()]
-                            
-                            # Generate comment with class details
-                            staff_name = row.iloc[0]  # Get staff name from first column
-                            comment_text = self._generate_class_details_comment(activities, column_name, staff_name)
-                            
-                            # Determine format based on content
-                            if 'EDU:' in cell_value:
-                                cell.font = educator_font
-                            
-                            # Add Excel COMMENT (purple triangle) if we have details
-                            if comment_text:
-                                try:
-                                    # Create traditional Excel comment (purple triangle), not note (yellow)
-                                    comment = Comment(comment_text, "Training System")
-                                    
-                                    # Set properties to ensure it's a traditional comment
-                                    comment.width = 400
-                                    comment.height = 120
-                                    comment.author = "Training System"
-                                    
-                                    # Force traditional comment format by ensuring these properties are set
-                                    comment._parent = cell
-                                    
-                                    # Assign the comment to the cell
-                                    cell.comment = comment
-                                    
-                                    print(f"DEBUG: Added comment to {cell.coordinate} for {staff_name}")
-                                except Exception as comment_error:
-                                    print(f"Error adding comment to cell {cell.coordinate}: {comment_error}")
-                                    import traceback
-                                    traceback.print_exc()
             
-            # Set row heights for better readability
-            for row in range(start_row + 1, start_row + 1 + len(schedule_df)):
-                worksheet.row_dimensions[row].height = 30
+            # Create Excel Table
+            last_row = start_row + len(schedule_df)
+            last_col = len(schedule_df.columns)
+            last_col_letter = openpyxl.utils.get_column_letter(last_col)
             
-            # Add a legend
-            legend_row = start_row + len(schedule_df) + 2
-            worksheet.cell(row=legend_row, column=1, value='Legend:').font = Font(bold=True)
-            worksheet.cell(row=legend_row + 1, column=1, value='Regular text = Student enrollment')
-            legend_cell = worksheet.cell(row=legend_row + 2, column=1, value='EDU: prefix = Educator signup')
-            legend_cell.font = educator_font
-            worksheet.cell(row=legend_row + 3, column=1, value='Purple triangles = Class time & location details (hover to view)')
-            worksheet.cell(row=legend_row + 4, column=1, value='Sort by Role column to group staff by their roles')
+            table_ref = f"A{start_row}:{last_col_letter}{last_row}"
+            table = Table(displayName="ScheduleTable", ref=table_ref)
+            
+            # Apply default blue table style
+            style = TableStyleInfo(
+                name="TableStyleMedium9",  # Default blue table style
+                showFirstColumn=False,
+                showLastColumn=False,
+                showRowStripes=True,
+                showColumnStripes=False
+            )
+            table.tableStyleInfo = style
+            
+            worksheet.add_table(table)
             
             # Save to BytesIO buffer
             output = BytesIO()
