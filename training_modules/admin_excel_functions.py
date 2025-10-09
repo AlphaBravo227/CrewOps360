@@ -2026,7 +2026,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                             label="📊 Download as Excel",
                             type="primary",
                             data=excel_data,
-                            file_name=f"education_schedule_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
+                            file_name=f"education_schedule_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True
                         )
