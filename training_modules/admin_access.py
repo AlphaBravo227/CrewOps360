@@ -230,7 +230,7 @@ class AdminAccess:
         tab1, tab2, tab3, tab4, tab5 = st.tabs(["👤 Staff Overview", "📊 Compliance Status", "📝 Assignments", "📅 Available Staff for Events", "👨‍🏫 Available Educators for Teaching"])        
 
         with tab1:
-            # Existing Tab 1 content (Staff Overview)
+            # FIXED Tab 1 content (Staff Overview)
             st.write("### Staff Training Overview")
             
             try:
@@ -239,9 +239,16 @@ class AdminAccess:
                 if not compliance_df.empty:
                     # Summary metrics
                     total_staff = len(compliance_df)
-                    complete_staff = len(compliance_df[compliance_df['Status'] == '✅ Complete'])
-                    behind_staff = len(compliance_df[compliance_df['Status'] == '🔴 Behind Schedule'])
-                    avg_completion = compliance_df['Completion Rate'].str.rstrip('%').astype(float).mean()
+                    complete_staff = len(compliance_df[compliance_df['Status'] == 'âœ… Complete'])
+                    behind_staff = len(compliance_df[compliance_df['Status'] == 'ðŸ"´ Behind Schedule'])
+                    
+                    # FIX: Check if Completion Rate is already numeric or needs conversion
+                    if compliance_df['Completion Rate'].dtype == 'object':
+                        # It's a string with '%' - strip and convert
+                        avg_completion = compliance_df['Completion Rate'].str.rstrip('%').astype(float).mean()
+                    else:
+                        # It's already numeric (0.0 to 1.0) - convert to percentage
+                        avg_completion = compliance_df['Completion Rate'].mean() * 100
                     
                     col1, col2, col3, col4 = st.columns(4)
                     with col1:
@@ -263,12 +270,18 @@ class AdminAccess:
                             compliance_df['Staff Name'].str.contains(search_term, case=False, na=False)
                         ]
                     
-                    st.dataframe(filtered_df, use_container_width=True)
+                    # Format the Completion Rate column as percentage for display
+                    display_df = filtered_df.copy()
+                    display_df['Completion Rate'] = display_df['Completion Rate'].apply(lambda x: f"{x*100:.1f}%")
+                    
+                    st.dataframe(display_df, use_container_width=True)
                 else:
                     st.info("No staff enrollment data available")
                     
             except Exception as e:
                 st.error(f"Error loading staff data: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
         
         with tab2:
             # Existing Tab 2 content (Compliance Status)
