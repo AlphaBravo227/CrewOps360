@@ -329,12 +329,34 @@ class ExcelAdminFunctions:
                     # Check for student enrollments on this date
                     enrollments_on_date = [e for e in staff_enrollments if e['class_date'] == full_date_str]
                     for enrollment in enrollments_on_date:
-                        activities.append(enrollment['class_name'])
+                        class_name = enrollment['class_name']
+                        meeting_type = enrollment.get('meeting_type', '')
+                        
+                        # Display as "SM (LIVE)" or "SM (VIRTUAL)" if class name contains "SM"
+                        if ' SM ' in class_name or class_name.startswith('SM ') or class_name.endswith(' SM'):
+                            if meeting_type:
+                                display_name = f'SM ({meeting_type})'
+                            else:
+                                display_name = 'SM'
+                        else:
+                            display_name = class_name
+                        activities.append(display_name)
                     
                     # Check for educator signups on this date
                     educator_signups_on_date = [e for e in staff_educator_signups if e['class_date'] == full_date_str]
                     for signup in educator_signups_on_date:
-                        activities.append(f"EDU:{signup['class_name']}")
+                        class_name = signup['class_name']
+                        meeting_type = signup.get('meeting_type', '')
+                        
+                        # Display as "EDU:SM (LIVE)" or "EDU:SM (VIRTUAL)" if class name contains "SM"
+                        if ' SM ' in class_name or class_name.startswith('SM ') or class_name.endswith(' SM'):
+                            if meeting_type:
+                                display_name = f'EDU:SM ({meeting_type})'
+                            else:
+                                display_name = 'EDU:SM'
+                        else:
+                            display_name = f"EDU:{class_name}"
+                        activities.append(display_name)
                     
                     # Join activities with comma if multiple, otherwise leave blank
                     row_data[date_str] = ', '.join(activities) if activities else ''
@@ -493,22 +515,34 @@ class ExcelAdminFunctions:
             else:
                 full_date_str = date_str
             
-            for activity in activities:
-                activity = activity.strip()
-                if not activity:
-                    continue
+            # Get the ACTUAL full class names from the database for this staff member on this date
+            staff_enrollments = self.db.get_staff_enrollments(staff_name)
+            staff_educator_signups = []
+            if self.educator:
+                staff_educator_signups = self.educator.get_staff_educator_signups(staff_name)
+            
+            # Build mapping of display names to full class names with meeting type
+            full_class_names = []
+            
+            for enrollment in staff_enrollments:
+                if enrollment['class_date'] == full_date_str:
+                    meeting_type = enrollment.get('meeting_type', '')
+                    full_class_names.append((enrollment['class_name'], False, meeting_type))  # (class_name, is_educator, meeting_type)
+            
+            for signup in staff_educator_signups:
+                if signup['class_date'] == full_date_str:
+                    meeting_type = signup.get('meeting_type', '')
+                    full_class_names.append((signup['class_name'], True, meeting_type))  # (class_name, is_educator, meeting_type)
+            
+            # Generate comment for each actual class
+            for class_name, is_educator, meeting_type in full_class_names:
+                activity_type = "Educator" if is_educator else "Student"
                 
-                # Extract class name (remove EDU: prefix if present)
-                if activity.startswith('EDU:'):
-                    class_name = activity[4:].strip()
-                    activity_type = "Educator"
-                    is_educator = True
-                else:
-                    class_name = activity
-                    activity_type = "Student"
-                    is_educator = False
+                # Add meeting type to activity type if available
+                if meeting_type:
+                    activity_type = f"{activity_type} - {meeting_type}"
                 
-                # Get class details
+                # Get class details using FULL class name
                 class_details = self.excel.get_class_details(class_name)
                 
                 if class_details:
@@ -524,8 +558,8 @@ class ExcelAdminFunctions:
                             staff_name, class_name, full_date_str, class_details
                         )
                     
-                    # Build comment for this activity with improved formatting
-                    if len(activities) > 1:
+                    # Build comment for this activity with improved formatting - ALWAYS use full class name
+                    if len(full_class_names) > 1:
                         # Multiple activities - include class name and type header
                         activity_comment = f"=== {class_name} ({activity_type}) ===\n"
                         activity_comment += f"Time: {time_info}\n"
@@ -539,7 +573,7 @@ class ExcelAdminFunctions:
                     comment_lines.append(activity_comment)
                 else:
                     # Fallback if class details not found
-                    if len(activities) > 1:
+                    if len(full_class_names) > 1:
                         activity_comment = f"=== {class_name} ({activity_type}) ===\n"
                         activity_comment += "Time: Not specified\n"
                         activity_comment += "Location: Not specified"
@@ -560,7 +594,8 @@ class ExcelAdminFunctions:
                 
         except Exception as e:
             print(f"Error generating class details comment: {e}")
-            return f"Class: {', '.join(activities)}\nDetails unavailable"
+            # Fallback - but this shouldn't normally be used anymore
+            return "Class details unavailable"
 
     def _get_specific_enrollment_details(self, staff_name, class_name, class_date, class_details):
         """Get time and location details for a specific staff enrollment"""
