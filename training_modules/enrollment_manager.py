@@ -4,6 +4,7 @@ Updated Enrollment Manager with proper two-day class support.
 FIXED: Handles consecutive day enrollment, conflict checking, and cancellation.
 """
 from datetime import datetime, timedelta
+from .training_email_notifications import send_training_event_notification
 
 class EnrollmentManager:
     def __init__(self, unified_database, excel_handler, track_manager=None):
@@ -248,6 +249,32 @@ class EnrollmentManager:
                         message += f" ({live_enrolled}/2 LIVE)"
                     else:
                         message += f" ({live_enrolled}/2 LIVE)"
+            
+            # ===== ADD THIS SECTION: Send email notification =====
+            # Send notification for the first enrollment date (primary date)
+            try:
+                # Get total enrollment count for this class/date
+                class_enrollments = self.db.get_class_enrollments(class_name)
+                date_enrollments = [e for e in class_enrollments if e['class_date'] == enrollment_dates[0]]
+                total_enrolled_count = len(date_enrollments)
+                
+                email_success, email_msg = send_training_event_notification(
+                    staff_name=staff_name,
+                    class_name=class_name,
+                    class_date=enrollment_dates[0],  # Use first date for notification
+                    role=role,
+                    action_type='enrollment',
+                    conflict_override=override_conflict,
+                    conflict_details=combined_conflict_str,
+                    total_enrolled=total_enrolled_count
+                )
+                
+                # Log email result but don't fail enrollment if email fails
+                if not email_success:
+                    print(f"Email notification failed: {email_msg}")
+            except Exception as e:
+                print(f"Error sending enrollment notification email: {str(e)}")
+            # ===== END OF NEW SECTION =====
             return True, message
         elif success_count > 0:
             # Partial success - this shouldn't happen but handle it
@@ -271,9 +298,12 @@ class EnrollmentManager:
         staff_name = enrollment['staff_name']
         class_name = enrollment['class_name']
         class_date = enrollment['class_date']
+        role = enrollment.get('role', 'General')  # ADD THIS LINE
         
         # Check if this is a two-day class
         is_two_day = self._is_two_day_class(class_name)
+        
+        cancellation_successful = False  # Track if cancellation succeeded
         
         if is_two_day:
             print(f"DEBUG: Cancelling two-day class enrollment for {staff_name}")
@@ -292,11 +322,39 @@ class EnrollmentManager:
                         cancelled_count += 1
             
             print(f"DEBUG: Cancelled {cancelled_count} enrollments for two-day class")
-            return cancelled_count > 0
+            cancellation_successful = cancelled_count > 0
         else:
             # Single day cancellation
-            return self.db.cancel_enrollment(enrollment_id)
-    
+            cancellation_successful = self.db.cancel_enrollment(enrollment_id)
+        
+        # ===== ADD THIS SECTION: Send email notification =====
+        if cancellation_successful:
+            try:
+                # Get remaining enrollment count for this class/date
+                class_enrollments = self.db.get_class_enrollments(class_name)
+                date_enrollments = [e for e in class_enrollments if e['class_date'] == class_date]
+                total_enrolled_count = len(date_enrollments)
+                
+                email_success, email_msg = send_training_event_notification(
+                    staff_name=staff_name,
+                    class_name=class_name,
+                    class_date=class_date,
+                    role=role,
+                    action_type='cancellation',
+                    conflict_override=False,
+                    conflict_details=None,
+                    total_enrolled=total_enrolled_count
+                )
+                
+                # Log email result but don't fail cancellation if email fails
+                if not email_success:
+                    print(f"Email notification failed: {email_msg}")
+            except Exception as e:
+                print(f"Error sending cancellation notification email: {str(e)}")
+        # ===== END OF NEW SECTION =====
+        
+        return cancellation_successful
+
     def get_staff_enrollments_by_id(self, enrollment_id):
         """Helper method to get enrollment details by ID"""
         # This is a simplified implementation - you may need to adjust based on your database structure

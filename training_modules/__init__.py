@@ -11,7 +11,8 @@ from .staff_meeting_components import StaffMeetingComponents, EnrollmentDialogCo
 from .track_manager import TrainingTrackManager
 from .admin_access import AdminAccess
 from .admin_excel_functions import ExcelAdminFunctions, enhance_admin_reports
-from .availability_analyzer import AvailabilityAnalyzer  # NEW
+from .availability_analyzer import AvailabilityAnalyzer 
+from .training_email_notifications import TrainingEmailNotifier, send_training_event_notification # NEW
 from .config import NON_CLASS_COLUMNS, DEFAULT_CLASS_DETAILS
 
 __all__ = [
@@ -27,7 +28,9 @@ __all__ = [
     'AdminAccess',
     'ExcelAdminFunctions',
     'enhance_admin_reports',
-    'AvailabilityAnalyzer',  # NEW
+    'AvailabilityAnalyzer',
+    'TrainingEmailNotifier',           # NEW
+    'send_training_event_notification', # NEW
     'NON_CLASS_COLUMNS', 
     'DEFAULT_CLASS_DETAILS'
 ]

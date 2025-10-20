@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime
 import os
 import pytz
+from .training_email_notifications import send_training_event_notification
 
 class UnifiedDatabase:
     def __init__(self, db_path):
@@ -396,6 +397,29 @@ class UnifiedDatabase:
                  conflict_details, audit_timestamp))
             
             self.conn.commit()
+            # ===== ADD THIS SECTION: Send email notification =====
+            try:
+                # Get educator count for this class/date
+                educator_signups = self.get_educator_signups_for_class(class_name, class_date)
+                total_educators = len(educator_signups) if educator_signups else 0
+                
+                email_success, email_msg = send_training_event_notification(
+                    staff_name=staff_name,
+                    class_name=class_name,
+                    class_date=class_date,
+                    role='Educator',
+                    action_type='enrollment',
+                    conflict_override=conflict_override,
+                    conflict_details=conflict_details,
+                    total_enrolled=total_educators
+                )
+                
+                # Log email result but don't fail signup if email fails
+                if not email_success:
+                    print(f"Educator signup email notification failed: {email_msg}")
+            except Exception as e:
+                print(f"Error sending educator signup notification email: {str(e)}")
+            # ===== END OF NEW SECTION =====
             return True
             
         except sqlite3.IntegrityError as e:
@@ -417,6 +441,11 @@ class UnifiedDatabase:
             signup = self.cursor.fetchone()
             
             if signup:
+                # Store details before cancellation
+                staff_name = signup['staff_name']
+                class_name = signup['class_name']
+                class_date = signup['class_date']
+                
                 # Update status
                 self.cursor.execute('''
                     UPDATE training_educator_signups
@@ -430,17 +459,42 @@ class UnifiedDatabase:
                 self.cursor.execute('''
                     INSERT INTO training_educator_audit 
                     (action, staff_name, class_name, class_date, conflict_override, 
-                     conflict_details, action_date)
+                    conflict_details, action_date)
                     VALUES ('educator_cancelled', ?, ?, ?, ?, ?, ?)
-                ''', (signup['staff_name'], signup['class_name'], signup['class_date'],
-                     signup['conflict_override'], signup['conflict_details'], audit_timestamp))
+                ''', (staff_name, class_name, class_date,
+                    signup['conflict_override'], signup['conflict_details'], audit_timestamp))
                 
                 self.conn.commit()
+                
+                # ===== ADD THIS SECTION: Send email notification =====
+                try:
+                    # Get remaining educator count for this class/date
+                    educator_signups = self.get_educator_signups_for_class(class_name, class_date)
+                    total_educators = len(educator_signups) if educator_signups else 0
+                    
+                    email_success, email_msg = send_training_event_notification(
+                        staff_name=staff_name,
+                        class_name=class_name,
+                        class_date=class_date,
+                        role='Educator',
+                        action_type='cancellation',
+                        conflict_override=False,
+                        conflict_details=None,
+                        total_enrolled=total_educators
+                    )
+                    
+                    # Log email result but don't fail cancellation if email fails
+                    if not email_success:
+                        print(f"Educator cancellation email notification failed: {email_msg}")
+                except Exception as e:
+                    print(f"Error sending educator cancellation notification email: {str(e)}")
+                # ===== END OF NEW SECTION =====
+                
                 return True
             return False
         finally:
             self.disconnect()
-    
+
     def get_educator_signups_for_class(self, class_name, class_date=None):
         """Get all educator signups for a class - FIXED"""
         self.connect()

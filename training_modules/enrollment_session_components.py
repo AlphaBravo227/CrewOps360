@@ -529,7 +529,7 @@ class EnrollmentSessionComponents:
         if not is_staff_meeting and duplicate_dialog_key in st.session_state and st.session_state[duplicate_dialog_key]:
             existing_enrollments = st.session_state.get(duplicate_data_key, [])
             
-            from .enrollment_dialog_components import EnrollmentDialogComponents
+            from .staff_meeting_components import EnrollmentDialogComponents
             result = EnrollmentDialogComponents.show_duplicate_enrollment_dialog(
                 button_key, existing_enrollments, enrollment_manager, staff_name,
                 class_name, date, role, meeting_type, session_time
