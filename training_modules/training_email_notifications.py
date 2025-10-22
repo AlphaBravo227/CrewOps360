@@ -34,20 +34,15 @@ class TrainingEmailNotifier:
                 if isinstance(recipients, str):
                     # If it's a string, split by comma and strip whitespace
                     self.notification_recipients = [email.strip() for email in recipients.split(',') if email.strip()]
-                else:
-                    # If it's already a list, use it directly
-                    self.notification_recipients = recipients
-                self.admin_email = st.secrets.email.get('admin_email', 'aaron.e.bell@gmail.com')
             else:
                 # Fallback to environment variables
                 self.app_password = os.getenv('GMAIL_APP_PASSWORD')
                 recipients_str = os.getenv('EMAIL_NOTIFICATION_RECIPIENTS', '')
                 self.notification_recipients = [email.strip() for email in recipients_str.split(',') if email.strip()]
-                self.admin_email = os.getenv('ADMIN_EMAIL', 'aaron.e.bell@gmail.com')
             
             # Validate configuration
             if not self.app_password:
-                st.warning("⚠️ Email notifications not configured. Please set up Gmail App Password.")
+                st.warning("âš ï¸ Email notifications not configured. Please set up Gmail App Password.")
                 self.configured = False
             else:
                 self.configured = True
@@ -89,7 +84,8 @@ class TrainingEmailNotifier:
     
     def send_training_notification(self, staff_name, class_name, class_date, role, 
                                    action_type, conflict_override=False, conflict_details=None,
-                                   total_enrolled=None, class_time=None, class_location=None):
+                                   total_enrolled=None, class_time=None, class_location=None,
+                                   meeting_type=None):
         """
         Send email notification for training enrollment or cancellation
         Only sends if class is within 60 days
@@ -105,6 +101,7 @@ class TrainingEmailNotifier:
             total_enrolled (int): Total number enrolled in class (optional)
             class_time (str): Time of the class (optional)
             class_location (str): Location of the class (optional)
+            meeting_type (str): Type of meeting for staff meetings (LIVE or Virtual) (optional)
             
         Returns:
             tuple: (success, message)
@@ -121,16 +118,12 @@ class TrainingEmailNotifier:
             subject, body = self.create_notification_content(
                 staff_name, class_name, class_date, role, action_type,
                 conflict_override, conflict_details, total_enrolled,
-                class_time, class_location
+                class_time, class_location, meeting_type
             )
             
             # Send to all notification recipients
             recipients = []
-            
-            # Add admin email if configured
-            if self.admin_email:
-                recipients.append(self.admin_email)
-            
+                        
             # Add notification recipients if configured
             if self.notification_recipients:
                 for email in self.notification_recipients:
@@ -154,7 +147,7 @@ class TrainingEmailNotifier:
     
     def create_notification_content(self, staff_name, class_name, class_date, role, 
                                    action_type, conflict_override, conflict_details, total_enrolled,
-                                   class_time=None, class_location=None):
+                                   class_time=None, class_location=None, meeting_type=None):
         """
         Create email subject and body content
         
@@ -169,6 +162,7 @@ class TrainingEmailNotifier:
             total_enrolled (int): Total number enrolled in class
             class_time (str): Time of the class (optional)
             class_location (str): Location of the class (optional)
+            meeting_type (str): Type of meeting for staff meetings (LIVE or Virtual) (optional)
             
         Returns:
             tuple: (subject, body)
@@ -187,18 +181,12 @@ ACTION: {action.upper()}
 Staff Member: {staff_name}
 Class Name: {class_name}
 Class Date: {class_date}
+Class Time: {class_time}
+Class Location: {class_location}
+Meeting Type: {meeting_type}
 Role: {role}
 Timestamp: {timestamp}
-"""
-        
-        # Add class time if provided
-        if class_time:
-            body += f"Class Time: {class_time}\n"
-        
-        # Add class location if provided
-        if class_location:
-            body += f"Class Location: {class_location}\n"
-        
+"""        
         # Add conflict information if applicable
         if conflict_override and conflict_details:
             body += f"""
@@ -276,7 +264,7 @@ training_email_notifier = TrainingEmailNotifier()
 def send_training_event_notification(staff_name, class_name, class_date, role, 
                                      action_type, conflict_override=False, 
                                      conflict_details=None, total_enrolled=None,
-                                     class_time=None, class_location=None):
+                                     class_time=None, class_location=None, meeting_type=None):
     """
     Convenient function to send training event notification
     Only sends if class is within 60 days of current date
@@ -292,6 +280,7 @@ def send_training_event_notification(staff_name, class_name, class_date, role,
         total_enrolled (int): Total number enrolled in class (optional)
         class_time (str): Time of the class (optional)
         class_location (str): Location of the class (optional)
+        meeting_type (str): Type of meeting for staff meetings (LIVE or Virtual) (optional)
         
     Returns:
         tuple: (success, message)
@@ -299,5 +288,5 @@ def send_training_event_notification(staff_name, class_name, class_date, role,
     return training_email_notifier.send_training_notification(
         staff_name, class_name, class_date, role, action_type,
         conflict_override, conflict_details, total_enrolled,
-        class_time, class_location
+        class_time, class_location, meeting_type
     )

@@ -296,7 +296,8 @@ class EnrollmentManager:
                     conflict_details=combined_conflict_str,
                     total_enrolled=total_enrolled_count,
                     class_time=class_time,
-                    class_location=class_location
+                    class_location=class_location,
+                    meeting_type=meeting_type
                 )
                 
                 # Log email result but don't fail enrollment if email fails
@@ -393,6 +394,9 @@ class EnrollmentManager:
                 date_enrollments = [e for e in class_enrollments if e['class_date'] == class_date]
                 total_enrolled_count = len(date_enrollments)
                 
+                # Get meeting type from enrollment record (for Staff Meetings)
+                meeting_type = enrollment.get('meeting_type')
+                
                 email_success, email_msg = send_training_event_notification(
                     staff_name=staff_name,
                     class_name=class_name,
@@ -403,7 +407,8 @@ class EnrollmentManager:
                     conflict_details=None,
                     total_enrolled=total_enrolled_count,
                     class_time=class_time,
-                    class_location=class_location
+                    class_location=class_location,
+                    meeting_type=meeting_type
                 )
                 
                 # Log email result but don't fail cancellation if email fails
@@ -503,7 +508,7 @@ class EnrollmentManager:
         
         # Add conflict indicator if applicable
         if enrollment.get('conflict_override'):
-            details.append("⚠️ Conflict Override")
+            details.append("âš ï¸ Conflict Override")
             
         return " | ".join(details)
 
