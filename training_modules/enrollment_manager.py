@@ -250,9 +250,37 @@ class EnrollmentManager:
                     else:
                         message += f" ({live_enrolled}/2 LIVE)"
             
-            # ===== ADD THIS SECTION: Send email notification =====
-            # Send notification for the first enrollment date (primary date)
+            # ===== SEND EMAIL NOTIFICATION WITH TIME AND LOCATION =====
             try:
+                # Get class details for time and location
+                class_details = self.excel.get_class_details(class_name)
+                
+                # Get class time
+                if session_time:
+                    # Use specific session time if enrolled in a session
+                    class_time = session_time
+                else:
+                    # Use general class time
+                    start_time = class_details.get('time_1_start')
+                    end_time = class_details.get('time_1_end')
+                    if start_time and end_time:
+                        class_time = f"{start_time} - {end_time}"
+                    elif start_time:
+                        class_time = f"Starts: {start_time}"
+                    else:
+                        class_time = "Time not specified"
+                
+                # Get class location for the specific date
+                class_location = "Location not specified"
+                for i in range(1, 15):  # Check rows 1-14 for dates
+                    date_key = f'date_{i}'
+                    location_key = f'date_{i}_location'
+                    
+                    if date_key in class_details and class_details[date_key] == enrollment_dates[0]:
+                        location = class_details.get(location_key, '')
+                        class_location = location.strip() if location else "Location not specified"
+                        break
+                
                 # Get total enrollment count for this class/date
                 class_enrollments = self.db.get_class_enrollments(class_name)
                 date_enrollments = [e for e in class_enrollments if e['class_date'] == enrollment_dates[0]]
@@ -261,12 +289,14 @@ class EnrollmentManager:
                 email_success, email_msg = send_training_event_notification(
                     staff_name=staff_name,
                     class_name=class_name,
-                    class_date=enrollment_dates[0],  # Use first date for notification
+                    class_date=enrollment_dates[0],
                     role=role,
                     action_type='enrollment',
                     conflict_override=override_conflict,
                     conflict_details=combined_conflict_str,
-                    total_enrolled=total_enrolled_count
+                    total_enrolled=total_enrolled_count,
+                    class_time=class_time,
+                    class_location=class_location
                 )
                 
                 # Log email result but don't fail enrollment if email fails
@@ -274,7 +304,7 @@ class EnrollmentManager:
                     print(f"Email notification failed: {email_msg}")
             except Exception as e:
                 print(f"Error sending enrollment notification email: {str(e)}")
-            # ===== END OF NEW SECTION =====
+            # ===== END EMAIL NOTIFICATION =====
             return True, message
         elif success_count > 0:
             # Partial success - this shouldn't happen but handle it
@@ -327,9 +357,37 @@ class EnrollmentManager:
             # Single day cancellation
             cancellation_successful = self.db.cancel_enrollment(enrollment_id)
         
-        # ===== ADD THIS SECTION: Send email notification =====
+        # ===== SEND CANCELLATION EMAIL NOTIFICATION WITH TIME AND LOCATION =====
         if cancellation_successful:
             try:
+                # Get class details for time and location
+                class_details = self.excel.get_class_details(class_name)
+                
+                # Get class time
+                enrollment_session_time = enrollment.get('session_time')
+                if enrollment_session_time:
+                    class_time = enrollment_session_time
+                else:
+                    start_time = class_details.get('time_1_start')
+                    end_time = class_details.get('time_1_end')
+                    if start_time and end_time:
+                        class_time = f"{start_time} - {end_time}"
+                    elif start_time:
+                        class_time = f"Starts: {start_time}"
+                    else:
+                        class_time = "Time not specified"
+                
+                # Get class location for the specific date
+                class_location = "Location not specified"
+                for i in range(1, 15):  # Check rows 1-14 for dates
+                    date_key = f'date_{i}'
+                    location_key = f'date_{i}_location'
+                    
+                    if date_key in class_details and class_details[date_key] == class_date:
+                        location = class_details.get(location_key, '')
+                        class_location = location.strip() if location else "Location not specified"
+                        break
+                
                 # Get remaining enrollment count for this class/date
                 class_enrollments = self.db.get_class_enrollments(class_name)
                 date_enrollments = [e for e in class_enrollments if e['class_date'] == class_date]
@@ -343,7 +401,9 @@ class EnrollmentManager:
                     action_type='cancellation',
                     conflict_override=False,
                     conflict_details=None,
-                    total_enrolled=total_enrolled_count
+                    total_enrolled=total_enrolled_count,
+                    class_time=class_time,
+                    class_location=class_location
                 )
                 
                 # Log email result but don't fail cancellation if email fails
@@ -351,7 +411,7 @@ class EnrollmentManager:
                     print(f"Email notification failed: {email_msg}")
             except Exception as e:
                 print(f"Error sending cancellation notification email: {str(e)}")
-        # ===== END OF NEW SECTION =====
+        # ===== END CANCELLATION EMAIL NOTIFICATION =====
         
         return cancellation_successful
 

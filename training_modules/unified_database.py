@@ -11,18 +11,20 @@ import pytz
 from .training_email_notifications import send_training_event_notification
 
 class UnifiedDatabase:
-    def __init__(self, db_path):
-        """
+    def __init__(self, db_path, excel_handler=None):
+        '''
         Initialize the unified database.
         
         Args:
             db_path: Path to the unified database (data/medflight_tracks.db)
-        """
+            excel_handler: ExcelHandler instance for accessing class details (optional)
+        '''
         # Ensure data directory exists
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.db_path = db_path
         self.conn = None
         self.cursor = None
+        self.excel_handler = excel_handler  # NEW: Store excel_handler reference
         # Set up Eastern timezone (handles EST/EDT automatically)
         self.eastern_tz = pytz.timezone('America/New_York')
         
@@ -400,6 +402,34 @@ class UnifiedDatabase:
             # ===== ADD THIS SECTION: Send email notification =====
             try:
                 # Get educator count for this class/date
+                if self.excel_handler:
+                    class_details = self.excel_handler.get_class_details(class_name)
+                    
+                    # Get class time
+                    start_time = class_details.get('time_1_start')
+                    end_time = class_details.get('time_1_end')
+                    if start_time and end_time:
+                        class_time = f"{start_time} - {end_time}"
+                    elif start_time:
+                        class_time = f"Starts: {start_time}"
+                    else:
+                        class_time = "Time not specified"
+                    
+                    # Get class location for the specific date
+                    class_location = "Location not specified"
+                    for i in range(1, 15):  # Check rows 1-14 for dates
+                        date_key = f'date_{i}'
+                        location_key = f'date_{i}_location'
+                        
+                        if date_key in class_details and class_details[date_key] == class_date:
+                            location = class_details.get(location_key, '')
+                            class_location = location.strip() if location else "Location not specified"
+                            break
+                else:
+                    class_time = "Time not specified"
+                    class_location = "Location not specified"
+                
+                # Get educator count for this class/date
                 educator_signups = self.get_educator_signups_for_class(class_name, class_date)
                 total_educators = len(educator_signups) if educator_signups else 0
                 
@@ -411,7 +441,9 @@ class UnifiedDatabase:
                     action_type='enrollment',
                     conflict_override=conflict_override,
                     conflict_details=conflict_details,
-                    total_enrolled=total_educators
+                    total_enrolled=total_educators,
+                    class_time=class_time,
+                    class_location=class_location
                 )
                 
                 # Log email result but don't fail signup if email fails
@@ -419,7 +451,8 @@ class UnifiedDatabase:
                     print(f"Educator signup email notification failed: {email_msg}")
             except Exception as e:
                 print(f"Error sending educator signup notification email: {str(e)}")
-            # ===== END OF NEW SECTION =====
+            # ===== END EMAIL NOTIFICATION =====
+            
             return True
             
         except sqlite3.IntegrityError as e:

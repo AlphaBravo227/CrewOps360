@@ -89,7 +89,7 @@ class TrainingEmailNotifier:
     
     def send_training_notification(self, staff_name, class_name, class_date, role, 
                                    action_type, conflict_override=False, conflict_details=None,
-                                   total_enrolled=None):
+                                   total_enrolled=None, class_time=None, class_location=None):
         """
         Send email notification for training enrollment or cancellation
         Only sends if class is within 60 days
@@ -103,6 +103,8 @@ class TrainingEmailNotifier:
             conflict_override (bool): Whether conflicts were overridden
             conflict_details (str): Details about conflicts if any
             total_enrolled (int): Total number enrolled in class (optional)
+            class_time (str): Time of the class (optional)
+            class_location (str): Location of the class (optional)
             
         Returns:
             tuple: (success, message)
@@ -118,11 +120,16 @@ class TrainingEmailNotifier:
             # Generate email content
             subject, body = self.create_notification_content(
                 staff_name, class_name, class_date, role, action_type,
-                conflict_override, conflict_details, total_enrolled
+                conflict_override, conflict_details, total_enrolled,
+                class_time, class_location
             )
             
             # Send to all notification recipients
             recipients = []
+            
+            # Add admin email if configured
+            if self.admin_email:
+                recipients.append(self.admin_email)
             
             # Add notification recipients if configured
             if self.notification_recipients:
@@ -146,7 +153,8 @@ class TrainingEmailNotifier:
             return (False, f"Error sending notification: {str(e)}")
     
     def create_notification_content(self, staff_name, class_name, class_date, role, 
-                                   action_type, conflict_override, conflict_details, total_enrolled):
+                                   action_type, conflict_override, conflict_details, total_enrolled,
+                                   class_time=None, class_location=None):
         """
         Create email subject and body content
         
@@ -159,6 +167,8 @@ class TrainingEmailNotifier:
             conflict_override (bool): Whether conflicts were overridden
             conflict_details (str): Details about conflicts if any
             total_enrolled (int): Total number enrolled in class
+            class_time (str): Time of the class (optional)
+            class_location (str): Location of the class (optional)
             
         Returns:
             tuple: (subject, body)
@@ -180,6 +190,14 @@ Class Date: {class_date}
 Role: {role}
 Timestamp: {timestamp}
 """
+        
+        # Add class time if provided
+        if class_time:
+            body += f"Class Time: {class_time}\n"
+        
+        # Add class location if provided
+        if class_location:
+            body += f"Class Location: {class_location}\n"
         
         # Add conflict information if applicable
         if conflict_override and conflict_details:
@@ -257,7 +275,8 @@ training_email_notifier = TrainingEmailNotifier()
 
 def send_training_event_notification(staff_name, class_name, class_date, role, 
                                      action_type, conflict_override=False, 
-                                     conflict_details=None, total_enrolled=None):
+                                     conflict_details=None, total_enrolled=None,
+                                     class_time=None, class_location=None):
     """
     Convenient function to send training event notification
     Only sends if class is within 60 days of current date
@@ -271,11 +290,14 @@ def send_training_event_notification(staff_name, class_name, class_date, role,
         conflict_override (bool): Whether conflicts were overridden
         conflict_details (str): Details about conflicts if any
         total_enrolled (int): Total number enrolled in class (optional)
+        class_time (str): Time of the class (optional)
+        class_location (str): Location of the class (optional)
         
     Returns:
         tuple: (success, message)
     """
     return training_email_notifier.send_training_notification(
         staff_name, class_name, class_date, role, action_type,
-        conflict_override, conflict_details, total_enrolled
+        conflict_override, conflict_details, total_enrolled,
+        class_time, class_location
     )

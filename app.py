@@ -269,8 +269,12 @@ def display_training_events_app():
     try:
         # Initialize unified database (uses main medflight_tracks.db)
         if 'unified_db' not in st.session_state:
-            st.session_state.unified_db = UnifiedDatabase('data/medflight_tracks.db')
-            st.session_state.unified_db.initialize_training_tables()
+                    st.session_state.unified_db = UnifiedDatabase('data/medflight_tracks.db')
+                    st.session_state.unified_db.initialize_training_tables()
+                
+        # Update unified_db with excel_handler reference after it's initialized
+        if 'training_excel_handler' in st.session_state and st.session_state.training_excel_handler:
+            st.session_state.unified_db.excel_handler = st.session_state.training_excel_handler
 
         # Initialize Excel handler
         if 'training_excel_handler' not in st.session_state:
