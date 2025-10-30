@@ -1,7 +1,7 @@
 # modules/admin_track_status.py
 """
-Admin function for managing track active/inactive status
-Allows administrators to activate or deactivate tracks and view status history
+Enhanced Admin Track Management Interface
+Combines track status management and track editing in a unified interface
 """
 
 import streamlit as st
@@ -165,7 +165,7 @@ def get_status_change_history(track_id):
             SELECT submission_date, status, notes
             FROM track_history
             WHERE track_id = ? 
-            AND status IN ('activated', 'deactivated')
+            AND status IN ('activated', 'deactivated', 'admin_edit')
             ORDER BY submission_date DESC
         """, (track_id,))
         
@@ -179,15 +179,15 @@ def display_track_status_manager():
     """
     Main display function for the track status management admin interface
     """
-    st.header("🔄 Track Status Manager")
-    st.markdown("Manage active/inactive status of staff tracks")
+    st.markdown("### 📄 Track Status Manager")
+    st.caption("Manage active/inactive status of staff tracks")
     
     # Get admin username for logging
     admin_user = st.session_state.get('username', 'admin')
     
     # Search filter
     st.subheader("🔍 Search and Filter")
-    search_term = st.text_input("Search by staff name:", placeholder="Enter staff name...")
+    search_term = st.text_input("Search by staff name:", placeholder="Enter staff name...", key="status_search")
     
     # Get all tracks
     all_tracks = get_all_tracks_with_status()
@@ -279,11 +279,14 @@ def display_track_status_manager():
                             st.error(message)
             
             # Add expander for status history
-            with st.expander(f"📜 View Status History for {staff_name}"):
+            with st.expander(f"📜 View History for {staff_name}"):
                 history = get_status_change_history(track_id)
                 if history:
                     for date, status, notes in history:
-                        st.write(f"**{date}** - {status.upper()}")
+                        if status == "admin_edit":
+                            st.info(f"**{date}** - ADMIN EDIT")
+                        else:
+                            st.write(f"**{date}** - {status.upper()}")
                         if notes:
                             st.caption(notes)
                 else:
@@ -291,12 +294,33 @@ def display_track_status_manager():
             
             st.markdown("---")
 
+def display_track_management_interface():
+    """
+    Main interface combining status manager and track editor
+    """
+    st.header("🔧 Track Management System")
+    st.markdown("Comprehensive admin tools for managing staff tracks")
+    
+    # Create tabs for different functions
+    tab1, tab2 = st.tabs(["📄 Track Status", "✏️ Edit Tracks"])
+    
+    with tab1:
+        display_track_status_manager()
+    
+    with tab2:
+        # Import and display track editor
+        try:
+            from modules.admin_track_editor import display_track_editor
+            display_track_editor()
+        except ImportError:
+            st.error("Track editor module not found. Please ensure admin_track_editor.py is in the modules folder.")
+
 # Function to integrate into admin dashboard
 def add_track_status_manager_to_admin():
     """
     Function to be called from the admin dashboard to add this functionality
     """
-    display_track_status_manager()
+    display_track_management_interface()
 
 
 # Integration instructions for training_modules/admin_access.py:
@@ -304,16 +328,15 @@ def add_track_status_manager_to_admin():
 To integrate this into your admin dashboard, add the following changes:
 
 1. In the _show_admin_functions method, add this to the admin_sections list:
-   ("🔄 Track Status Manager", "track_status_manager", "Activate/deactivate staff tracks"),
+   ("🔧 Track Manager", "track_manager", "Manage track status and edit assignments"),
 
 2. In the _render_admin_function method, add this condition:
-   elif function_key == "track_status_manager":
-       self._show_track_status_manager()
+   elif function_key == "track_manager":
+       self._show_track_manager()
 
 3. Add this new method to the AdminAccess class:
-   def _show_track_status_manager(self):
-       '''Show track status management functionality'''
-       st.subheader("🔄 Track Status Manager")
-       from modules.admin_track_status import display_track_status_manager
-       display_track_status_manager()
+   def _show_track_manager(self):
+       '''Show comprehensive track management functionality'''
+       from modules.admin_track_status import display_track_management_interface
+       display_track_management_interface()
 """

@@ -105,7 +105,7 @@ class AdminAccess:
             ("📄 Data Export", "data_management", "Export training data"),
             ("📊 System Statistics", "system_stats", "View training system usage"),
             ("🗂️ Database Maintenance", "database_maintenance", "Training database operations"),
-            ("🔄 Track Status Manager", "track_status_manager", "Activate/deactivate staff tracks"),  # <-- ADD THIS LINE
+            ("🔧 Track Manager", "track_manager", "Manage track status and edit assignments"),
         ]
         
         for label, key, description in admin_sections:
@@ -200,7 +200,7 @@ class AdminAccess:
             self._show_system_stats()
         elif function_key == "database_maintenance":
             self._show_database_maintenance()
-        elif function_key == "track_status_manager":  # <-- ADD THIS BLOCK
+        elif function_key == "track_manager":  # Updated to match menu item
             self._show_track_status_manager()
         else:
             st.error("Unknown admin function")
@@ -906,12 +906,10 @@ class AdminAccess:
         
     def _show_track_status_manager(self):
         """Show track status management functionality"""
-        st.subheader("🔄 Track Status Manager")
-        
-        from modules.admin_track_status import display_track_status_manager
-        
+        st.subheader("🔧 Track Management System")
+        from modules.admin_track_status import display_track_management_interface
         try:
-            display_track_status_manager()
+            display_track_management_interface()
         except Exception as e:
             st.error(f"Error loading track status manager: {str(e)}")
             st.info("Make sure modules/admin_track_status.py exists and is properly configured")
