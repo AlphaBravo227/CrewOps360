@@ -6,6 +6,7 @@ Allows administrators to directly edit active track assignments
 - No validation constraints (admin override capability)
 - Saves as new version with admin_edit identifier
 - Shows confirmation dialog with change summary
+- Generates PDF of changes after successful save
 """
 
 import streamlit as st
@@ -13,6 +14,7 @@ import sqlite3
 import json
 from datetime import datetime
 from modules.db_utils import get_db_connection
+from modules.admin_pdf_generator import generate_admin_edit_pdf
 
 # Define the 42 day columns (6 weeks)
 DAY_COLUMNS = [
@@ -173,7 +175,7 @@ def save_edited_track(track_id, staff_name, edited_track_data, admin_user, chang
         changes_summary: Summary of changes made
         
     Returns:
-        tuple: (success, message)
+        tuple: (success, message, new_version) - new_version is None if failed
     """
     try:
         conn = get_db_connection()
@@ -184,7 +186,7 @@ def save_edited_track(track_id, staff_name, edited_track_data, admin_user, chang
         result = cursor.fetchone()
         
         if not result:
-            return (False, "Track not found")
+            return (False, "Track not found", None)
         
         current_version = result[0]
         new_version = current_version + 1
@@ -223,10 +225,10 @@ def save_edited_track(track_id, staff_name, edited_track_data, admin_user, chang
         
         conn.commit()
         
-        return (True, f"Track updated successfully to version {new_version}")
+        return (True, f"Track updated successfully to version {new_version}", new_version)
         
     except Exception as e:
-        return (False, f"Error saving edited track: {str(e)}")
+        return (False, f"Error saving edited track: {str(e)}", None)
 
 def display_track_editor():
     """
@@ -291,6 +293,9 @@ def display_track_editor():
                     st.session_state.editor_track_data = track_data
                     st.session_state.editor_edited_data = track_data['track_data'].copy()
                     st.session_state.editor_show_confirmation = False
+                    st.session_state.editor_pdf_ready = False
+                    st.session_state.editor_pdf_bytes = None
+                    st.session_state.editor_pdf_filename = None
                     st.success(f"✅ Loaded track for {staff_name}")
                     st.rerun()
     
@@ -379,6 +384,32 @@ def display_track_editor():
         
         st.markdown("---")
         
+        # PDF Download Section (if PDF is ready)
+        if st.session_state.get('editor_pdf_ready', False):
+            st.subheader("📄 Download Admin Edit PDF")
+            
+            pdf_bytes = st.session_state.get('editor_pdf_bytes')
+            pdf_filename = st.session_state.get('editor_pdf_filename')
+            
+            if pdf_bytes and pdf_filename:
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    st.success("✅ PDF is ready for download")
+                    st.caption(f"Filename: {pdf_filename}")
+                    st.caption("This PDF contains a summary of changes and the updated schedule.")
+                
+                with col2:
+                    st.download_button(
+                        label="📥 Download PDF",
+                        data=pdf_bytes,
+                        file_name=pdf_filename,
+                        mime="application/pdf",
+                        type="primary"
+                    )
+        
+        st.markdown("---")
+        
         # Action buttons
         col1, col2, col3 = st.columns([1, 1, 2])
         
@@ -411,6 +442,9 @@ def display_track_editor():
                 st.session_state.editor_track_data = None
                 st.session_state.editor_edited_data = None
                 st.session_state.editor_show_confirmation = False
+                st.session_state.editor_pdf_ready = False
+                st.session_state.editor_pdf_bytes = None
+                st.session_state.editor_pdf_filename = None
                 st.info("Editor cleared")
                 st.rerun()
         
@@ -444,7 +478,7 @@ def display_track_editor():
             with conf_col1:
                 if st.button("✅ Confirm and Save", type="primary", key="confirm_save"):
                     # Save the edited track
-                    success, message = save_edited_track(
+                    success, message, new_version = save_edited_track(
                         track_data['track_id'],
                         staff_name,
                         edited_data,
@@ -454,6 +488,34 @@ def display_track_editor():
                     
                     if success:
                         st.success(f"✅ {message}")
+                        
+                        # Generate PDF automatically
+                        try:
+                            # Get preassignments if any
+                            preassignments_list = get_preassignments_for_staff(staff_name)
+                            preassignments_dict = {day: activity for day, activity in preassignments_list} if preassignments_list else None
+                            
+                            # Generate the PDF
+                            pdf_bytes, pdf_filename = generate_admin_edit_pdf(
+                                staff_name=staff_name,
+                                track_data=edited_data,
+                                changes=changes,
+                                version=new_version,
+                                admin_user=admin_user,
+                                preassignments=preassignments_dict
+                            )
+                            
+                            # Store PDF in session state for download
+                            st.session_state.editor_pdf_bytes = pdf_bytes
+                            st.session_state.editor_pdf_filename = pdf_filename
+                            st.session_state.editor_pdf_ready = True
+                            
+                            st.success("📄 PDF generated successfully!")
+                            
+                        except Exception as e:
+                            st.warning(f"Track saved but PDF generation failed: {str(e)}")
+                            st.session_state.editor_pdf_ready = False
+                        
                         st.balloons()
                         
                         # Reload the track to show updated data
