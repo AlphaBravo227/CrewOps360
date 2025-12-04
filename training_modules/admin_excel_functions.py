@@ -112,12 +112,43 @@ class ExcelAdminFunctions:
             # Determine which classes are not enrolled
             classes_not_enrolled = [cls for cls in assigned_classes if cls not in enrolled_classes]
 
-            # ===== NEW: Filter out SM classes if staff member is fully SM compliant =====
-            if total_sm_compliance and staff_meeting_compliance:
-                # Both SM requirements met - remove all SM classes from "not enrolled" list
-                classes_not_enrolled = [cls for cls in classes_not_enrolled 
-                                    if not self.excel.is_staff_meeting(cls)]
-
+            # ===== NEW: Filter out SM classes by quarter-based compliance =====
+            # Count SM enrollments per quarter
+            sm_enrollments_by_quarter = {}
+            for enrollment in staff_enrollments:
+                cls_name = enrollment['class_name']
+                if self.excel.is_staff_meeting(cls_name):
+                    # Extract quarter from class name (e.g., "Wed SM Q2" -> "Q2")
+                    quarter = None
+                    for q in ['Q1', 'Q2', 'Q3', 'Q4']:
+                        if q in cls_name:
+                            quarter = q
+                            break
+                    
+                    if quarter:
+                        if quarter not in sm_enrollments_by_quarter:
+                            sm_enrollments_by_quarter[quarter] = 0
+                        sm_enrollments_by_quarter[quarter] += 1
+            
+            # Filter out SM classes for quarters where staff has 2+ enrollments
+            filtered_classes_not_enrolled = []
+            for cls in classes_not_enrolled:
+                if self.excel.is_staff_meeting(cls):
+                    # Check if this SM's quarter has 2+ enrollments
+                    quarter = None
+                    for q in ['Q1', 'Q2', 'Q3', 'Q4']:
+                        if q in cls:
+                            quarter = q
+                            break
+                    
+                    # Only include if quarter doesn't have 2+ enrollments
+                    if quarter and sm_enrollments_by_quarter.get(quarter, 0) < 2:
+                        filtered_classes_not_enrolled.append(cls)
+                else:
+                    # Not an SM class, keep it
+                    filtered_classes_not_enrolled.append(cls)
+            
+            classes_not_enrolled = filtered_classes_not_enrolled
             classes_not_enrolled_str = ', '.join(classes_not_enrolled) if classes_not_enrolled else ''
             
             # ===== NEW: Filter classes starting within 90 days (or already started) =====
