@@ -239,6 +239,10 @@ class ExcelHandler:
                 
             details = {}
             
+            #Extract CCEMT checkbox data
+            ccemt_checkbox = sheet.cell(row=2, column=6).value  # Column F, Row 2
+            has_ccemt = self._parse_checkbox_value(ccemt_checkbox)
+
             # Extract dates from rows 1-14 (row 15 is blank)
             # Check columns B (date), C (LIVE option), D (Can work N prior), E (Location)
             has_any_dates = False
@@ -290,6 +294,9 @@ class ExcelHandler:
             # Use improved checkbox parsing for these boolean fields
             nurses_medic_separate_value = sheet.cell(row=17, column=2).value
             details['nurses_medic_separate'] = 'Yes' if self._parse_checkbox_value(nurses_medic_separate_value) else 'No'
+
+            # NEW: Add CCEMT configuration
+            details['has_ccemt'] = 'Yes' if has_ccemt else 'No'
             
             details['classes_per_day'] = sheet.cell(row=18, column=2).value or 1  # Row 18
             

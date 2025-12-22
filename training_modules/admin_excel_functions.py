@@ -2139,24 +2139,38 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                 st.warning(f"Unknown session type: {session_type}")
 
     def _display_nurse_medic_session(session_option, date_str, class_name, excel_admin_functions, has_educator, class_report):
-        """Display nurse/medic separated session breakdown"""
+        """Display nurse/medic separated session breakdown with CCEMT support"""
         session_time = session_option.get('session_time')
         display_time = session_option.get('display_time', 'Session')
+        has_ccemt = session_option.get('has_ccemt', False)
         
         with st.expander(f"⚕️ **{display_time}** (Role-Separated)", expanded=True):
             nurses = session_option.get('nurses', [])
             medics = session_option.get('medics', [])
+            ccemts = session_option.get('ccemts', [])
             nurse_available = session_option.get('nurse_available', True)
             medic_available = session_option.get('medic_available', True)
+            ccemt_available = session_option.get('ccemt_available', False)
             
-            # FIXED: For nurse/medic separate, max_students_per_session is the TOTAL capacity
-            # which is split equally between nurses and medics
-            max_students_per_session = class_report['max_students_per_session']
-            nurse_capacity = max_students_per_session // 2  # Half for nurses
-            medic_capacity = max_students_per_session // 2  # Half for medics
+            # Calculate capacities
+            if has_ccemt:
+                # When CCEMT is enabled: 1 slot each
+                nurse_capacity = 1
+                medic_capacity = 1
+                ccemt_capacity = 1
+            else:
+                # Original logic: split total capacity between nurse and medic
+                max_students_per_session = class_report['max_students_per_session']
+                nurse_capacity = max_students_per_session // 2
+                medic_capacity = max_students_per_session // 2
             
-            col1, col2, col3 = st.columns(3)
+            # Create columns based on CCEMT availability
+            if has_ccemt:
+                col1, col2, col3, col4 = st.columns(4)
+            else:
+                col1, col2, col3 = st.columns(3)
             
+            # NURSES COLUMN
             with col1:
                 st.write("**👩‍⚕️ Nurses**")
                 nurse_spots_remaining = max(0, nurse_capacity - len(nurses))
@@ -2165,27 +2179,83 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                 
                 if nurses:
                     st.write("**Nurse Participants:**")
-                    for nurse in sorted(nurses):
+                    for nurse in nurses:
                         st.write(f"• {nurse}")
                 else:
                     st.write("*No nurses enrolled*")
             
+            # MEDICS COLUMN
             with col2:
-                st.write("**🚑 Medics**")
+                st.write("**🚁 Medics**")
                 medic_spots_remaining = max(0, medic_capacity - len(medics))
                 st.write(f"**Enrolled:** {len(medics)}/{medic_capacity}")
                 st.write(f"**Spots Remaining:** {medic_spots_remaining}")
                 
                 if medics:
                     st.write("**Medic Participants:**")
-                    for medic in sorted(medics):
+                    for medic in medics:
                         st.write(f"• {medic}")
                 else:
                     st.write("*No medics enrolled*")
             
-            with col3:
-                if has_educator and class_report['instructor_requirement'] > 0:
-                    _display_educator_breakdown(date_str, class_name, excel_admin_functions, class_report)
+            # CCEMT COLUMN (only if enabled)
+            if has_ccemt:
+                with col3:
+                    st.write("**🚑 CCEMT**")
+                    ccemt_spots_remaining = max(0, ccemt_capacity - len(ccemts))
+                    st.write(f"**Enrolled:** {len(ccemts)}/{ccemt_capacity}")
+                    st.write(f"**Spots Remaining:** {ccemt_spots_remaining}")
+                    
+                    if ccemts:
+                        st.write("**CCEMT Participants:**")
+                        for ccemt in ccemts:
+                            st.write(f"• {ccemt}")
+                    else:
+                        st.write("*No CCEMT enrolled*")
+            
+            # EDUCATOR COLUMN (adjusted position based on CCEMT)
+            educator_col = col4 if has_ccemt else col3
+            with educator_col:
+                st.write("**👨‍🏫 Educator**")
+                if has_educator:
+                    educator_signup = excel_admin_functions.get_educator_signup(class_name, date_str, session_time)
+                    if educator_signup:
+                        st.write(f"• {educator_signup['staff_name']}")
+                    else:
+                        st.write("*No educator assigned*")
+                else:
+                    st.write("*Not required*")
+            
+            # Export button row
+            st.markdown("---")
+            
+            # Calculate total enrolled
+            total_enrolled = len(nurses) + len(medics) + (len(ccemts) if has_ccemt else 0)
+            
+            export_col1, export_col2 = st.columns([3, 1])
+            with export_col1:
+                st.write(f"**Total Participants:** {total_enrolled}")
+            
+            with export_col2:
+                participants_list = []
+                for nurse in nurses:
+                    participants_list.append({'Name': nurse, 'Role': 'Nurse'})
+                for medic in medics:
+                    participants_list.append({'Name': medic, 'Role': 'Medic'})
+                if has_ccemt:
+                    for ccemt in ccemts:
+                        participants_list.append({'Name': ccemt, 'Role': 'CCEMT'})
+                
+                if participants_list:
+                    participants_df = pd.DataFrame(participants_list)
+                    csv_data = participants_df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Export",
+                        data=csv_data,
+                        file_name=f"{class_name}_{date_str}_{display_time}_participants.csv",
+                        mime="text/csv",
+                        key=f"export_{class_name}_{date_str}_{session_time}"
+                    )
 
     def _display_regular_session(session_option, date_str, class_name, excel_admin_functions, has_educator, class_report):
         """Display regular session breakdown"""

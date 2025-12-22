@@ -1,37 +1,38 @@
-# training_modules/track_manager.py - Updated to include CCEMT schedule integration
+# training_modules/track_manager.py - Updated to include CCEMT schedule integration from Excel
 
 from datetime import datetime, timedelta
 import sqlite3
 import json
-import pandas as pd
-from openpyxl import load_workbook
 
 class TrainingTrackManager:
-    """Enhanced Track Manager that includes CCEMT schedule integration"""
+    """Enhanced Track Manager that includes CCEMT schedule integration from Excel"""
     
     def __init__(self, tracks_db_path=None):
         self.tracks_db_path = tracks_db_path
         self.tracks_cache = {}
         self.ccemt_schedule_cache = {}
-        self.excel_handler = None  # Will be set externally
+        self.tracks_excel_handler = None  # For loading CCEMT schedules from Tracks.xlsx
+        self.enrollment_excel_handler = None  # For getting staff roles from enrollment sheet
         
-        # ADD THESE MISSING PROPERTIES:
+        # Pattern configuration for regular tracks
         self.pattern_start = datetime(2025, 9, 14)  # Sun A 1 - pattern start date
         self.pattern_length = 42  # 6 weeks = 42 days
+        
+        # CCEMT schedule start date (same as pattern start)
+        self.ccemt_start_date = datetime(2025, 9, 14)  # First Sunday in CCEMT schedule
         
         # Shift descriptions for display
         self.shift_descriptions = {
             'D': 'Day Shift',
             'N': 'Night Shift',
             'AT': 'AT Shift',
-            'LT': 'Day Shift (LT)'  # LT treated as Day shift
+            'LT': 'Day Shift (LT)'
         }
         
         # Load tracks if database exists
         if self.tracks_db_path:
             self.reload_tracks()
 
-    # ADD THIS MISSING METHOD:
     def get_pattern_day_name(self, date):
         """
         Get the pattern day name (e.g., "Sun A 1") for a given date.
@@ -71,48 +72,55 @@ class TrainingTrackManager:
         
         return f"Day {pattern_day_index + 1}"
     
-    def set_excel_handler(self, excel_handler):
-        """Set the Excel handler for CCEMT schedule access"""
-        self.excel_handler = excel_handler
+    def set_excel_handler(self, tracks_excel_handler, enrollment_excel_handler=None):
+        """
+        Set the Excel handlers for CCEMT schedule access and role lookups.
+        
+        Args:
+            tracks_excel_handler: ExcelHandler for Tracks.xlsx (contains CCEMT tab)
+            enrollment_excel_handler: Optional ExcelHandler for enrollment data (contains staff roles)
+                                     If not provided, will use tracks_excel_handler for both
+        """
+        self.tracks_excel_handler = tracks_excel_handler
+        self.enrollment_excel_handler = enrollment_excel_handler or tracks_excel_handler
         self.load_ccemt_schedules()
     
     def load_ccemt_schedules(self):
-        """Load CCEMT schedules from the CCEMT CRM Sched tab"""
-        if not self.excel_handler or not self.excel_handler.workbook:
+        """
+        Load CCEMT schedules from the CCEMT tab in the Tracks.xlsx file.
+        
+        The schedule repeats every 4 weeks (28 days), so we load the pattern
+        and cycle through it for any future date.
+        
+        Format:
+        - Row 1: Headers (column A is blank, columns B-AC are day names: Sun, Mon, Tue, etc.)
+        - Column A (starting row 2): Staff names
+        - Columns B-AC (28 columns = 4 weeks): Shift codes (REPEATING PATTERN)
+        - Starting date: 9/14/2025 (first Sunday)
+        """
+        if not self.tracks_excel_handler or not self.tracks_excel_handler.workbook:
             return
         
         try:
-            # Access the CCEMT CRM Sched worksheet
-            if 'CCEMT CRM Sched' not in self.excel_handler.workbook.sheetnames:
-                print("CCEMT CRM Sched tab not found in workbook")
+            # Access the CCEMT worksheet
+            if 'CCEMT' not in self.tracks_excel_handler.workbook.sheetnames:
+                print("CCEMT tab not found in Tracks workbook")
                 return
             
-            ccemt_sheet = self.excel_handler.workbook['CCEMT CRM Sched']
+            ccemt_sheet = self.tracks_excel_handler.workbook['CCEMT']
             
-            # Read the header row to get dates (row 1, starting from column B)
-            dates = []
-            date_columns = {}
+            # Build pattern mapping for 28 days (4 weeks) - columns B through AC
+            # This pattern repeats indefinitely
+            pattern_shifts = {}  # day_index (0-27) -> column_index
             
-            for col_idx, col in enumerate(ccemt_sheet.iter_cols(min_col=2, max_col=20, min_row=1, max_row=1), start=2):
-                cell_value = col[0].value
-                if cell_value:
-                    # Convert date to string format that matches class dates
-                    if isinstance(cell_value, datetime):
-                        date_str = cell_value.strftime('%m/%d/%Y')
-                    else:
-                        # Try to parse string date
-                        try:
-                            date_obj = datetime.strptime(str(cell_value), '%m/%d/%Y')
-                            date_str = date_obj.strftime('%m/%d/%Y')
-                        except:
-                            continue
-                    
-                    dates.append(date_str)
-                    date_columns[date_str] = col_idx
-                        
-            # Read staff schedules (starting from row 2, column A for names)
-            for row in ccemt_sheet.iter_rows(min_row=2, max_col=1):
-                staff_name = row[0].value
+            for day_index in range(28):  # 0-27 for 28 days
+                col_idx = day_index + 2  # Column B=2, C=3, ... AC=29
+                pattern_shifts[day_index] = col_idx
+            
+            # Read staff schedules (starting from row 2)
+            for row in ccemt_sheet.iter_rows(min_row=2):
+                staff_name = row[0].value  # Column A
+                
                 if not staff_name:
                     continue
                 
@@ -120,26 +128,29 @@ class TrainingTrackManager:
                 if not staff_name:
                     continue
                 
-                # Initialize schedule for this staff member
+                # Initialize schedule pattern for this staff member
+                # Store as day_index (0-27) -> shift code
                 self.ccemt_schedule_cache[staff_name] = {}
                 
-                # Read schedule data for each date
-                for date_str, col_idx in date_columns.items():
-                    schedule_cell = ccemt_sheet.cell(row=row[0].row, column=col_idx)
-                    schedule_value = schedule_cell.value
+                # Read the 28-day pattern
+                for day_index, col_idx in pattern_shifts.items():
+                    # Get the cell value (col_idx is 1-based, but row[x] is 0-based)
+                    cell_value = row[col_idx - 1].value
                     
-                    if schedule_value:
-                        schedule_str = str(schedule_value).strip().upper()
+                    if cell_value:
+                        schedule_str = str(cell_value).strip().upper()
                         
-                        # Normalize schedule values
-                        if schedule_str in ['D', 'N', 'LT']:
-                            # Treat LT as D for conflict calculations
-                            normalized_value = 'D' if schedule_str == 'LT' else schedule_str
-                            self.ccemt_schedule_cache[staff_name][date_str] = normalized_value
+                        # Classify shifts: anything starting with 'N' is night shift, 
+                        # everything else is day shift
+                        if schedule_str.startswith('N'):
+                            # Night shift (NG, NW, etc.)
+                            self.ccemt_schedule_cache[staff_name][day_index] = 'N'
                         else:
-                            # Store original value for any other notation
-                            self.ccemt_schedule_cache[staff_name][date_str] = schedule_str                
-        
+                            # Day shift (GR, GW, or any other code)
+                            self.ccemt_schedule_cache[staff_name][day_index] = 'D'
+            
+            print(f"Loaded CCEMT schedules for {len(self.ccemt_schedule_cache)} staff members (4-week repeating pattern)")
+            
         except Exception as e:
             print(f"Error loading CCEMT schedules: {e}")
             import traceback
@@ -179,28 +190,34 @@ class TrainingTrackManager:
             print(f"Error loading tracks: {e}")
     
     def get_staff_role(self, staff_name):
-        """Get the role of a staff member from Excel handler"""
-        if not self.excel_handler:
-            return None
+        """
+        Get the role of a staff member from the enrollment Excel handler.
+        Looks at column B (Role) in the Class_Enrollment sheet.
         
-        try:
-            # Access the enrollment sheet to get role information
-            enrollment_sheet = self.excel_handler.enrollment_sheet
-            if not enrollment_sheet:
-                return None
-            
-            # Find staff member's row and get their role
-            for row in enrollment_sheet.iter_rows(min_row=2):
-                if row[0].value and str(row[0].value).strip() == staff_name:
-                    # Role is typically in column B (index 1)
-                    role_cell = row[1].value if len(row) > 1 else None
-                    return str(role_cell).strip() if role_cell else None
-            
-            return None
-            
-        except Exception as e:
-            print(f"Error getting staff role for {staff_name}: {e}")
-            return None
+        If enrollment handler isn't available, falls back to checking CCEMT cache.
+        """
+        # First, check if we have enrollment Excel handler
+        if self.enrollment_excel_handler:
+            try:
+                # Access the enrollment sheet to get role information
+                enrollment_sheet = self.enrollment_excel_handler.enrollment_sheet
+                
+                if enrollment_sheet:
+                    # Find staff member's row and get their role
+                    for row in enrollment_sheet.iter_rows(min_row=2):
+                        if row[0].value and str(row[0].value).strip() == staff_name:
+                            # Role is in column B (index 1)
+                            role_cell = row[1].value if len(row) > 1 else None
+                            return str(role_cell).strip() if role_cell else None
+                
+            except Exception as e:
+                print(f"Error getting staff role for {staff_name} from enrollment sheet: {e}")
+        
+        # Fallback: if staff is in CCEMT cache, assume they're CCEMT
+        if staff_name in self.ccemt_schedule_cache:
+            return 'CCEMT'
+        
+        return None
     
     def has_track_data(self, staff_name):
         """Check if staff member has track data (regular track OR CCEMT schedule)"""
@@ -210,50 +227,60 @@ class TrainingTrackManager:
         
         # Check if staff member is CCEMT with schedule data
         staff_role = self.get_staff_role(staff_name)
-        if staff_role == 'CCEMT' and hasattr(self, 'ccemt_schedule_cache') and staff_name in self.ccemt_schedule_cache:
+        if staff_role == 'CCEMT' and staff_name in self.ccemt_schedule_cache:
             return True
         
         return False
     
     def get_staff_shift(self, staff_name, date):
-            """
-            Get the shift assignment for a staff member on a specific date.
-            Handles both regular track staff and CCEMT staff.
+        """
+        Get the shift assignment for a staff member on a specific date.
+        Handles both regular track staff and CCEMT staff.
+        
+        For CCEMT staff, uses a repeating 4-week (28-day) pattern.
+        
+        Args:
+            staff_name: Name of the staff member
+            date: Date to check (datetime or string)
             
-            Args:
-                staff_name: Name of the staff member
-                date: Date to check (datetime or string)
-                
-            Returns:
-                str: Shift code (D, N, AT, or empty string)
-            """
-            # Convert date to string format if needed
-            if isinstance(date, datetime):
-                date_str = date.strftime('%m/%d/%Y')
-            else:
-                date_str = str(date)
-            
-            # Check if this is a CCEMT staff member
-            staff_role = self.get_staff_role(staff_name)
-            
-            if staff_role == 'CCEMT':
-                # Use CCEMT schedule data
-                if hasattr(self, 'ccemt_schedule_cache') and staff_name in self.ccemt_schedule_cache:
-                    return self.ccemt_schedule_cache[staff_name].get(date_str, "")
-                else:
-                    return ""  # No CCEMT schedule data available
-            
-            # Fall back to existing logic for regular track staff
-            if staff_name not in self.tracks_cache:
-                return ""  # No track data available (return empty string, not None)
-            
-            # Use pattern day logic for regular tracks
-            pattern_day = self.get_pattern_day_name(date)
-            if not pattern_day:
+        Returns:
+            str: Shift code (D, N, AT, or empty string)
+        """
+        # Convert date to datetime object if needed
+        if isinstance(date, str):
+            try:
+                date_obj = datetime.strptime(date, '%m/%d/%Y')
+            except ValueError:
                 return ""
-            
-            track_data = self.tracks_cache.get(staff_name, {})
-            return track_data.get(pattern_day, "")    
+        else:
+            date_obj = date
+        
+        # Check if this is a CCEMT staff member
+        staff_role = self.get_staff_role(staff_name)
+        
+        if staff_role == 'CCEMT':
+            # Use CCEMT schedule data with repeating pattern
+            if staff_name in self.ccemt_schedule_cache:
+                # Calculate which day in the 28-day cycle this date falls on
+                days_since_start = (date_obj - self.ccemt_start_date).days
+                day_in_cycle = days_since_start % 28  # 0-27
+                
+                # Look up the shift for this day in the cycle
+                return self.ccemt_schedule_cache[staff_name].get(day_in_cycle, "")
+            else:
+                return ""  # No CCEMT schedule data available
+        
+        # Fall back to existing logic for regular track staff
+        if staff_name not in self.tracks_cache:
+            return ""  # No track data available
+        
+        # Use pattern day logic for regular tracks
+        pattern_day = self.get_pattern_day_name(date_obj)
+        if not pattern_day:
+            return ""
+        
+        track_data = self.tracks_cache.get(staff_name, {})
+        return track_data.get(pattern_day, "")    
     
     def check_class_conflict(self, staff_name, class_date, is_two_day=False, can_work_n_prior=False):
         """
@@ -262,92 +289,91 @@ class TrainingTrackManager:
         
         Args:
             staff_name: Name of the staff member
-            class_date: Date of the class (datetime or string)
+            class_date: Date of the class (string in MM/DD/YYYY format)
             is_two_day: Whether this is a two-day class
-            can_work_n_prior: Whether night shift prior is allowed for this class
+            can_work_n_prior: Whether night shift prior to class is allowed
             
         Returns:
-            tuple: (has_conflict, conflict_details)
+            tuple: (has_conflict: bool, conflict_details: str)
         """
-        if isinstance(class_date, str):
+        try:
+            # Parse the class date
             try:
-                class_date = datetime.strptime(class_date, '%m/%d/%Y')
-            except:
-                return (False, "Invalid date format")
-        
-        # Check if we have any data for this staff member
-        if not self.has_track_data(staff_name):
-            return (False, "No schedule data available")
-        
-        conflicts = []
-        
-        # Check day before class
-        day_before = class_date - timedelta(days=1)
-        shift_before = self.get_staff_shift(staff_name, day_before)
-        
-        if shift_before == 'N' and not can_work_n_prior:
-            conflicts.append(f"Night shift on {day_before.strftime('%m/%d/%Y')}")
-        
-        # Check class day
-        shift_class_day = self.get_staff_shift(staff_name, class_date)
-        if shift_class_day in ['D', 'AT', 'N']:
-            shift_desc = self.shift_descriptions.get(shift_class_day, shift_class_day)
-            conflicts.append(f"{shift_desc} on {class_date.strftime('%m/%d/%Y')}")
-        
-        # Check second day if two-day class
-        if is_two_day:
-            day_two = class_date + timedelta(days=1)
-            shift_day_two = self.get_staff_shift(staff_name, day_two)
+                date_obj = datetime.strptime(class_date, '%m/%d/%Y')
+            except ValueError:
+                return False, "Invalid date format"
             
-            if shift_day_two in ['D', 'AT', 'N']:
-                shift_desc = self.shift_descriptions.get(shift_day_two, shift_day_two)
-                conflicts.append(f"{shift_desc} on {day_two.strftime('%m/%d/%Y')}")
-        
-        has_conflict = len(conflicts) > 0
-        conflict_details = "; ".join(conflicts) if conflicts else "No conflicts"
-        
-        return (has_conflict, conflict_details)
+            # For two-day classes, check both days
+            dates_to_check = [date_obj]
+            if is_two_day:
+                day2 = date_obj + timedelta(days=1)
+                dates_to_check.append(day2)
+            
+            conflicts = []
+            
+            for check_date in dates_to_check:
+                check_date_str = check_date.strftime('%m/%d/%Y')
+                
+                # Get shift for this date
+                shift = self.get_staff_shift(staff_name, check_date)
+                
+                if shift:
+                    # Any shift on the class day is a conflict
+                    day_label = "Day 1" if check_date == date_obj else "Day 2"
+                    shift_desc = self.shift_descriptions.get(shift, shift)
+                    conflicts.append(f"{day_label} ({check_date_str}): {shift_desc}")
+                
+                # Check night shift the night before (if applicable)
+                if not can_work_n_prior:
+                    prior_date = check_date - timedelta(days=1)
+                    prior_shift = self.get_staff_shift(staff_name, prior_date)
+                    
+                    if prior_shift == 'N':
+                        day_label = "Day 1" if check_date == date_obj else "Day 2"
+                        prior_date_str = prior_date.strftime('%m/%d/%Y')
+                        conflicts.append(f"{day_label} ({check_date_str}): Night shift prior on {prior_date_str}")
+            
+            if conflicts:
+                conflict_message = "; ".join(conflicts)
+                return True, conflict_message
+            
+            return False, ""
+            
+        except Exception as e:
+            print(f"Error checking conflicts for {staff_name} on {class_date}: {e}")
+            return False, f"Error checking conflicts: {str(e)}"
     
-    def get_class_date_conflicts(self, staff_name, class_dates, is_two_day=False, can_work_n_prior_list=None):
+    def get_date_conflicts_for_staff(self, staff_name, dates):
         """
-        Check conflicts for multiple class dates.
+        Check conflicts for multiple dates at once.
         
         Args:
             staff_name: Name of the staff member
-            class_dates: List of class dates
-            is_two_day: Whether this is a two-day class
-            can_work_n_prior_list: List of booleans for each date indicating if N prior is allowed
+            dates: List of dates to check
             
         Returns:
-            dict: Dictionary mapping dates to conflict information
+            dict: Dictionary mapping date -> conflict info
         """
-        if can_work_n_prior_list is None:
-            can_work_n_prior_list = [False] * len(class_dates)
+        conflicts_dict = {}
         
-        conflicts = {}
+        for date in dates:
+            has_conflict, conflict_info = self.check_class_conflict(
+                staff_name, 
+                date, 
+                is_two_day=False,  # Check each date individually
+                can_work_n_prior=False
+            )
+            
+            conflicts_dict[date] = {
+                'has_conflict': has_conflict,
+                'details': conflict_info
+            }
         
-        for i, date in enumerate(class_dates):
-            if date:  # Skip None/empty dates
-                can_work_n = can_work_n_prior_list[i] if i < len(can_work_n_prior_list) else False
-                has_conflict, details = self.check_class_conflict(
-                    staff_name, date, is_two_day, can_work_n
-                )
-                
-                # Get the shift for display
-                shift = self.get_staff_shift(staff_name, date)
-                
-                conflicts[date] = {
-                    'has_conflict': has_conflict,
-                    'details': details,
-                    'shift': shift,
-                    'shift_desc': self.shift_descriptions.get(shift, 'Off')
-                }
-        
-        return conflicts
+        return conflicts_dict
     
     def get_conflict_summary(self, conflicts_dict):
         """
-        Generate a summary of conflicts for a class.
+        Generate a summary of conflicts from a conflicts dictionary.
         
         Args:
             conflicts_dict: Dictionary of date conflicts
@@ -389,19 +415,24 @@ class TrainingTrackManager:
         all_staff.update(self.tracks_cache.keys())
         
         # Add CCEMT staff with schedules
-        if hasattr(self, 'ccemt_schedule_cache'):
-            all_staff.update(self.ccemt_schedule_cache.keys())
+        all_staff.update(self.ccemt_schedule_cache.keys())
         
         return list(all_staff)
 
-# Integration points for existing codebase:
 
-def integrate_ccemt_schedules(track_manager, excel_handler):
+# Integration helper function for existing codebase
+def integrate_ccemt_schedules(track_manager, tracks_excel_handler, enrollment_excel_handler=None):
     """
     Helper function to integrate CCEMT schedules into an existing track manager.
     This should be called after both components are initialized.
+    
+    Args:
+        track_manager: TrainingTrackManager instance
+        tracks_excel_handler: ExcelHandler instance with the Tracks.xlsx file loaded (contains CCEMT tab)
+        enrollment_excel_handler: Optional ExcelHandler instance with enrollment data (contains staff roles)
     """
-    track_manager.set_excel_handler(excel_handler)
+    track_manager.set_excel_handler(tracks_excel_handler, enrollment_excel_handler)
+
 
 # Usage example for app.py integration:
 """
@@ -410,12 +441,17 @@ def integrate_ccemt_schedules(track_manager, excel_handler):
 if 'training_track_manager' not in st.session_state:
     st.session_state.training_track_manager = TrainingTrackManager('data/medflight_tracks.db')
 
+# Excel handler for class enrollment (MASTER Education Classes Roster.xlsx)
 if 'training_excel_handler' not in st.session_state:
-    st.session_state.training_excel_handler = ExcelHandler(excel_path)
+    st.session_state.training_excel_handler = ExcelHandler('training/upload/MASTER Education Classes Roster.xlsx')
 
-# Integrate CCEMT schedules
-integrate_ccemt_schedules(
-    st.session_state.training_track_manager, 
-    st.session_state.training_excel_handler
+# Separate Excel handler for CCEMT tracks (Tracks.xlsx)
+if 'tracks_excel_handler' not in st.session_state:
+    st.session_state.tracks_excel_handler = ExcelHandler('upload_files/Tracks.xlsx')
+
+# Integrate CCEMT schedules - pass BOTH handlers
+st.session_state.training_track_manager.set_excel_handler(
+    tracks_excel_handler=st.session_state.tracks_excel_handler,      # For CCEMT schedules
+    enrollment_excel_handler=st.session_state.training_excel_handler  # For staff roles
 )
 """

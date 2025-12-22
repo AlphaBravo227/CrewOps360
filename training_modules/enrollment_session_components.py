@@ -148,7 +148,7 @@ class EnrollmentSessionComponents:
         is_two_day = option.get('is_two_day', False)
         
         if option['type'] == 'nurse_medic_separate':
-            # Multiple sessions with nurse/medic separation
+            # Multiple sessions with nurse/medic separation (and possibly CCEMT)
             with st.container():
                 if is_two_day:
                     st.write(f"**{option['display_time']} - Two-Day Class**")
@@ -159,8 +159,21 @@ class EnrollmentSessionComponents:
                 if weekly_limit_blocked:
                     st.warning(f"⚠️ {weekly_limit_message}")
                 
-                col1, col2 = st.columns(2)
+                # Show schedule conflict warning if applicable (top-level visibility)
+                if has_conflict and not weekly_limit_blocked:
+                    st.info(f"ℹ️ **Schedule Conflict:** {conflict_details}")
+                    st.caption("↓ Click Override button below to enroll with admin override")
                 
+                # Check if CCEMT is enabled for this class
+                has_ccemt = option.get('has_ccemt', False)
+                
+                # Create columns based on whether CCEMT is enabled
+                if has_ccemt:
+                    col1, col2, col3 = st.columns(3)
+                else:
+                    col1, col2 = st.columns(2)
+                
+                # NURSES COLUMN
                 with col1:
                     st.write("**👩‍⚕️ Nurses:**")
                     EnrollmentSessionComponents._display_enrolled_participants(option['nurses'], selected_staff, "Nurse", user_enrolled_in_session)
@@ -185,6 +198,7 @@ class EnrollmentSessionComponents:
                     else:
                         st.write("*Nurse slot filled*")
                 
+                # MEDICS COLUMN
                 with col2:
                     st.write("**🚑 Medics:**")
                     EnrollmentSessionComponents._display_enrolled_participants(option['medics'], selected_staff, "Medic", user_enrolled_in_session)
@@ -209,6 +223,32 @@ class EnrollmentSessionComponents:
                     else:
                         st.write("*Medic slot filled*")
                 
+                # CCEMT COLUMN (only if enabled)
+                if has_ccemt:
+                    with col3:
+                        st.write("**🚁 CCEMT:**")
+                        EnrollmentSessionComponents._display_enrolled_participants(option['ccemts'], selected_staff, "CCEMT", user_enrolled_in_session)
+                        
+                        if option['ccemt_available'] and not (user_enrolled_in_session and user_enrolled_in_session.get('role') == 'CCEMT'):
+                            if not weekly_limit_blocked:
+                                button_text = "Enroll as CCEMT (2-Day)" if is_two_day else "Enroll as CCEMT"
+                                if EnrollmentSessionComponents._handle_enrollment_button(
+                                    button_text, f"ccemt_{option_key}",
+                                    has_conflict, conflict_details,
+                                    enrollment_manager, selected_staff, class_name,
+                                    date, "CCEMT", option.get('session_time')
+                                ):
+                                    return  # Will trigger rerun
+                            # If weekly limit blocked, don't show button at all
+                        elif user_enrolled_in_session and user_enrolled_in_session.get('role') == 'CCEMT':
+                            cancel_text = "Cancel Both Days" if is_two_day else "Cancel"
+                            if st.button(cancel_text, key=f"cancel_ccemt_{option_key}"):
+                                if enrollment_manager.cancel_enrollment(user_enrolled_in_session['id']):
+                                    st.success("Enrollment cancelled!")
+                                    st.rerun()
+                        else:
+                            st.write("*CCEMT slot filled*")
+                
                 st.markdown("---")        
 
         elif option['type'] == 'regular':
@@ -223,6 +263,11 @@ class EnrollmentSessionComponents:
                 # Show weekly limit warning if applicable
                 if weekly_limit_blocked:
                     st.warning(f"⚠️ {weekly_limit_message}")
+                
+                # Show schedule conflict warning if applicable (top-level visibility)
+                if has_conflict and not weekly_limit_blocked:
+                    st.info(f"ℹ️ **Schedule Conflict:** {conflict_details}")
+                    st.caption("↓ Click Override button below to enroll with admin override")
                 
                 st.write(f"**Currently enrolled ({len(option['enrolled'])}):**")
                 
@@ -263,6 +308,11 @@ class EnrollmentSessionComponents:
                 # Show weekly limit warning if applicable
                 if weekly_limit_blocked:
                     st.warning(f"⚠️ {weekly_limit_message}")
+                
+                # Show schedule conflict warning if applicable (top-level visibility)
+                if has_conflict and not weekly_limit_blocked:
+                    st.info(f"ℹ️ **Schedule Conflict:** {conflict_details}")
+                    st.caption("↓ Click Override button below to enroll with admin override")
                 
                 # Highlight user's enrolled section if they're in this meeting type
                 if user_enrolled_in_session:
@@ -328,6 +378,11 @@ class EnrollmentSessionComponents:
                 # Show weekly limit warning if applicable
                 if weekly_limit_blocked:
                     st.warning(f"⚠️ {weekly_limit_message}")
+                
+                # Show schedule conflict warning if applicable (top-level visibility)
+                if has_conflict and not weekly_limit_blocked:
+                    st.info(f"ℹ️ **Schedule Conflict:** {conflict_details}")
+                    st.caption("↓ Click Override button below to enroll with admin override")
                 
                 # Highlight if user is enrolled
                 if user_enrollment:
@@ -405,6 +460,11 @@ class EnrollmentSessionComponents:
                 # Show weekly limit warning if applicable
                 if weekly_limit_blocked:
                     st.warning(f"⚠️ {weekly_limit_message}")
+                
+                # Show schedule conflict warning if applicable (top-level visibility)
+                if has_conflict and not weekly_limit_blocked:
+                    st.info(f"ℹ️ **Schedule Conflict:** {conflict_details}")
+                    st.caption("↓ Click Override button below to enroll with admin override")
                 
                 # Highlight if user is enrolled
                 if user_enrollment:

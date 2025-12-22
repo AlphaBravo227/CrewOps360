@@ -291,9 +291,29 @@ def display_training_events_app():
                 st.error(f"Error loading Excel file: {st.session_state.training_excel_handler.load_error}")
                 return
 
-        # Initialize training track manager (uses main database now)
+        # Initialize Track Manager (existing code)
         if 'training_track_manager' not in st.session_state:
             st.session_state.training_track_manager = TrainingTrackManager('data/medflight_tracks.db')
+            print("✓ Track Manager initialized")
+
+        # Initialize separate Excel Handler for Tracks.xlsx (CCEMT schedules)
+        if 'tracks_excel_handler' not in st.session_state:
+            tracks_excel_path = 'upload files/Tracks.xlsx'
+            if os.path.exists(tracks_excel_path):
+                st.session_state.tracks_excel_handler = ExcelHandler(tracks_excel_path)
+                print("✓ Tracks Excel Handler initialized")
+                
+                # Connect BOTH Excel handlers to Track Manager
+                # - tracks_excel_handler: for loading CCEMT schedules
+                # - training_excel_handler: for getting staff roles
+                st.session_state.training_track_manager.set_excel_handler(
+                    tracks_excel_handler=st.session_state.tracks_excel_handler,
+                    enrollment_excel_handler=st.session_state.training_excel_handler
+                )
+                print("✓ CCEMT schedules loaded")
+            else:
+                print(f"⚠ Tracks.xlsx not found at {tracks_excel_path} - CCEMT schedules unavailable")
+                st.session_state.tracks_excel_handler = None
 
         # Initialize enrollment manager
         if 'training_enrollment_manager' not in st.session_state:
@@ -310,12 +330,6 @@ def display_training_events_app():
                 st.session_state.unified_db,
                 st.session_state.training_excel_handler,
                 st.session_state.training_track_manager
-            )
-
-        # Integrate CCEMT schedules after both components are initialized
-        if hasattr(st.session_state.training_track_manager, 'set_excel_handler'):
-            st.session_state.training_track_manager.set_excel_handler(
-                st.session_state.training_excel_handler
             )
 
         # Initialize admin access

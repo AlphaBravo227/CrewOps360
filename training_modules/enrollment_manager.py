@@ -711,7 +711,6 @@ class EnrollmentManager:
             both_days = self._get_two_day_dates(class_date)
             if len(both_days) == 2:
                 date_display = f"{both_days[0]} - {both_days[1]} (2-Day Class)"
-        
         if classes_per_day > 1:
             # Multiple sessions per day
             for i in range(1, classes_per_day + 1):
@@ -730,11 +729,15 @@ class EnrollmentManager:
                             display_time += " - 2-Day Class"
                         
                         if nurses_medic_separate:
-                            # Get enrollments for first day only (they enroll for both days together)
+                            # Check if this class also has CCEMT
+                            has_ccemt = class_details.get('has_ccemt', 'No').lower() == 'yes'
+                            
+                            # Multiple sessions with nurse/medic separation (and possibly CCEMT)
                             all_enrollments = self.get_session_enrollments(class_name, class_date, session_time)
                             
                             nurses = []
                             medics = []
+                            ccemts = []  # NEW
                             
                             for enrollment in all_enrollments:
                                 role = enrollment.get('role', 'General')
@@ -744,22 +747,38 @@ class EnrollmentManager:
                                     nurses.append(staff_name)
                                 elif role == 'Medic':
                                     medics.append(staff_name)
+                                elif role == 'CCEMT':  # NEW
+                                    ccemts.append(staff_name)
                             
-                            max_per_role = max_students // 2
-                            nurse_available = len(nurses) < max_per_role
-                            medic_available = len(medics) < max_per_role
+                            # Calculate available slots
+                            if has_ccemt:
+                                # If CCEMT is enabled: 1 nurse, 1 medic, 1 CCEMT per session
+                                max_per_role = 1
+                                nurse_available = len(nurses) < max_per_role
+                                medic_available = len(medics) < max_per_role
+                                ccemt_available = len(ccemts) < max_per_role
+                            else:
+                                # Original logic: split max_students between nurse and medic
+                                max_per_role = max_students // 2
+                                nurse_available = len(nurses) < max_per_role
+                                medic_available = len(medics) < max_per_role
+                                ccemt_available = False
                             
                             session_options.append({
                                 'session_time': session_time,
                                 'display_time': display_time,
                                 'nurses': nurses,
                                 'medics': medics,
+                                'ccemts': ccemts,  # NEW
                                 'nurse_available': nurse_available,
                                 'medic_available': medic_available,
+                                'ccemt_available': ccemt_available,  # NEW
+                                'has_ccemt': has_ccemt,  # NEW
                                 'type': 'nurse_medic_separate',
                                 'is_two_day': is_two_day,
                                 'date_display': date_display
                             })
+
                         else:
                             # Regular multiple sessions
                             all_enrollments = self.get_session_enrollments(class_name, class_date, session_time)
@@ -806,13 +825,16 @@ class EnrollmentManager:
                 })
         
         else:
-            # Single session
+            # Single session classes
             if nurses_medic_separate:
-                # Single session with nurse/medic separation
+                # Single session with nurse/medic separation (and possibly CCEMT)
+                has_ccemt = class_details.get('has_ccemt', 'No').lower() == 'yes'
+                
                 all_enrollments = self.get_session_enrollments(class_name, class_date)
                 
                 nurses = []
                 medics = []
+                ccemts = []  # NEW
                 
                 for enrollment in all_enrollments:
                     role = enrollment.get('role', 'General')
@@ -822,22 +844,36 @@ class EnrollmentManager:
                         nurses.append(staff_name)
                     elif role == 'Medic':
                         medics.append(staff_name)
+                    elif role == 'CCEMT':  # NEW
+                        ccemts.append(staff_name)
                 
-                max_per_role = max_students // 2
-                nurse_available = len(nurses) < max_per_role
-                medic_available = len(medics) < max_per_role
+                if has_ccemt:
+                    # 1 slot each for nurse, medic, CCEMT
+                    nurse_available = len(nurses) < 1
+                    medic_available = len(medics) < 1
+                    ccemt_available = len(ccemts) < 1
+                else:
+                    # Original logic
+                    max_per_role = max_students // 2
+                    nurse_available = len(nurses) < max_per_role
+                    medic_available = len(medics) < max_per_role
+                    ccemt_available = False
                 
                 session_options.append({
                     'nurses': nurses,
                     'medics': medics,
+                    'ccemts': ccemts,  # NEW
                     'nurse_available': nurse_available,
                     'medic_available': medic_available,
+                    'ccemt_available': ccemt_available,  # NEW
+                    'has_ccemt': has_ccemt,  # NEW
                     'type': 'nurse_medic_separate_single',
                     'is_two_day': is_two_day,
                     'date_display': date_display
                 })
+            
             else:
-                # Single regular session
+                # Single regular session (NO CCEMT needed - this is the original else block)
                 all_enrollments = self.get_session_enrollments(class_name, class_date)
                 enrolled_names = [e['staff_name'] for e in all_enrollments]
                 available_slots = max_students - len(enrolled_names)
@@ -850,7 +886,8 @@ class EnrollmentManager:
                     'date_display': date_display
                 })
         
-        return session_options
+        return session_options        
+
 
     def get_class_enrollment_summary(self, class_name):
         """Get enrollment summary for a class with detailed statistics"""
