@@ -12,13 +12,14 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 import json
+from .db_utils import get_all_location_preferences
 
 class AdminExportManager:
     """Manages admin export functionality for preferences"""
-    
+
     def __init__(self, db_path: str = "data/medflight_tracks.db"):
         self.db_path = db_path
-        
+
         # Ensure data directory exists
         if not os.path.exists("data"):
             os.makedirs("data", exist_ok=True)
@@ -58,61 +59,94 @@ class AdminExportManager:
         except Exception as e:
             return f"Error: {str(e)}"
         
+    def get_location_preferences(self) -> pd.DataFrame:
+        """Load location-based preferences from database"""
+        try:
+            success, location_prefs_list = get_all_location_preferences()
+
+            if not success or not location_prefs_list:
+                return pd.DataFrame()
+
+            # Transform to DataFrame format
+            location_prefs_data = []
+            for pref in location_prefs_list:
+                location_prefs_data.append({
+                    'staff_name': pref['staff_name'],
+                    'DAY_KMHT': pref['day_locations']['KMHT'],
+                    'DAY_KLWM': pref['day_locations']['KLWM'],
+                    'DAY_KBED': pref['day_locations']['KBED'],
+                    'DAY_1B9': pref['day_locations']['1B9'],
+                    'DAY_KPYM': pref['day_locations']['KPYM'],
+                    'NIGHT_KLWM': pref['night_locations']['KLWM'],
+                    'NIGHT_KBED': pref['night_locations']['KBED'],
+                    'NIGHT_KPYM': pref['night_locations']['KPYM'],
+                    'ZIP_CODE': pref['zip_code'],
+                    'REDUCED_REST_OK': 1 if pref['reduced_rest_ok'] else 0,
+                    'N_TO_D_FLEX': pref['n_to_d_flex'],
+                    'last_updated': pref['modified_date']
+                })
+
+            return pd.DataFrame(location_prefs_data)
+
+        except Exception as e:
+            st.error(f"Error loading location preferences: {str(e)}")
+            return pd.DataFrame()
+
     def get_app_preferences(self) -> pd.DataFrame:
-        """Load app preferences from database"""
+        """Load app preferences from database (LEGACY - for old shift-based system)"""
         try:
             conn = sqlite3.connect(self.db_path)
-            
+
             # Check if user_preferences table exists
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_preferences'")
             table_exists = cursor.fetchone()
-            
+
             if not table_exists:
                 st.info("No user preference updates found in database yet.")
                 conn.close()
                 return pd.DataFrame()
-            
+
             # Get all current active preferences from database
             query = """
-            SELECT 
+            SELECT
                 staff_name,
                 shift_name,
                 preference_score,
                 shift_type,
                 modified_date as last_updated
-            FROM user_preferences 
+            FROM user_preferences
             WHERE is_active = 1
             ORDER BY staff_name, shift_name
             """
-            
+
             raw_prefs_df = pd.read_sql_query(query, conn)
             conn.close()
-            
+
             if raw_prefs_df.empty:
                 st.info("No active user preferences found in database.")
                 return pd.DataFrame()
-            
+
             # Transform the data to match the original Excel format
             app_prefs_list = []
-            
+
             # Group by staff name
             for staff_name, group in raw_prefs_df.groupby('staff_name'):
                 staff_prefs = {
                     'staff_name': staff_name,
                     'last_updated': group['last_updated'].max()  # Most recent update
                 }
-                
+
                 # Add preference scores for each shift
                 for _, row in group.iterrows():
                     shift_name = row['shift_name'].lower()
                     staff_prefs[shift_name] = row['preference_score']
-                
+
                 app_prefs_list.append(staff_prefs)
-            
+
             app_prefs_df = pd.DataFrame(app_prefs_list)
             return app_prefs_df
-            
+
         except Exception as e:
             st.error(f"Error loading app preferences: {str(e)}")
             return pd.DataFrame()
@@ -372,6 +406,57 @@ class AdminExportManager:
         
         return reduced_rest, n_to_d_flex
 
+    def export_location_preferences(self, original_prefs_df: pd.DataFrame = None) -> pd.DataFrame:
+        """
+        Export location-based preferences with role information from original file
+
+        Args:
+            original_prefs_df: Original preferences DataFrame (for role info)
+
+        Returns:
+            DataFrame with location preferences ready for export
+        """
+        # Get location preferences
+        location_prefs_df = self.get_location_preferences()
+
+        if location_prefs_df.empty:
+            st.warning("No location preferences found in database yet.")
+            return pd.DataFrame()
+
+        # Create export data
+        export_data = []
+
+        for _, row in location_prefs_df.iterrows():
+            staff_name = row['staff_name']
+
+            # Get role from original file if available
+            role = "Unknown"
+            if original_prefs_df is not None and not original_prefs_df.empty:
+                staff_row = original_prefs_df[original_prefs_df['STAFF NAME'] == staff_name]
+                if not staff_row.empty:
+                    role = staff_row.iloc[0].get('ROLE', 'Unknown')
+
+            export_row = {
+                'STAFF NAME': staff_name,
+                'ROLE': role,
+                'DAY_KMHT': row['DAY_KMHT'],
+                'DAY_KLWM': row['DAY_KLWM'],
+                'DAY_KBED': row['DAY_KBED'],
+                'DAY_1B9': row['DAY_1B9'],
+                'DAY_KPYM': row['DAY_KPYM'],
+                'NIGHT_KLWM': row['NIGHT_KLWM'],
+                'NIGHT_KBED': row['NIGHT_KBED'],
+                'NIGHT_KPYM': row['NIGHT_KPYM'],
+                'ZIP_CODE': row['ZIP_CODE'],
+                'REDUCED_REST_OK': row['REDUCED_REST_OK'],
+                'N_TO_D_FLEX': row['N_TO_D_FLEX'],
+                'LAST_UPDATED': row['last_updated']
+            }
+
+            export_data.append(export_row)
+
+        return pd.DataFrame(export_data)
+
     def generate_summary_stats(self, combined_df: pd.DataFrame) -> Dict:
         """Generate summary statistics for the combined preferences"""
         if combined_df.empty:
@@ -482,22 +567,28 @@ def display_admin_export_section(preferences_df: pd.DataFrame):
         st.session_state.export_combined_prefs = None
     if 'export_summary' not in st.session_state:
         st.session_state.export_summary = None
+    if 'export_location_prefs' not in st.session_state:
+        st.session_state.export_location_prefs = None
     
     # Refresh data button
     if st.button("🔄 Refresh Export Data", use_container_width=True):
         with st.spinner("Loading preference data..."):
-            # Load app preferences from database
+            # Load location preferences (NEW SYSTEM)
+            location_prefs_df = export_manager.export_location_preferences(preferences_df)
+            st.session_state.export_location_prefs = location_prefs_df
+
+            # Load app preferences from database (LEGACY SYSTEM)
             app_prefs_df = export_manager.get_app_preferences()
-            
-            # Combine with original preferences
+
+            # Combine with original preferences (LEGACY SYSTEM)
             if not preferences_df.empty:
                 combined_df = export_manager.combine_preferences(preferences_df, app_prefs_df)
                 summary = export_manager.generate_summary_stats(combined_df)
-                
+
                 # Store in session state
                 st.session_state.export_combined_prefs = combined_df
                 st.session_state.export_summary = summary
-                
+
                 st.success("✅ Export data refreshed successfully!")
             else:
                 st.error("❌ No original preferences data available")
@@ -526,7 +617,57 @@ def display_admin_export_section(preferences_df: pd.DataFrame):
     
     # Export buttons
     st.subheader("📁 Export Options")
-    
+
+    # NEW: Location Preferences Export
+    st.markdown("#### 📍 Location-Based Preferences (NEW SYSTEM)")
+    if st.button("📊 Export Location Preferences Excel", use_container_width=True):
+        if st.session_state.export_location_prefs is not None and not st.session_state.export_location_prefs.empty:
+            location_df = st.session_state.export_location_prefs
+
+            # Create Excel file in memory
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                # Main location preferences sheet
+                location_df.to_excel(writer, sheet_name='Location Preferences', index=False)
+
+                # Summary sheet
+                summary_data = [
+                    ['Total Staff with Preferences', len(location_df)],
+                    ['', ''],
+                    ['Column Descriptions', ''],
+                    ['DAY_KMHT', 'Day shift preference for KMHT (1-5, higher=more desirable)'],
+                    ['DAY_KLWM', 'Day shift preference for KLWM (1-5, higher=more desirable)'],
+                    ['DAY_KBED', 'Day shift preference for KBED (1-5, higher=more desirable)'],
+                    ['DAY_1B9', 'Day shift preference for 1B9 (1-5, higher=more desirable)'],
+                    ['DAY_KPYM', 'Day shift preference for KPYM (1-5, higher=more desirable)'],
+                    ['NIGHT_KLWM', 'Night shift preference for KLWM (1-3, higher=more desirable)'],
+                    ['NIGHT_KBED', 'Night shift preference for KBED (1-3, higher=more desirable)'],
+                    ['NIGHT_KPYM', 'Night shift preference for KPYM (1-3, higher=more desirable)'],
+                    ['ZIP_CODE', 'Staff member zip code'],
+                    ['REDUCED_REST_OK', '1=Yes, 0=No'],
+                    ['N_TO_D_FLEX', 'Yes/No/Maybe']
+                ]
+
+                summary_df = pd.DataFrame(summary_data, columns=['Field', 'Description'])
+                summary_df.to_excel(writer, sheet_name='Field Descriptions', index=False)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"location_preferences_{timestamp}.xlsx"
+
+            st.download_button(
+                label="⬇️ Download Location Preferences",
+                data=output.getvalue(),
+                file_name=filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+            st.success("✅ Location preferences export ready for download!")
+        else:
+            st.warning("⚠️ Please refresh export data first")
+
+    st.markdown("---")
+    st.markdown("#### 📋 Legacy Shift-Based Preferences (OLD SYSTEM)")
+
     # Raw .dl file export
     if st.button("📄 Export Raw .dl File", use_container_width=True):
         with st.spinner("Generating raw export..."):

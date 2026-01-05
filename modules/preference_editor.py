@@ -1,7 +1,8 @@
-# modules/preference_editor.py - ENHANCED VERSION
+# modules/preference_editor.py - ENHANCED VERSION WITH LOCATION-BASED PREFERENCES
 """
 Enhanced Preference Management System
 Allows users to edit their shift preferences AND boolean preferences within the application
+NOW INCLUDES: Location-based preference system (v2)
 """
 
 import streamlit as st
@@ -11,7 +12,12 @@ import os
 import json
 from datetime import datetime
 from .shift_definitions import day_shifts, night_shifts
-from .db_utils import get_db_connection, initialize_database
+from .db_utils import (
+    get_db_connection,
+    initialize_database,
+    save_location_preferences_to_db,
+    get_location_preferences_from_db
+)
 
 def initialize_preference_tables():
     """
@@ -771,3 +777,345 @@ def display_preference_history(staff_name):
             
     except Exception as e:
         st.error(f"Error loading preference history: {str(e)}")
+
+# ============================================================================
+# NEW LOCATION-BASED PREFERENCE SYSTEM (V2)
+# ============================================================================
+
+# Location definitions
+DAY_LOCATIONS = ['KMHT', 'KLWM', 'KBED', '1B9', 'KPYM']
+NIGHT_LOCATIONS = ['KLWM', 'KBED', 'KPYM']
+
+def validate_location_preferences(day_prefs, night_prefs, zip_code, reduced_rest_answered, n_to_d_flex_answered):
+    """
+    Validate location preferences
+
+    Args:
+        day_prefs (dict): Day location preferences
+        night_prefs (dict): Night location preferences
+        zip_code (str): Zip code
+        reduced_rest_answered (bool): Whether reduced rest was answered
+        n_to_d_flex_answered (bool): Whether N to D flex was answered
+
+    Returns:
+        tuple: (is_valid, error_messages)
+    """
+    errors = []
+
+    # Validate zip code (required)
+    if not zip_code or zip_code.strip() == '':
+        errors.append("🔴 Required: Please enter your Zip Code")
+
+    # Validate reduced rest (required)
+    if not reduced_rest_answered:
+        errors.append("🔴 Required: Please answer 'Reduced Rest OK' question (Yes or No)")
+
+    # Validate N to D flex (required)
+    if not n_to_d_flex_answered:
+        errors.append("🔴 Required: Please answer 'N to D Flex' question (Yes, No, or Maybe)")
+
+    # Validate day location preferences (all required, unique 1-5)
+    day_values = [v for v in day_prefs.values() if v is not None]
+    if len(day_values) < len(DAY_LOCATIONS):
+        errors.append("🔴 Required: Please rank all day shift locations (1-5)")
+    elif len(day_values) == len(DAY_LOCATIONS):
+        expected_day_ranks = set(range(1, 6))  # 1, 2, 3, 4, 5
+        actual_day_ranks = set(day_values)
+
+        if len(day_values) != len(set(day_values)):
+            errors.append("❌ Each day location ranking must be unique (1-5, each used once)")
+
+        if actual_day_ranks != expected_day_ranks:
+            missing = expected_day_ranks - actual_day_ranks
+            extra = actual_day_ranks - expected_day_ranks
+            if missing:
+                errors.append(f"❌ Missing day location rankings: {sorted(missing)}")
+            if extra:
+                errors.append(f"❌ Invalid day location rankings: {sorted(extra)}")
+
+    # Validate night location preferences (all required, unique 1-3)
+    night_values = [v for v in night_prefs.values() if v is not None]
+    if len(night_values) < len(NIGHT_LOCATIONS):
+        errors.append("🔴 Required: Please rank all night shift locations (1-3)")
+    elif len(night_values) == len(NIGHT_LOCATIONS):
+        expected_night_ranks = set(range(1, 4))  # 1, 2, 3
+        actual_night_ranks = set(night_values)
+
+        if len(night_values) != len(set(night_values)):
+            errors.append("❌ Each night location ranking must be unique (1-3, each used once)")
+
+        if actual_night_ranks != expected_night_ranks:
+            missing = expected_night_ranks - actual_night_ranks
+            extra = actual_night_ranks - expected_night_ranks
+            if missing:
+                errors.append(f"❌ Missing night location rankings: {sorted(missing)}")
+            if extra:
+                errors.append(f"❌ Invalid night location rankings: {sorted(extra)}")
+
+    return len(errors) == 0, errors
+
+def display_location_preference_editor(staff_name):
+    """
+    Display the location-based preference editing interface (NEW VERSION)
+
+    Args:
+        staff_name (str): Name of the staff member
+    """
+    st.subheader(f"Shift Location Preferences for {staff_name}")
+
+    # Initialize database
+    initialize_database()
+
+    # Check if user has existing preferences
+    success, existing_prefs = get_location_preferences_from_db(staff_name)
+
+    if success and existing_prefs:
+        st.success("✅ You have completed your shift preference survey!")
+
+        # Show current preferences in an expander
+        with st.expander("📊 View Your Current Preferences", expanded=True):
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.markdown("**Day Shift Locations:**")
+                st.caption("(Higher rank = more desirable)")
+                # Sort by rank (descending)
+                day_sorted = sorted(existing_prefs['day_locations'].items(), key=lambda x: x[1] if x[1] else 0, reverse=True)
+                for location, rank in day_sorted:
+                    if rank:
+                        st.markdown(f"**Rank {rank}:** {location}")
+
+            with col2:
+                st.markdown("**Night Shift Locations:**")
+                st.caption("(Higher rank = more desirable)")
+                # Sort by rank (descending)
+                night_sorted = sorted(existing_prefs['night_locations'].items(), key=lambda x: x[1] if x[1] else 0, reverse=True)
+                for location, rank in night_sorted:
+                    if rank:
+                        st.markdown(f"**Rank {rank}:** {location}")
+
+            with col3:
+                st.markdown("**Additional Information:**")
+                st.markdown(f"**Zip Code:** {existing_prefs['zip_code']}")
+                reduced_status = "✅ Yes" if existing_prefs['reduced_rest_ok'] else "❌ No"
+                st.markdown(f"**Reduced Rest OK:** {reduced_status}")
+                st.markdown(f"**N to D Flex:** ✅ {existing_prefs['n_to_d_flex']}")
+                st.caption(f"_Last updated: {existing_prefs['modified_date']}_")
+
+        st.markdown("---")
+        st.info("💡 You can update your preferences using the form below.")
+    else:
+        st.warning("⚠️ You have not completed your shift preference survey yet.")
+        st.info("📝 Please complete all fields below to submit your preferences.")
+
+    st.markdown("---")
+    st.markdown("### 📍 Shift Location Preferences")
+    st.info("💡 **Instructions:** Rank each location from 1 (least desirable) to 5 or 3 (most desirable). Each number can only be used once within each shift type. Higher numbers = more desirable locations.")
+
+    # Create two columns for day and night locations
+    loc_col1, loc_col2 = st.columns(2)
+
+    with loc_col1:
+        st.markdown("### ☀️ Day Shift Locations")
+        st.markdown("**Rank from 1 (least desirable) to 5 (most desirable)**")
+        st.caption("Locations: KMHT, KLWM, KBED, 1B9, KPYM")
+        st.caption("⚠️ Each ranking (1-5) must be used exactly once")
+
+        day_preferences = {}
+        day_ranks = [1, 2, 3, 4, 5]
+
+        for location in DAY_LOCATIONS:
+            # Get current value if exists
+            current_value = None
+            if success and existing_prefs:
+                current_value = existing_prefs['day_locations'].get(location)
+
+            # Find index for selectbox
+            if current_value and current_value in day_ranks:
+                initial_index = day_ranks.index(current_value) + 1
+            else:
+                initial_index = 0
+
+            day_preferences[location] = st.selectbox(
+                f"📍 {location}",
+                options=[None] + day_ranks,
+                index=initial_index,
+                key=f"day_{location}_{staff_name}",
+                help=f"Select ranking for {location} (5=most desirable, 1=least desirable)"
+            )
+
+    with loc_col2:
+        st.markdown("### 🌙 Night Shift Locations")
+        st.markdown("**Rank from 1 (least desirable) to 3 (most desirable)**")
+        st.caption("Locations: KLWM, KBED, KPYM")
+        st.caption("⚠️ Each ranking (1-3) must be used exactly once")
+
+        night_preferences = {}
+        night_ranks = [1, 2, 3]
+
+        for location in NIGHT_LOCATIONS:
+            # Get current value if exists
+            current_value = None
+            if success and existing_prefs:
+                current_value = existing_prefs['night_locations'].get(location)
+
+            # Find index for selectbox
+            if current_value and current_value in night_ranks:
+                initial_index = night_ranks.index(current_value) + 1
+            else:
+                initial_index = 0
+
+            night_preferences[location] = st.selectbox(
+                f"📍 {location}",
+                options=[None] + night_ranks,
+                index=initial_index,
+                key=f"night_{location}_{staff_name}",
+                help=f"Select ranking for {location} (3=most desirable, 1=least desirable)"
+            )
+
+    # Additional preferences section
+    st.markdown("---")
+    st.markdown("### ⚙️ Additional Information")
+    st.markdown("**🔴 All fields below are required**")
+
+    # Three columns for additional info
+    info_col1, info_col2, info_col3 = st.columns(3)
+
+    with info_col1:
+        st.markdown("#### 📮 Zip Code")
+        current_zip = existing_prefs['zip_code'] if (success and existing_prefs) else ""
+        zip_code = st.text_input(
+            "Zip Code",
+            value=current_zip,
+            key=f"zip_code_{staff_name}",
+            help="Enter your zip code (required)",
+            placeholder="e.g., 02101",
+            label_visibility="collapsed"
+        )
+
+    with info_col2:
+        st.markdown("#### 🛌 Reduced Rest OK")
+        st.caption("Accept 10 hours rest instead of 12?")
+
+        # Get current value
+        current_reduced_rest = None
+        if success and existing_prefs:
+            current_reduced_rest = existing_prefs['reduced_rest_ok']
+
+        reduced_rest_options = ["Please select...", "Yes", "No"]
+        if current_reduced_rest is not None:
+            initial_reduced_index = 1 if current_reduced_rest else 2
+        else:
+            initial_reduced_index = 0
+
+        reduced_rest_selection = st.radio(
+            "Reduced Rest OK",
+            options=reduced_rest_options,
+            index=initial_reduced_index,
+            key=f"reduced_rest_{staff_name}",
+            help="Accept shifts with 10 hours rest instead of 12 hours",
+            label_visibility="collapsed"
+        )
+
+        reduced_rest_answered = reduced_rest_selection != "Please select..."
+        reduced_rest_value = reduced_rest_selection == "Yes" if reduced_rest_answered else None
+
+    with info_col3:
+        st.markdown("#### 🔄 N to D Flex")
+        st.caption("Flexible with night-to-day transitions?")
+
+        # Get current value
+        current_n_to_d_flex = None
+        if success and existing_prefs:
+            current_n_to_d_flex = existing_prefs['n_to_d_flex']
+
+        n_to_d_flex_options = ["Please select...", "Yes", "No", "Maybe"]
+        if current_n_to_d_flex and current_n_to_d_flex in ["Yes", "No", "Maybe"]:
+            initial_flex_index = n_to_d_flex_options.index(current_n_to_d_flex)
+        else:
+            initial_flex_index = 0
+
+        n_to_d_flex_selection = st.radio(
+            "N to D Flex",
+            options=n_to_d_flex_options,
+            index=initial_flex_index,
+            key=f"n_to_d_flex_{staff_name}",
+            help="Flexibility with transitioning from night shifts to day shifts",
+            label_visibility="collapsed"
+        )
+
+        n_to_d_flex_answered = n_to_d_flex_selection != "Please select..."
+        n_to_d_flex_value = n_to_d_flex_selection if n_to_d_flex_answered else None
+
+    # Validation and preview
+    st.markdown("---")
+
+    # Validate all preferences
+    is_valid, errors = validate_location_preferences(
+        day_preferences, night_preferences, zip_code,
+        reduced_rest_answered, n_to_d_flex_answered
+    )
+
+    if not is_valid:
+        st.error("❌ **Please complete all required fields:**")
+        for error in errors:
+            st.error(f"• {error}")
+    else:
+        st.success("✅ **All preferences are valid and ready to save!**")
+
+        # Show preview
+        with st.expander("📋 Preview Your Preferences", expanded=True):
+            preview_col1, preview_col2, preview_col3 = st.columns(3)
+
+            with preview_col1:
+                st.markdown("**Day Shift Locations:**")
+                day_sorted = sorted(day_preferences.items(), key=lambda x: x[1] if x[1] else 0, reverse=True)
+                for location, rank in day_sorted:
+                    if rank:
+                        st.markdown(f"**Rank {rank}:** {location}")
+
+            with preview_col2:
+                st.markdown("**Night Shift Locations:**")
+                night_sorted = sorted(night_preferences.items(), key=lambda x: x[1] if x[1] else 0, reverse=True)
+                for location, rank in night_sorted:
+                    if rank:
+                        st.markdown(f"**Rank {rank}:** {location}")
+
+            with preview_col3:
+                st.markdown("**Additional Information:**")
+                st.markdown(f"**Zip Code:** {zip_code}")
+                reduced_status = "✅ Yes" if reduced_rest_value else "❌ No"
+                st.markdown(f"**Reduced Rest OK:** {reduced_status}")
+                st.markdown(f"**N to D Flex:** ✅ {n_to_d_flex_value}")
+
+    # Save button
+    st.markdown("---")
+    if is_valid:
+        save_col1, save_col2 = st.columns([2, 1])
+
+        with save_col1:
+            if st.button("💾 Save My Preferences", use_container_width=True, type="primary"):
+                # Save to database
+                success_save, message = save_location_preferences_to_db(
+                    staff_name,
+                    day_preferences,
+                    night_preferences,
+                    zip_code.strip(),
+                    reduced_rest_value,
+                    n_to_d_flex_value
+                )
+
+                if success_save:
+                    st.success(f"✅ {message}")
+                    st.balloons()
+                    st.info("🔄 Your preferences have been saved and will be used for scheduling!")
+
+                    # Rerun to show updated preferences
+                    st.rerun()
+                else:
+                    st.error(f"❌ {message}")
+
+        with save_col2:
+            st.caption("All fields are required before saving")
+    else:
+        st.warning("⚠️ Please complete all required fields above before saving.")

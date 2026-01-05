@@ -1,13 +1,13 @@
 # modules/track_management/preference_display.py
 """
-Module for displaying staff preferences
+Module for displaying staff preferences (with location-based system)
 """
 
 import streamlit as st
 import pandas as pd
 # Fix #3: Correct relative imports from parent directory
 from ..shift_definitions import day_shifts, night_shifts
-from ..db_utils import get_db_connection
+from ..db_utils import get_db_connection, get_location_preferences_from_db
 
 def color_pref(val):
     """
@@ -131,16 +131,121 @@ def get_staff_preferences_for_display(staff_name, staff_info):
         
         return shift_prefs, boolean_prefs, 'file'
 
+def display_location_preferences(selected_staff, staff_info):
+    """
+    Display location-based preferences (NEW SYSTEM)
+
+    Args:
+        selected_staff (str): Name of the selected staff member
+        staff_info (Series): Staff information row
+
+    Returns:
+        bool: True if location preferences exist, False otherwise
+    """
+    # Check for location preferences
+    success, location_prefs = get_location_preferences_from_db(selected_staff)
+
+    if not success or not location_prefs:
+        return False
+
+    # Display title
+    st.subheader(f"Location-Based Preferences for {selected_staff} 📍")
+    st.success("✅ **Location Preferences Active** - Using new location-based preference system.")
+
+    # Display staff attributes
+    attribute_cols = st.columns(4)
+
+    with attribute_cols[0]:
+        role_column = next((col for col in staff_info.index if col.lower() == 'role'), None)
+        if role_column:
+            st.info(f"**Role:** {staff_info[role_column]}")
+        else:
+            st.info("**Role:** Not available")
+
+    with attribute_cols[1]:
+        st.info(f"**Zip Code:** {location_prefs['zip_code']}")
+
+    with attribute_cols[2]:
+        reduced_rest_display = "Yes" if location_prefs['reduced_rest_ok'] else "No"
+        st.info(f"**Reduced Rest OK:** {reduced_rest_display}")
+
+    with attribute_cols[3]:
+        st.info(f"**N to D Flex:** {location_prefs['n_to_d_flex']}")
+
+    # Display location preferences in two columns
+    loc_col1, loc_col2 = st.columns(2)
+
+    with loc_col1:
+        st.subheader("☀️ Day Shift Locations")
+        st.caption("Rankings: 1 (least desirable) to 5 (most desirable)")
+
+        # Sort by rank (descending)
+        day_locs = location_prefs['day_locations']
+        day_sorted = sorted(day_locs.items(), key=lambda x: x[1] if x[1] else 0, reverse=True)
+
+        # Create DataFrame for display
+        day_data = []
+        for location, rank in day_sorted:
+            if rank:
+                day_data.append({'Location': location, 'Rank': rank})
+
+        if day_data:
+            day_df = pd.DataFrame(day_data)
+            st.dataframe(day_df, hide_index=True, use_container_width=True)
+        else:
+            st.info("No day location preferences set.")
+
+    with loc_col2:
+        st.subheader("🌙 Night Shift Locations")
+        st.caption("Rankings: 1 (least desirable) to 3 (most desirable)")
+
+        # Sort by rank (descending)
+        night_locs = location_prefs['night_locations']
+        night_sorted = sorted(night_locs.items(), key=lambda x: x[1] if x[1] else 0, reverse=True)
+
+        # Create DataFrame for display
+        night_data = []
+        for location, rank in night_sorted:
+            if rank:
+                night_data.append({'Location': location, 'Rank': rank})
+
+        if night_data:
+            night_df = pd.DataFrame(night_data)
+            st.dataframe(night_df, hide_index=True, use_container_width=True)
+        else:
+            st.info("No night location preferences set.")
+
+    # Add update link
+    st.markdown("---")
+    st.markdown("### Update Your Preferences")
+    st.markdown("""
+    To update your location preferences, go to the "Edit Preferences" tab.
+
+    **Note**: Any changes will be reflected immediately and used in the scheduling process.
+    """)
+
+    return True
+
 def display_preferences(selected_staff, staff_info, preferences_df):
     """
     Display the current preferences for the selected staff member
-    
+    Checks for location preferences first (new system), then falls back to shift preferences (legacy)
+
     Args:
         selected_staff (str): Name of the selected staff member
         staff_info (Series): Staff information row
         preferences_df (DataFrame): DataFrame containing staff preferences
     """
-    # Get the current preferences (database first, then file)
+    # First, try to display location preferences (NEW SYSTEM)
+    has_location_prefs = display_location_preferences(selected_staff, staff_info)
+
+    if has_location_prefs:
+        # Show legacy system info
+        st.markdown("---")
+        st.markdown("### 📊 Legacy Shift-Based Preferences")
+        st.info("ℹ️ The section below shows legacy shift-type preferences (old system). Your active preferences are the location-based ones shown above.")
+
+    # Get the current preferences (database first, then file) - LEGACY SYSTEM
     shift_preferences, boolean_preferences, source = get_staff_preferences_for_display(selected_staff, staff_info)
     
     # Display title with source indicator
