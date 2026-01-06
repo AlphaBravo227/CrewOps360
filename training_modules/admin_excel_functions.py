@@ -279,7 +279,35 @@ class ExcelAdminFunctions:
                 })
         
         return pd.DataFrame(participation_data)
-    
+
+    def get_educator_signup(self, class_name, date_str, session_time=None):
+        """Get educator signup for a specific class and date
+
+        Args:
+            class_name: Name of the class
+            date_str: Date string (format: MM/DD/YYYY)
+            session_time: Session time (currently not used as database doesn't support session-specific signups)
+
+        Returns:
+            Dictionary with educator signup info or None if no signup exists
+        """
+        if not self.db:
+            return None
+
+        try:
+            # Get all educator signups for this class and date
+            signups = self.db.get_educator_signups_for_class(class_name, date_str)
+
+            # Return the first signup if any exist
+            # Note: Currently the database doesn't support session-specific educator signups
+            # All educators for a date are returned regardless of session_time
+            if signups and len(signups) > 0:
+                return signups[0]
+            return None
+        except Exception as e:
+            print(f"Error getting educator signup for {class_name} on {date_str}: {e}")
+            return None
+
     def get_classes_needing_educators_report(self):
         """Generate report showing classes that still need educator signups"""
         if not self.educator:
