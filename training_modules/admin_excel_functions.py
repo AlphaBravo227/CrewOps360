@@ -2218,9 +2218,20 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
             with educator_col:
                 st.write("**👨‍🏫 Educator**")
                 if has_educator:
-                    educator_signup = excel_admin_functions.get_educator_signup(class_name, date_str, session_time)
-                    if educator_signup:
-                        st.write(f"• {educator_signup['staff_name']}")
+                    # Get all educators for this date/class
+                    educator_roster = []
+                    if excel_admin_functions.educator:
+                        educator_roster = excel_admin_functions.educator.get_class_educator_roster(class_name, date_str)
+
+                    # Filter for active educators
+                    active_educators = [e for e in educator_roster if e['status'] == 'active']
+
+                    if active_educators:
+                        for educator in sorted(active_educators, key=lambda x: x['staff_name']):
+                            educator_display = f"• {educator['staff_name']}"
+                            if educator.get('has_conflict'):
+                                educator_display += " ⚠️"
+                            st.write(educator_display)
                     else:
                         st.write("*No educator assigned*")
                 else:
