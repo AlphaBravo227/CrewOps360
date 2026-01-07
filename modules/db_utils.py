@@ -199,6 +199,28 @@ def initialize_database():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         ''')
+
+        # NEW: Create user_location_preferences table for location-based shift preferences
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_location_preferences (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            staff_name TEXT NOT NULL UNIQUE,
+            day_kmht INTEGER,
+            day_klwm INTEGER,
+            day_kbed INTEGER,
+            day_1b9 INTEGER,
+            day_kpym INTEGER,
+            night_klwm INTEGER,
+            night_kbed INTEGER,
+            night_kpym INTEGER,
+            zip_code TEXT NOT NULL,
+            reduced_rest_ok INTEGER NOT NULL,
+            n_to_d_flex TEXT NOT NULL,
+            created_date TEXT NOT NULL,
+            modified_date TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1
+        )
+        ''')
         
         # Check if we need to add the new columns to existing tracks table
         cursor.execute("PRAGMA table_info(tracks)")
@@ -1099,6 +1121,186 @@ def get_database_stats():
     except Exception as e:
         print(f"Error getting database stats: {str(e)}")
         return {}
+
+def save_location_preferences_to_db(staff_name, day_locations, night_locations, zip_code, reduced_rest_ok, n_to_d_flex):
+    """
+    Save location-based preferences to database
+
+    Args:
+        staff_name (str): Name of the staff member
+        day_locations (dict): Day location preferences {location: rank 1-5}
+        night_locations (dict): Night location preferences {location: rank 1-3}
+        zip_code (str): Staff member's zip code
+        reduced_rest_ok (bool): Reduced rest preference
+        n_to_d_flex (str): N to D flex preference (Yes/No/Maybe)
+
+    Returns:
+        tuple: (success, message)
+    """
+    try:
+        # Initialize database if needed
+        initialize_database()
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        current_timestamp = datetime.now().isoformat()
+
+        # Convert boolean to integer for storage
+        reduced_rest_value = 1 if reduced_rest_ok else 0
+
+        # Insert or replace the location preferences
+        cursor.execute("""
+            INSERT OR REPLACE INTO user_location_preferences
+            (staff_name, day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
+             night_klwm, night_kbed, night_kpym, zip_code,
+             reduced_rest_ok, n_to_d_flex, created_date, modified_date, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        """, (
+            staff_name,
+            day_locations.get('KMHT'),
+            day_locations.get('KLWM'),
+            day_locations.get('KBED'),
+            day_locations.get('1B9'),
+            day_locations.get('KPYM'),
+            night_locations.get('KLWM'),
+            night_locations.get('KBED'),
+            night_locations.get('KPYM'),
+            zip_code,
+            reduced_rest_value,
+            n_to_d_flex,
+            current_timestamp,
+            current_timestamp
+        ))
+
+        conn.commit()
+        return (True, "Location preferences saved successfully")
+
+    except Exception as e:
+        error_message = f"Error saving location preferences: {str(e)}"
+        print(error_message)
+        return (False, error_message)
+
+def get_location_preferences_from_db(staff_name):
+    """
+    Retrieve location-based preferences from database
+
+    Args:
+        staff_name (str): Name of the staff member
+
+    Returns:
+        tuple: (success, preferences_dict or None)
+    """
+    try:
+        # Initialize database if needed
+        initialize_database()
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
+                   night_klwm, night_kbed, night_kpym, zip_code,
+                   reduced_rest_ok, n_to_d_flex, modified_date
+            FROM user_location_preferences
+            WHERE staff_name = ? AND is_active = 1
+        """, (staff_name,))
+
+        result = cursor.fetchone()
+
+        if result:
+            (day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
+             night_klwm, night_kbed, night_kpym, zip_code,
+             reduced_rest_ok, n_to_d_flex, modified_date) = result
+
+            preferences = {
+                'day_locations': {
+                    'KMHT': day_kmht,
+                    'KLWM': day_klwm,
+                    'KBED': day_kbed,
+                    '1B9': day_1b9,
+                    'KPYM': day_kpym
+                },
+                'night_locations': {
+                    'KLWM': night_klwm,
+                    'KBED': night_kbed,
+                    'KPYM': night_kpym
+                },
+                'zip_code': zip_code,
+                'reduced_rest_ok': bool(reduced_rest_ok),
+                'n_to_d_flex': n_to_d_flex,
+                'modified_date': modified_date
+            }
+
+            return (True, preferences)
+        else:
+            return (False, None)
+
+    except Exception as e:
+        error_message = f"Error retrieving location preferences: {str(e)}"
+        print(error_message)
+        return (False, None)
+
+def get_all_location_preferences():
+    """
+    Get all active location preferences from the database
+
+    Returns:
+        tuple: (success, list of preferences or error_message)
+    """
+    try:
+        # Initialize database if needed
+        initialize_database()
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT staff_name, day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
+                   night_klwm, night_kbed, night_kpym, zip_code,
+                   reduced_rest_ok, n_to_d_flex, modified_date
+            FROM user_location_preferences
+            WHERE is_active = 1
+            ORDER BY staff_name
+        """)
+
+        results = cursor.fetchall()
+
+        if results:
+            preferences_list = []
+            for row in results:
+                (staff_name, day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
+                 night_klwm, night_kbed, night_kpym, zip_code,
+                 reduced_rest_ok, n_to_d_flex, modified_date) = row
+
+                preferences_list.append({
+                    'staff_name': staff_name,
+                    'day_locations': {
+                        'KMHT': day_kmht,
+                        'KLWM': day_klwm,
+                        'KBED': day_kbed,
+                        '1B9': day_1b9,
+                        'KPYM': day_kpym
+                    },
+                    'night_locations': {
+                        'KLWM': night_klwm,
+                        'KBED': night_kbed,
+                        'KPYM': night_kpym
+                    },
+                    'zip_code': zip_code,
+                    'reduced_rest_ok': bool(reduced_rest_ok),
+                    'n_to_d_flex': n_to_d_flex,
+                    'modified_date': modified_date
+                })
+
+            return (True, preferences_list)
+        else:
+            return (False, "No location preferences found")
+
+    except Exception as e:
+        error_message = f"Error retrieving all location preferences: {str(e)}"
+        print(error_message)
+        return (False, error_message)
 
 # Clean up connections when the module is unloaded
 import atexit
