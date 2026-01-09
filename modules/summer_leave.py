@@ -3,6 +3,8 @@
 import streamlit as st
 from datetime import datetime, timedelta
 import pandas as pd
+import sqlite3
+import os
 from modules.db_utils import (
     get_summer_leave_config,
     set_summer_leave_config,
@@ -11,7 +13,8 @@ from modules.db_utils import (
     cancel_summer_leave_selection,
     get_week_selections_by_role,
     get_all_summer_leave_selections,
-    get_all_summer_leave_configs
+    get_all_summer_leave_configs,
+    get_db_connection
 )
 
 # Constants
@@ -27,6 +30,54 @@ ROLE_CAPS = {
     'COMMS': 2,
     'ATP': 2
 }
+
+def ensure_summer_leave_tables():
+    """
+    Ensure summer leave tables exist in the database.
+    This is a migration function that runs when the module is first accessed.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Check if tables exist
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='summer_leave_requests'")
+        if not cursor.fetchone():
+            # Create summer_leave_requests table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS summer_leave_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                staff_name TEXT NOT NULL UNIQUE,
+                role TEXT NOT NULL,
+                week_start_date TEXT NOT NULL,
+                week_end_date TEXT NOT NULL,
+                selection_date TEXT NOT NULL,
+                modified_date TEXT,
+                status TEXT DEFAULT 'active'
+            )
+            ''')
+            print("Created summer_leave_requests table")
+
+        # Check if config table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='summer_leave_config'")
+        if not cursor.fetchone():
+            # Create summer_leave_config table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS summer_leave_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                staff_name TEXT NOT NULL UNIQUE,
+                lt_open INTEGER DEFAULT 0,
+                modified_date TEXT NOT NULL
+            )
+            ''')
+            print("Created summer_leave_config table")
+
+        conn.commit()
+        return True
+
+    except Exception as e:
+        print(f"Error ensuring summer leave tables: {e}")
+        return False
 
 def get_summer_weeks():
     """
@@ -428,6 +479,11 @@ def display_summer_leave_app(excel_handler, track_manager):
         excel_handler: ExcelHandler instance for reading staff data
         track_manager: TrainingTrackManager instance for track schedules
     """
+    # Ensure database tables exist (migration)
+    if not ensure_summer_leave_tables():
+        st.error("Failed to initialize summer leave database tables. Please contact support.")
+        return
+
     # Back button
     if st.button("← Back to Main Menu"):
         st.session_state.selected_module = None
