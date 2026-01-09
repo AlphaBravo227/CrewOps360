@@ -1,0 +1,498 @@
+# modules/summer_leave.py - Summer Leave Time Selection Module
+
+import streamlit as st
+from datetime import datetime, timedelta
+import pandas as pd
+from modules.db_utils import (
+    get_summer_leave_config,
+    set_summer_leave_config,
+    get_summer_leave_selection,
+    save_summer_leave_selection,
+    cancel_summer_leave_selection,
+    get_week_selections_by_role,
+    get_all_summer_leave_selections,
+    get_all_summer_leave_configs
+)
+
+# Constants
+SUMMER_START_DATE = datetime(2026, 5, 13)  # May 13, 2026 (Sunday)
+SUMMER_END_DATE = datetime(2026, 9, 12)    # September 12, 2026 (Saturday)
+
+# Weekly caps by role
+ROLE_CAPS = {
+    'NURSE': 3,
+    'MEDIC': 3,
+    'AMT': 2,
+    'CCEMT': 2,
+    'COMMS': 2,
+    'ATP': 2
+}
+
+def get_summer_weeks():
+    """
+    Generate list of all weeks in the summer leave period (Sunday-Saturday)
+
+    Returns:
+        list: List of tuples (week_start_date, week_end_date, display_string)
+    """
+    weeks = []
+    current_date = SUMMER_START_DATE
+
+    while current_date <= SUMMER_END_DATE:
+        # Calculate week end (Saturday)
+        week_end = current_date + timedelta(days=6)
+
+        # Don't go past the summer end date
+        if week_end > SUMMER_END_DATE:
+            week_end = SUMMER_END_DATE
+
+        # Format display string
+        display_str = f"{current_date.strftime('%B %d')}-{week_end.strftime('%d, %Y')}"
+
+        weeks.append((
+            current_date.strftime('%Y-%m-%d'),
+            week_end.strftime('%Y-%m-%d'),
+            display_str
+        ))
+
+        # Move to next Sunday
+        current_date += timedelta(days=7)
+
+    return weeks
+
+def get_staff_track_schedule(staff_name, role, track_manager):
+    """
+    Get track schedule for a staff member during summer period
+
+    Args:
+        staff_name (str): Name of staff member
+        role (str): Staff member's role
+        track_manager: TrainingTrackManager instance
+
+    Returns:
+        dict: Dictionary mapping week to daily schedule
+    """
+    if not track_manager or role not in ['NURSE', 'MEDIC', 'CCEMT']:
+        return None
+
+    weeks = get_summer_weeks()
+    schedule_by_week = {}
+
+    for week_start_str, week_end_str, display_str in weeks:
+        week_start = datetime.strptime(week_start_str, '%Y-%m-%d')
+        week_end = datetime.strptime(week_end_str, '%Y-%m-%d')
+
+        # Get daily schedule for this week
+        daily_schedule = []
+        current_day = week_start
+
+        while current_day <= week_end:
+            shift = track_manager.get_staff_shift(staff_name, current_day.strftime('%Y-%m-%d'))
+            daily_schedule.append({
+                'date': current_day.strftime('%a %m/%d'),
+                'shift': shift if shift else 'Off'
+            })
+            current_day += timedelta(days=1)
+
+        schedule_by_week[display_str] = daily_schedule
+
+    return schedule_by_week
+
+def display_track_schedule(schedule_by_week, selected_week_display=None):
+    """
+    Display track schedule in a compact format
+
+    Args:
+        schedule_by_week (dict): Schedule data by week
+        selected_week_display (str): Highlight this week if provided
+    """
+    if not schedule_by_week:
+        st.info("No track data available for your role")
+        return
+
+    st.markdown("### Your Schedule for Summer Leave Period")
+
+    for week_display, daily_schedule in schedule_by_week.items():
+        # Highlight selected week
+        if week_display == selected_week_display:
+            st.markdown(f"**📅 {week_display}** ⭐ **(Selected)**")
+        else:
+            st.markdown(f"**📅 {week_display}**")
+
+        # Create a compact display of the week
+        cols = st.columns(len(daily_schedule))
+        for idx, day_info in enumerate(daily_schedule):
+            with cols[idx]:
+                st.markdown(f"**{day_info['date']}**")
+                st.markdown(f"{day_info['shift']}")
+
+        st.markdown("---")
+
+def display_user_interface(staff_name, role, excel_handler, track_manager):
+    """
+    Display the user interface for summer leave selection
+
+    Args:
+        staff_name (str): Name of staff member
+        role (str): Staff member's role
+        excel_handler: ExcelHandler instance
+        track_manager: TrainingTrackManager instance
+    """
+    st.header("☀️ Summer Leave Time Selection")
+    st.markdown(f"**Staff:** {staff_name} | **Role:** {role}")
+    st.markdown(f"**Period:** {SUMMER_START_DATE.strftime('%B %d, %Y')} - {SUMMER_END_DATE.strftime('%B %d, %Y')}")
+    st.markdown("---")
+
+    # Check if LT is open for this user
+    lt_open = get_summer_leave_config(staff_name)
+
+    if not lt_open:
+        st.warning("⚠️ Selection is not available at this time.")
+        st.info("Please contact your supervisor if you believe this is an error.")
+        return
+
+    # Get current selection
+    current_selection = get_summer_leave_selection(staff_name)
+
+    # Display current selection
+    if current_selection:
+        st.success(f"✅ You have selected: **{current_selection['week_start_date']} to {current_selection['week_end_date']}**")
+
+        week_start = datetime.strptime(current_selection['week_start_date'], '%Y-%m-%d')
+        week_end = datetime.strptime(current_selection['week_end_date'], '%Y-%m-%d')
+        display_str = f"{week_start.strftime('%B %d')}-{week_end.strftime('%d, %Y')}"
+
+        st.info(f"Selected on: {current_selection['selection_date']}")
+
+        if st.button("❌ Cancel My Selection"):
+            success, message = cancel_summer_leave_selection(staff_name)
+            if success:
+                st.success(message)
+                st.rerun()
+            else:
+                st.error(message)
+
+        st.markdown("---")
+        st.markdown("### Change Your Selection")
+        st.info("You can select a different week below. Your previous selection will be automatically cancelled.")
+
+    # Get all available weeks
+    weeks = get_summer_weeks()
+
+    # Get track schedule if applicable
+    schedule_by_week = get_staff_track_schedule(staff_name, role, track_manager)
+
+    # Display week selection
+    st.markdown("### Select Your Week")
+
+    week_options = []
+    week_mapping = {}
+
+    for week_start_str, week_end_str, display_str in weeks:
+        # Check availability for this week
+        selections_count = get_week_selections_by_role(week_start_str, role)
+        cap = ROLE_CAPS.get(role, 2)
+
+        is_available = selections_count < cap
+        status = "Available" if is_available else "Full"
+
+        option_label = f"{display_str} - {status} ({selections_count}/{cap})"
+
+        if is_available:
+            week_options.append(option_label)
+            week_mapping[option_label] = (week_start_str, week_end_str, display_str)
+
+    if not week_options:
+        st.warning("No weeks are currently available for your role.")
+        return
+
+    # Week selection dropdown
+    selected_option = st.selectbox(
+        "Choose a week:",
+        options=week_options,
+        index=0
+    )
+
+    if selected_option:
+        week_start_str, week_end_str, display_str = week_mapping[selected_option]
+
+        # Show track schedule for available weeks
+        if schedule_by_week:
+            st.markdown("---")
+            display_track_schedule(schedule_by_week, display_str)
+
+        # Submit button
+        st.markdown("---")
+        if st.button("✅ Submit My Selection", type="primary"):
+            success, message = save_summer_leave_selection(staff_name, role, week_start_str, week_end_str)
+            if success:
+                st.success(f"✅ {message}")
+                st.balloons()
+                st.rerun()
+            else:
+                st.error(f"❌ {message}")
+
+def display_admin_interface(staff_list, role_mapping):
+    """
+    Display admin interface for managing summer leave
+
+    Args:
+        staff_list (list): List of all staff names
+        role_mapping (dict): Dictionary mapping staff names to roles
+    """
+    st.header("🔧 Summer Leave Administration")
+    st.markdown("---")
+
+    # Get all configs and selections
+    all_configs = get_all_summer_leave_configs()
+    all_selections = get_all_summer_leave_selections()
+
+    # Create selections lookup
+    selections_lookup = {sel['staff_name']: sel for sel in all_selections}
+
+    # Tabs for different admin functions
+    tab1, tab2, tab3 = st.tabs(["📊 Overview", "👥 Manage Staff", "➕ Add/Remove Selection"])
+
+    with tab1:
+        st.markdown("### Summary by Role")
+
+        # Calculate statistics by role
+        role_stats = {}
+        for role in ROLE_CAPS.keys():
+            role_selections = [sel for sel in all_selections if sel['role'] == role]
+            role_stats[role] = {
+                'total_selections': len(role_selections),
+                'staff_with_selections': len(role_selections)
+            }
+
+        # Display as table
+        stats_data = []
+        for role, cap in ROLE_CAPS.items():
+            stats = role_stats.get(role, {'total_selections': 0, 'staff_with_selections': 0})
+            stats_data.append({
+                'Role': role,
+                'Cap per Week': cap,
+                'Staff with Selections': stats['staff_with_selections'],
+                'Total Selections': stats['total_selections']
+            })
+
+        st.dataframe(pd.DataFrame(stats_data), use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("### All Selections by Week")
+
+        # Group selections by week
+        weeks = get_summer_weeks()
+        for week_start_str, week_end_str, display_str in weeks:
+            week_selections = [sel for sel in all_selections if sel['week_start_date'] == week_start_str]
+
+            if week_selections:
+                with st.expander(f"📅 {display_str} ({len(week_selections)} selections)"):
+                    # Group by role
+                    for role in ROLE_CAPS.keys():
+                        role_week_selections = [sel for sel in week_selections if sel['role'] == role]
+                        if role_week_selections:
+                            cap = ROLE_CAPS[role]
+                            st.markdown(f"**{role}:** {len(role_week_selections)}/{cap}")
+                            for sel in role_week_selections:
+                                st.markdown(f"  - {sel['staff_name']}")
+
+    with tab2:
+        st.markdown("### Manage Staff LT Access")
+
+        # Create dataframe for all staff
+        staff_data = []
+        for staff_name in sorted(staff_list):
+            role = role_mapping.get(staff_name, 'Unknown')
+            lt_open = all_configs.get(staff_name, False)
+            selection = selections_lookup.get(staff_name)
+
+            staff_data.append({
+                'Staff Name': staff_name,
+                'Role': role,
+                'LT Open': lt_open,
+                'Has Selection': '✅' if selection else '❌',
+                'Week Selected': f"{selection['week_start_date']} to {selection['week_end_date']}" if selection else ''
+            })
+
+        df = pd.DataFrame(staff_data)
+
+        # Display dataframe
+        st.dataframe(df, use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("### Toggle LT Access")
+
+        # Staff selector
+        selected_staff = st.selectbox("Select Staff Member:", options=sorted(staff_list))
+
+        if selected_staff:
+            current_status = all_configs.get(selected_staff, False)
+            staff_role = role_mapping.get(selected_staff, 'Unknown')
+
+            st.info(f"**{selected_staff}** ({staff_role}) - LT Open: **{'Yes' if current_status else 'No'}**")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if st.button("✅ Enable LT Selection"):
+                    success, message = set_summer_leave_config(selected_staff, True)
+                    if success:
+                        st.success(message)
+                        st.rerun()
+                    else:
+                        st.error(message)
+
+            with col2:
+                if st.button("❌ Disable LT Selection"):
+                    success, message = set_summer_leave_config(selected_staff, False)
+                    if success:
+                        st.success(message)
+                        st.rerun()
+                    else:
+                        st.error(message)
+
+            # Bulk enable/disable
+            st.markdown("---")
+            st.markdown("### Bulk Operations")
+
+            col3, col4 = st.columns(2)
+
+            with col3:
+                if st.button("✅ Enable All Staff"):
+                    count = 0
+                    for staff in staff_list:
+                        success, _ = set_summer_leave_config(staff, True)
+                        if success:
+                            count += 1
+                    st.success(f"Enabled LT selection for {count} staff members")
+                    st.rerun()
+
+            with col4:
+                if st.button("❌ Disable All Staff"):
+                    count = 0
+                    for staff in staff_list:
+                        success, _ = set_summer_leave_config(staff, False)
+                        if success:
+                            count += 1
+                    st.success(f"Disabled LT selection for {count} staff members")
+                    st.rerun()
+
+    with tab3:
+        st.markdown("### Add or Remove Selection")
+
+        # Staff selector
+        admin_selected_staff = st.selectbox("Select Staff Member:", options=sorted(staff_list), key="admin_staff_select")
+
+        if admin_selected_staff:
+            staff_role = role_mapping.get(admin_selected_staff, 'Unknown')
+            current_selection = selections_lookup.get(admin_selected_staff)
+
+            st.info(f"**{admin_selected_staff}** ({staff_role})")
+
+            if current_selection:
+                st.success(f"Current selection: {current_selection['week_start_date']} to {current_selection['week_end_date']}")
+
+                if st.button("❌ Remove This Selection"):
+                    success, message = cancel_summer_leave_selection(admin_selected_staff)
+                    if success:
+                        st.success(message)
+                        st.rerun()
+                    else:
+                        st.error(message)
+
+            st.markdown("---")
+            st.markdown("### Add/Update Selection")
+
+            # Week selector
+            weeks = get_summer_weeks()
+            week_options = [display_str for _, _, display_str in weeks]
+            week_mapping = {display_str: (start, end) for start, end, display_str in weeks}
+
+            selected_week = st.selectbox("Select Week:", options=week_options, key="admin_week_select")
+
+            if selected_week and st.button("✅ Save Selection"):
+                week_start_str, week_end_str = week_mapping[selected_week]
+                success, message = save_summer_leave_selection(admin_selected_staff, staff_role, week_start_str, week_end_str)
+                if success:
+                    st.success(message)
+                    st.rerun()
+                else:
+                    st.error(message)
+
+def display_summer_leave_app(excel_handler, track_manager):
+    """
+    Main entry point for Summer Leave module
+
+    Args:
+        excel_handler: ExcelHandler instance for reading staff data
+        track_manager: TrainingTrackManager instance for track schedules
+    """
+    # Back button
+    if st.button("← Back to Main Menu"):
+        st.session_state.selected_module = None
+        st.rerun()
+
+    st.title("☀️ Summer Leave Time Selection")
+    st.markdown("**Summer 2026 Leave Period**")
+    st.markdown("---")
+
+    # Get staff list from Excel
+    staff_list = excel_handler.get_staff_list() if excel_handler else []
+
+    if not staff_list:
+        st.error("Could not load staff list from Excel file.")
+        return
+
+    # Create role mapping
+    role_mapping = {}
+    for staff_name in staff_list:
+        # Get role from Excel (Column B)
+        try:
+            enrollment_sheet = excel_handler.enrollment_sheet
+            for row in enrollment_sheet.iter_rows(min_row=2):
+                if row[0].value and str(row[0].value).strip() == staff_name:
+                    role_cell = row[1].value if len(row) > 1 else None
+                    role_mapping[staff_name] = str(role_cell).strip() if role_cell else 'Unknown'
+                    break
+        except Exception as e:
+            print(f"Error getting role for {staff_name}: {e}")
+            role_mapping[staff_name] = 'Unknown'
+
+    # Check for admin mode
+    if 'summer_leave_admin_mode' not in st.session_state:
+        st.session_state.summer_leave_admin_mode = False
+
+    # Admin toggle
+    with st.sidebar:
+        st.markdown("### Administration")
+        admin_password = st.text_input("Admin Password:", type="password", key="summer_admin_pw")
+
+        if admin_password == "PW":
+            if st.button("🔧 Enter Admin Mode"):
+                st.session_state.summer_leave_admin_mode = True
+                st.rerun()
+
+        if st.session_state.summer_leave_admin_mode:
+            st.success("✅ Admin Mode Active")
+            if st.button("👤 Switch to User Mode"):
+                st.session_state.summer_leave_admin_mode = False
+                st.rerun()
+
+    # Display appropriate interface
+    if st.session_state.summer_leave_admin_mode:
+        display_admin_interface(staff_list, role_mapping)
+    else:
+        # User selects their name
+        st.markdown("### Select Your Name")
+        selected_staff = st.selectbox("Staff Name:", options=[''] + sorted(staff_list))
+
+        if selected_staff:
+            staff_role = role_mapping.get(selected_staff, 'Unknown')
+
+            if staff_role == 'Unknown':
+                st.error("Could not determine your role. Please contact your supervisor.")
+                return
+
+            st.markdown("---")
+            display_user_interface(selected_staff, staff_role, excel_handler, track_manager)

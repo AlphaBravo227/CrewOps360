@@ -38,6 +38,7 @@ except ImportError:
 from modules.db_utils import initialize_database
 # Import existing modules that actually work
 from modules.security import display_user_login, display_session_info, check_admin_access
+from modules.summer_leave import display_summer_leave_app
 from modules.shift_definitions import day_shifts, night_shifts
 from modules.shift_utils import get_shift_end_time, calculate_rest_conflict
 from modules.staff_utils import is_special_conflict
@@ -239,13 +240,38 @@ def display_module_selection():
         """, unsafe_allow_html=True)
         
         training_button_disabled = not TRAINING_MODULES_AVAILABLE
-        if st.button("📚 Enter Training & Events", use_container_width=True, 
+        if st.button("📚 Enter Training & Events", use_container_width=True,
                     key="training_btn", disabled=training_button_disabled):
             if TRAINING_MODULES_AVAILABLE:
                 st.session_state.selected_module = "training_events"
                 st.rerun()
             else:
                 st.error("Training modules are not properly configured. Please check the training folder setup.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Summer Leave Requests Module
+        st.markdown("""
+        <div class="module-card">
+            <div style="text-align: center;">
+                <h2 style="color: #FF9800; margin-bottom: 1rem;">☀️ Summer Leave Requests</h2>
+                <p style="color: #333; font-size: 1.1rem; margin-bottom: 1.5rem; line-height: 1.6;">
+                    Select your preferred week for summer vacation leave time.
+                    View available weeks and manage your selection.
+                </p>
+                <ul style="text-align: left; color: #555; margin-bottom: 2rem;">
+                    <li>📅 View available weeks (May 13 - Sep 12, 2026)</li>
+                    <li>✅ Select your preferred week</li>
+                    <li>📊 View your work schedule for each week</li>
+                    <li>🔄 Change or cancel your selection</li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("☀️ Enter Summer Leave Requests", use_container_width=True, key="summer_leave_btn"):
+            st.session_state.selected_module = "summer_leave"
+            st.rerun()
 
 # Enhanced Training Events App Section with Educator Signup
 # This replaces the display_training_events_app() function in app.py
@@ -1923,4 +1949,38 @@ elif st.session_state.selected_module == "clinical_track_hub":
 elif st.session_state.selected_module == "training_events":
     # Show Training & Events application (FULL VERSION)
     display_training_events_app()
+elif st.session_state.selected_module == "summer_leave":
+    # Show Summer Leave Requests application
+    # Initialize Excel handler and track manager if not already done
+    if 'training_excel_handler' not in st.session_state or st.session_state.training_excel_handler is None:
+        from training_modules.excel_handler import ExcelHandler
+        excel_path = 'training/upload/MASTER Education Classes Roster.xlsx'
+        if os.path.exists(excel_path):
+            st.session_state.training_excel_handler = ExcelHandler(excel_path)
+        else:
+            st.error(f"Excel file not found: {excel_path}")
+            st.stop()
+
+    if 'training_track_manager' not in st.session_state or st.session_state.training_track_manager is None:
+        from training_modules.track_manager import TrainingTrackManager
+        st.session_state.training_track_manager = TrainingTrackManager('data/medflight_tracks.db')
+
+        # Load tracks from database
+        st.session_state.training_track_manager.reload_tracks()
+
+        # Set up Excel handlers for CCEMT schedules
+        if 'tracks_excel_handler' not in st.session_state:
+            from training_modules.excel_handler import ExcelHandler
+            tracks_excel_path = 'upload files/Tracks.xlsx'
+            if os.path.exists(tracks_excel_path):
+                st.session_state.tracks_excel_handler = ExcelHandler(tracks_excel_path)
+                st.session_state.training_track_manager.set_excel_handler(
+                    tracks_excel_handler=st.session_state.tracks_excel_handler,
+                    enrollment_excel_handler=st.session_state.training_excel_handler
+                )
+
+    display_summer_leave_app(
+        st.session_state.training_excel_handler,
+        st.session_state.training_track_manager
+    )
 

@@ -237,7 +237,31 @@ def initialize_database():
             cursor.execute('ALTER TABLE tracks ADD COLUMN has_preassignments INTEGER DEFAULT 0')
         if 'preassignment_count' not in columns:
             cursor.execute('ALTER TABLE tracks ADD COLUMN preassignment_count INTEGER DEFAULT 0')
-        
+
+        # NEW: Create summer_leave_requests table for vacation time selections
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS summer_leave_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            staff_name TEXT NOT NULL UNIQUE,
+            role TEXT NOT NULL,
+            week_start_date TEXT NOT NULL,
+            week_end_date TEXT NOT NULL,
+            selection_date TEXT NOT NULL,
+            modified_date TEXT,
+            status TEXT DEFAULT 'active'
+        )
+        ''')
+
+        # NEW: Create summer_leave_config table for LT_OPEN status per user
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS summer_leave_config (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            staff_name TEXT NOT NULL UNIQUE,
+            lt_open INTEGER DEFAULT 0,
+            modified_date TEXT NOT NULL
+        )
+        ''')
+
         # Commit changes
         conn.commit()
         
@@ -1301,6 +1325,294 @@ def get_all_location_preferences():
         error_message = f"Error retrieving all location preferences: {str(e)}"
         print(error_message)
         return (False, error_message)
+
+# ============================================================================
+# SUMMER LEAVE REQUESTS DATABASE FUNCTIONS
+# ============================================================================
+
+def get_summer_leave_config(staff_name):
+    """
+    Get LT_OPEN status for a staff member
+
+    Args:
+        staff_name (str): Name of staff member
+
+    Returns:
+        bool: True if LT is open for this staff member, False otherwise
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT lt_open FROM summer_leave_config
+            WHERE staff_name = ?
+        """, (staff_name,))
+
+        result = cursor.fetchone()
+
+        if result:
+            return bool(result[0])
+        else:
+            # Default to False if no config exists
+            return False
+
+    except Exception as e:
+        print(f"Error getting summer leave config for {staff_name}: {str(e)}")
+        return False
+
+def set_summer_leave_config(staff_name, lt_open):
+    """
+    Set LT_OPEN status for a staff member
+
+    Args:
+        staff_name (str): Name of staff member
+        lt_open (bool): Whether LT is open for this staff member
+
+    Returns:
+        tuple: (success, message)
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        modified_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        lt_open_int = 1 if lt_open else 0
+
+        # Check if config exists
+        cursor.execute("SELECT id FROM summer_leave_config WHERE staff_name = ?", (staff_name,))
+        existing = cursor.fetchone()
+
+        if existing:
+            cursor.execute("""
+                UPDATE summer_leave_config
+                SET lt_open = ?, modified_date = ?
+                WHERE staff_name = ?
+            """, (lt_open_int, modified_date, staff_name))
+        else:
+            cursor.execute("""
+                INSERT INTO summer_leave_config (staff_name, lt_open, modified_date)
+                VALUES (?, ?, ?)
+            """, (staff_name, lt_open_int, modified_date))
+
+        conn.commit()
+        status = "enabled" if lt_open else "disabled"
+        return (True, f"LT selection {status} for {staff_name}")
+
+    except Exception as e:
+        error_msg = f"Error setting summer leave config: {str(e)}"
+        print(error_msg)
+        return (False, error_msg)
+
+def get_summer_leave_selection(staff_name):
+    """
+    Get summer leave selection for a staff member
+
+    Args:
+        staff_name (str): Name of staff member
+
+    Returns:
+        dict or None: Selection details if exists, None otherwise
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT id, role, week_start_date, week_end_date, selection_date, modified_date
+            FROM summer_leave_requests
+            WHERE staff_name = ? AND status = 'active'
+        """, (staff_name,))
+
+        result = cursor.fetchone()
+
+        if result:
+            return {
+                'id': result[0],
+                'staff_name': staff_name,
+                'role': result[1],
+                'week_start_date': result[2],
+                'week_end_date': result[3],
+                'selection_date': result[4],
+                'modified_date': result[5]
+            }
+        else:
+            return None
+
+    except Exception as e:
+        print(f"Error getting summer leave selection for {staff_name}: {str(e)}")
+        return None
+
+def save_summer_leave_selection(staff_name, role, week_start_date, week_end_date):
+    """
+    Save or update summer leave selection for a staff member
+
+    Args:
+        staff_name (str): Name of staff member
+        role (str): Staff member's role
+        week_start_date (str): Start date of week (YYYY-MM-DD)
+        week_end_date (str): End date of week (YYYY-MM-DD)
+
+    Returns:
+        tuple: (success, message)
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Check if selection already exists
+        cursor.execute("SELECT id FROM summer_leave_requests WHERE staff_name = ?", (staff_name,))
+        existing = cursor.fetchone()
+
+        if existing:
+            cursor.execute("""
+                UPDATE summer_leave_requests
+                SET role = ?, week_start_date = ?, week_end_date = ?, modified_date = ?, status = 'active'
+                WHERE staff_name = ?
+            """, (role, week_start_date, week_end_date, current_date, staff_name))
+            message = f"Updated leave selection for {staff_name}"
+        else:
+            cursor.execute("""
+                INSERT INTO summer_leave_requests
+                (staff_name, role, week_start_date, week_end_date, selection_date, status)
+                VALUES (?, ?, ?, ?, ?, 'active')
+            """, (staff_name, role, week_start_date, week_end_date, current_date))
+            message = f"Saved leave selection for {staff_name}"
+
+        conn.commit()
+        return (True, message)
+
+    except Exception as e:
+        error_msg = f"Error saving summer leave selection: {str(e)}"
+        print(error_msg)
+        return (False, error_msg)
+
+def cancel_summer_leave_selection(staff_name):
+    """
+    Cancel summer leave selection for a staff member
+
+    Args:
+        staff_name (str): Name of staff member
+
+    Returns:
+        tuple: (success, message)
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        cursor.execute("""
+            UPDATE summer_leave_requests
+            SET status = 'cancelled', modified_date = ?
+            WHERE staff_name = ? AND status = 'active'
+        """, (current_date, staff_name))
+
+        if cursor.rowcount > 0:
+            conn.commit()
+            return (True, f"Cancelled leave selection for {staff_name}")
+        else:
+            return (False, "No active selection found to cancel")
+
+    except Exception as e:
+        error_msg = f"Error cancelling summer leave selection: {str(e)}"
+        print(error_msg)
+        return (False, error_msg)
+
+def get_week_selections_by_role(week_start_date, role):
+    """
+    Get count of selections for a specific week and role
+
+    Args:
+        week_start_date (str): Start date of week (YYYY-MM-DD)
+        role (str): Role to filter by
+
+    Returns:
+        int: Number of selections for this week and role
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT COUNT(*) FROM summer_leave_requests
+            WHERE week_start_date = ? AND role = ? AND status = 'active'
+        """, (week_start_date, role))
+
+        result = cursor.fetchone()
+        return result[0] if result else 0
+
+    except Exception as e:
+        print(f"Error getting week selections: {str(e)}")
+        return 0
+
+def get_all_summer_leave_selections():
+    """
+    Get all active summer leave selections for admin view
+
+    Returns:
+        list: List of all active selections
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT staff_name, role, week_start_date, week_end_date, selection_date, modified_date
+            FROM summer_leave_requests
+            WHERE status = 'active'
+            ORDER BY role, staff_name
+        """)
+
+        results = cursor.fetchall()
+
+        selections = []
+        for row in results:
+            selections.append({
+                'staff_name': row[0],
+                'role': row[1],
+                'week_start_date': row[2],
+                'week_end_date': row[3],
+                'selection_date': row[4],
+                'modified_date': row[5]
+            })
+
+        return selections
+
+    except Exception as e:
+        print(f"Error getting all summer leave selections: {str(e)}")
+        return []
+
+def get_all_summer_leave_configs():
+    """
+    Get all LT_OPEN configurations for admin view
+
+    Returns:
+        dict: Dictionary mapping staff_name to lt_open status
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT staff_name, lt_open
+            FROM summer_leave_config
+        """)
+
+        results = cursor.fetchall()
+
+        configs = {}
+        for row in results:
+            configs[row[0]] = bool(row[1])
+
+        return configs
+
+    except Exception as e:
+        print(f"Error getting all summer leave configs: {str(e)}")
+        return {}
 
 # Clean up connections when the module is unloaded
 import atexit
