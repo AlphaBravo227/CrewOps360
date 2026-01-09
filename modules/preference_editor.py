@@ -995,7 +995,7 @@ def display_location_preference_editor(staff_name):
 
     with info_col2:
         st.markdown("#### 🛌 Reduced Rest OK")
-        st.caption("Accept 10 hours rest instead of 12?")
+        st.caption("Accept 10 hours rest instead of 12 which could allow for more flexible scheduling and higher preference availability on subsequent shifts?")
 
         # Get current value
         current_reduced_rest = None
@@ -1022,7 +1022,7 @@ def display_location_preference_editor(staff_name):
 
     with info_col3:
         st.markdown("#### 🔄 N to D Flex")
-        st.caption("Flexible with night-to-day transitions?")
+        st.caption("By seniority and schedule needs, I would like to opt-in to automatic Night-to-Day transitions?")
 
         # Get current value
         current_n_to_d_flex = None
