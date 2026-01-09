@@ -165,7 +165,7 @@ def display_track_schedule(schedule_by_week, selected_week_display=None):
     st.markdown("### Your Schedule for Summer Leave Period")
 
     for week_display, daily_schedule in schedule_by_week.items():
-        # Highlight selected week
+        # Highlight selected week with star indicator
         if week_display == selected_week_display:
             st.markdown(f"**📅 {week_display}** ⭐ **(Selected)**")
         else:
@@ -258,14 +258,18 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
         st.warning("No weeks are currently available for your role.")
         return
 
-    # Week selection dropdown
+    # Week selection dropdown with placeholder
+    placeholder = "-- Select a week --"
+    dropdown_options = [placeholder] + week_options
+
     selected_option = st.selectbox(
         "Choose a week:",
-        options=week_options,
+        options=dropdown_options,
         index=0
     )
 
-    if selected_option:
+    # Only show schedule and submit button if a valid week is selected (not placeholder)
+    if selected_option and selected_option != placeholder:
         week_start_str, week_end_str, display_str = week_mapping[selected_option]
 
         # Show track schedule for available weeks
