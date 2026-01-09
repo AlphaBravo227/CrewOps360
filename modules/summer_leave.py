@@ -18,7 +18,8 @@ from modules.db_utils import (
 )
 
 # Constants
-SUMMER_START_DATE = datetime(2026, 5, 13)  # May 13, 2026 (Sunday)
+# May 13, 2026 is a Wednesday, so we start from the first Sunday (May 17) for proper week alignment
+SUMMER_START_DATE = datetime(2026, 5, 17)  # May 17, 2026 (Sunday) - First Sunday on/after May 13
 SUMMER_END_DATE = datetime(2026, 9, 12)    # September 12, 2026 (Saturday)
 
 # Weekly caps by role
@@ -138,7 +139,8 @@ def get_staff_track_schedule(staff_name, role, track_manager):
         current_day = week_start
 
         while current_day <= week_end:
-            shift = track_manager.get_staff_shift(staff_name, current_day.strftime('%Y-%m-%d'))
+            # Format date as MM/DD/YYYY for track_manager
+            shift = track_manager.get_staff_shift(staff_name, current_day.strftime('%m/%d/%Y'))
             daily_schedule.append({
                 'date': current_day.strftime('%a %m/%d'),
                 'shift': shift if shift else 'Off'
