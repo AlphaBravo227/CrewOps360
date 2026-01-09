@@ -18,8 +18,7 @@ from modules.db_utils import (
 )
 
 # Constants
-# May 13, 2026 is a Wednesday, so we start from the first Sunday (May 17) for proper week alignment
-SUMMER_START_DATE = datetime(2026, 5, 17)  # May 17, 2026 (Sunday) - First Sunday on/after May 13
+SUMMER_START_DATE = datetime(2026, 5, 31)  # May 31, 2026 (Sunday)
 SUMMER_END_DATE = datetime(2026, 9, 12)    # September 12, 2026 (Saturday)
 
 # Weekly caps by role
