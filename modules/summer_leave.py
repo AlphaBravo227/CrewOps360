@@ -268,14 +268,20 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
         index=0
     )
 
-    # Only show schedule and submit button if a valid week is selected (not placeholder)
+    # Always show track schedule so user can see when they're working
+    if schedule_by_week:
+        st.markdown("---")
+        # If a valid week is selected, highlight it in the schedule
+        if selected_option and selected_option != placeholder:
+            week_start_str, week_end_str, display_str = week_mapping[selected_option]
+            display_track_schedule(schedule_by_week, display_str)
+        else:
+            # Show schedule without any week highlighted
+            display_track_schedule(schedule_by_week)
+
+    # Only show submit button if a valid week is selected (not placeholder)
     if selected_option and selected_option != placeholder:
         week_start_str, week_end_str, display_str = week_mapping[selected_option]
-
-        # Show track schedule for available weeks
-        if schedule_by_week:
-            st.markdown("---")
-            display_track_schedule(schedule_by_week, display_str)
 
         # Submit button
         st.markdown("---")
