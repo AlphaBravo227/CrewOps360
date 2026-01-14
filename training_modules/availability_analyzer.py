@@ -180,18 +180,34 @@ class AvailabilityAnalyzer:
                 })
         
         else:
-            # Single session class
+            # Single session class - extract time information
+            start_time = class_details.get('time_1_start', '')
+            end_time = class_details.get('time_1_end', '')
+
+            # Build display time with actual class time if available
+            if start_time and end_time:
+                session_time = f"{start_time}-{end_time}"
+                time_display = f"({start_time}-{end_time})"
+            else:
+                session_time = None
+                time_display = ""
+
             if nurses_medic_separate:
                 # Create separate options for nurses and medics
+                nurse_display = f"Nurse Slots {time_display}".strip()
+                medic_display = f"Medic Slots {time_display}".strip()
+
                 session_options.append({
-                    'display_time': 'Nurse Slots',
+                    'session_time': session_time,
+                    'display_time': nurse_display,
                     'role_requirement': 'Nurse',
                     'max_students': max_students // 2,
                     'type': 'nurse_medic_separate_single',
                     'is_two_day': is_two_day
                 })
                 session_options.append({
-                    'display_time': 'Medic Slots',
+                    'session_time': session_time,
+                    'display_time': medic_display,
                     'role_requirement': 'Medic',
                     'max_students': max_students // 2,
                     'type': 'nurse_medic_separate_single',
@@ -199,8 +215,11 @@ class AvailabilityAnalyzer:
                 })
             else:
                 # Regular single session
+                regular_display = f"Class Time: {start_time} - {end_time}" if (start_time and end_time) else "Regular Class"
+
                 session_options.append({
-                    'display_time': 'Regular Class',
+                    'session_time': session_time,
+                    'display_time': regular_display,
                     'role_requirement': None,
                     'max_students': max_students,
                     'type': 'regular_single',
