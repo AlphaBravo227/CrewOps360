@@ -150,13 +150,14 @@ def get_staff_track_schedule(staff_name, role, track_manager):
 
     return schedule_by_week
 
-def display_track_schedule(schedule_by_week, selected_week_display=None):
+def display_track_schedule(schedule_by_week, selected_week_display=None, week_availability=None):
     """
     Display track schedule in a compact format
 
     Args:
         schedule_by_week (dict): Schedule data by week
         selected_week_display (str): Highlight this week if provided
+        week_availability (dict): Dictionary mapping week display strings to availability status
     """
     if not schedule_by_week:
         st.info("No track data available for your role")
@@ -165,11 +166,18 @@ def display_track_schedule(schedule_by_week, selected_week_display=None):
     st.markdown("### Your Schedule for Summer Leave Period")
 
     for week_display, daily_schedule in schedule_by_week.items():
-        # Highlight selected week with star indicator
+        # Check if this week is available
+        is_available = week_availability.get(week_display, True) if week_availability else True
+
+        # Build the header with availability indicator
         if week_display == selected_week_display:
-            st.markdown(f"**📅 {week_display}** ⭐ **(Selected)**")
+            header = f"**📅 {week_display}** ⭐ **(Selected)**"
+        elif not is_available:
+            header = f"**📅 {week_display}** 🔴 **FULL - Not Available**"
         else:
-            st.markdown(f"**📅 {week_display}**")
+            header = f"**📅 {week_display}**"
+
+        st.markdown(header)
 
         # Create a compact display of the week
         cols = st.columns(len(daily_schedule))
@@ -239,6 +247,7 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
 
     week_options = []
     week_mapping = {}
+    week_availability = {}  # Track availability for each week
 
     for week_start_str, week_end_str, display_str in weeks:
         # Check availability for this week
@@ -248,6 +257,9 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
         is_available = selections_count < cap
         status = "Available" if is_available else "Full"
 
+        # Store availability for display in schedule
+        week_availability[display_str] = is_available
+
         option_label = f"{display_str} - {status} ({selections_count}/{cap})"
 
         if is_available:
@@ -256,6 +268,10 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
 
     if not week_options:
         st.warning("No weeks are currently available for your role.")
+        # Still show schedule even if no weeks available, so user can see their shifts
+        if schedule_by_week:
+            st.markdown("---")
+            display_track_schedule(schedule_by_week, None, week_availability)
         return
 
     # Week selection dropdown with placeholder
@@ -274,10 +290,10 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
         # If a valid week is selected, highlight it in the schedule
         if selected_option and selected_option != placeholder:
             week_start_str, week_end_str, display_str = week_mapping[selected_option]
-            display_track_schedule(schedule_by_week, display_str)
+            display_track_schedule(schedule_by_week, display_str, week_availability)
         else:
             # Show schedule without any week highlighted
-            display_track_schedule(schedule_by_week)
+            display_track_schedule(schedule_by_week, None, week_availability)
 
     # Only show submit button if a valid week is selected (not placeholder)
     if selected_option and selected_option != placeholder:
