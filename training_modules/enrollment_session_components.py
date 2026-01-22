@@ -369,10 +369,14 @@ class EnrollmentSessionComponents:
         
         if option['type'] == 'nurse_medic_separate_single':
             with st.container():
+                # Display time information if available
+                if option.get('display_time'):
+                    st.write(f"**{option['display_time']}**")
+
                 header_text = "**Current Enrollments:**"
                 if is_two_day:
                     header_text = "**Current Enrollments (2-Day Class):**"
-                
+
                 st.write(header_text)
                 
                 # Show weekly limit warning if applicable
@@ -451,10 +455,14 @@ class EnrollmentSessionComponents:
         elif option['type'] == 'regular_single':
             # Handle regular single session classes
             with st.container():
+                # Display time information if available
+                if option.get('display_time'):
+                    st.write(f"**{option['display_time']}**")
+
                 header_text = "**Current Enrollments:**"
                 if is_two_day:
                     header_text = "**Current Enrollments (2-Day Class):**"
-                
+
                 st.write(header_text)
                 
                 # Show weekly limit warning if applicable
