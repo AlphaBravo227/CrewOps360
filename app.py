@@ -256,7 +256,7 @@ def display_module_selection():
             <div style="text-align: center;">
                 <h2 style="color: #FF9800; margin-bottom: 1rem;">☀️ Summer Leave Requests</h2>
                 <p style="color: #333; font-size: 1.1rem; margin-bottom: 1.5rem; line-height: 1.6;">
-                    Select your preferred week for summer vacation leave time.
+                    Select your week for summer vacation leave time.
                     View available weeks and manage your selection.
                 </p>
                 <ul style="text-align: left; color: #555; margin-bottom: 2rem;">
