@@ -369,15 +369,9 @@ class EnrollmentSessionComponents:
         
         if option['type'] == 'nurse_medic_separate_single':
             with st.container():
-                # DEBUG: Check what we have
-                print(f"DEBUG - nurse_medic_separate_single option keys: {list(option.keys())}")
-                print(f"DEBUG - display_time value: '{option.get('display_time')}'")
-
                 # Display time information if available
                 if option.get('display_time'):
                     st.write(f"**{option['display_time']}**")
-                else:
-                    print("DEBUG - display_time is empty/None, not displaying")
 
                 header_text = "**Current Enrollments:**"
                 if is_two_day:
@@ -461,15 +455,9 @@ class EnrollmentSessionComponents:
         elif option['type'] == 'regular_single':
             # Handle regular single session classes
             with st.container():
-                # DEBUG: Check what we have
-                print(f"DEBUG - regular_single option keys: {list(option.keys())}")
-                print(f"DEBUG - display_time value: '{option.get('display_time')}'")
-
                 # Display time information if available
                 if option.get('display_time'):
                     st.write(f"**{option['display_time']}**")
-                else:
-                    print("DEBUG - display_time is empty/None, not displaying")
 
                 header_text = "**Current Enrollments:**"
                 if is_two_day:

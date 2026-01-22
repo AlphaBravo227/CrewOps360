@@ -831,15 +831,10 @@ class EnrollmentManager:
             end_time = class_details.get('time_1_end', '')
             display_time = None
 
-            # DEBUG: Print what we got
-            print(f"DEBUG - Class: {class_name}, start_time: '{start_time}', end_time: '{end_time}'")
-            print(f"DEBUG - class_details keys: {list(class_details.keys())}")
-
             if start_time and end_time:
                 display_time = f"{start_time}-{end_time}"
                 if is_two_day:
                     display_time += " (2-Day Class)"
-                print(f"DEBUG - display_time set to: '{display_time}'")
 
             if nurses_medic_separate:
                 # Single session with nurse/medic separation (and possibly CCEMT)
