@@ -102,6 +102,7 @@ class AdminAccess:
             ("📈 Enrollment Reports", "enrollment_reports", "View and export enrollment data"),
             ("👥 Manage Staff", "manage_staff", "View staff enrollment status"),
             ("📚 Manage Classes", "manage_classes", "Configure class settings and schedules"),
+            ("📝 Manage Signups", "manage_signups", "Add/remove student and educator signups"),
             ("📄 Data Export", "data_management", "Export training data"),
             ("📊 System Statistics", "system_stats", "View training system usage"),
             ("🗂️ Database Maintenance", "database_maintenance", "Training database operations"),
@@ -194,6 +195,8 @@ class AdminAccess:
             self._show_manage_staff()
         elif function_key == "manage_classes":
             self._show_manage_classes()
+        elif function_key == "manage_signups":
+            self._show_manage_signups()
         elif function_key == "data_management":
             self._show_data_management()
         elif function_key == "system_stats":
@@ -900,10 +903,514 @@ class AdminAccess:
                     st.dataframe(utilization_df, use_container_width=True)
                 else:
                     st.info("No utilization data available")
-                    
+
             except Exception as e:
                 st.error(f"Error loading utilization data: {str(e)}")
-        
+
+    def _show_manage_signups(self):
+        """Show signup management functionality for admin to add/remove enrollments"""
+        st.subheader("📝 Manage Signups")
+        st.caption("Add, remove, or modify student and educator signups with capacity override capability")
+
+        if not self.excel_admin_functions:
+            st.error("Admin functions not initialized")
+            return
+
+        # Get required components from session state
+        unified_db = st.session_state.get('unified_db')
+        excel_handler = st.session_state.get('training_excel_handler')
+        enrollment_manager = st.session_state.get('training_enrollment_manager')
+        educator_manager = st.session_state.get('training_educator_manager')
+
+        if not all([unified_db, excel_handler]):
+            st.error("Required components not initialized. Please ensure training system is properly loaded.")
+            return
+
+        tab1, tab2 = st.tabs(["👤 Student Enrollments", "👨‍🏫 Educator Signups"])
+
+        with tab1:
+            self._show_admin_student_enrollments(unified_db, excel_handler, enrollment_manager)
+
+        with tab2:
+            self._show_admin_educator_signups(unified_db, excel_handler, educator_manager)
+
+    def _show_admin_student_enrollments(self, unified_db, excel_handler, enrollment_manager):
+        """Admin interface for managing student enrollments"""
+        st.write("### Student Enrollment Management")
+
+        # Two columns: Add enrollment and View/Remove enrollments
+        col_add, col_view = st.columns([1, 1])
+
+        with col_add:
+            st.write("#### ➕ Add Student Enrollment")
+            st.info("⚠️ **Admin Override**: Enrollments added here bypass capacity limits and conflict checks")
+
+            with st.form("admin_add_enrollment_form", clear_on_submit=True):
+                # Get all staff
+                all_staff = excel_handler.get_staff_list()
+                selected_staff = st.selectbox(
+                    "Select Staff Member:",
+                    options=[""] + sorted(all_staff),
+                    key="admin_enroll_staff"
+                )
+
+                # Get all classes
+                all_classes = excel_handler.get_all_classes()
+                selected_class = st.selectbox(
+                    "Select Class:",
+                    options=[""] + sorted(all_classes),
+                    key="admin_enroll_class"
+                )
+
+                # Date input - will show available dates based on class selection
+                class_dates = []
+                if selected_class:
+                    class_details = excel_handler.get_class_details(selected_class)
+                    if class_details:
+                        for i in range(1, 15):
+                            date_key = f'date_{i}'
+                            if date_key in class_details and class_details[date_key]:
+                                class_dates.append(class_details[date_key])
+
+                selected_date = st.selectbox(
+                    "Select Date:",
+                    options=[""] + class_dates if class_dates else ["No dates available"],
+                    key="admin_enroll_date"
+                )
+
+                # Role selection
+                role = st.selectbox(
+                    "Role:",
+                    options=["General", "Nurse", "Medic", "CCEMT"],
+                    key="admin_enroll_role"
+                )
+
+                # Meeting type (for staff meetings)
+                meeting_type = st.selectbox(
+                    "Meeting Type (Staff Meetings only):",
+                    options=["None", "Virtual", "LIVE"],
+                    key="admin_enroll_meeting_type"
+                )
+                meeting_type_value = None if meeting_type == "None" else meeting_type
+
+                # Session time (for multi-session classes)
+                session_time = st.text_input(
+                    "Session Time (optional, e.g., '08:00-12:00'):",
+                    key="admin_enroll_session_time"
+                )
+                session_time_value = session_time if session_time else None
+
+                # Override options
+                override_conflict = st.checkbox(
+                    "Override schedule conflicts",
+                    value=True,
+                    key="admin_enroll_override_conflict"
+                )
+
+                override_capacity = st.checkbox(
+                    "Override capacity limits (allow enrollment even if class is full)",
+                    value=True,
+                    key="admin_enroll_override_capacity"
+                )
+
+                admin_notes = st.text_area(
+                    "Admin Notes (reason for override):",
+                    key="admin_enroll_notes"
+                )
+
+                submitted = st.form_submit_button("Add Enrollment", type="primary", use_container_width=True)
+
+                if submitted:
+                    if not selected_staff or not selected_class or not selected_date or selected_date == "No dates available":
+                        st.error("Please select staff member, class, and date")
+                    else:
+                        # Perform admin enrollment
+                        success, message = self._admin_add_enrollment(
+                            unified_db, excel_handler, enrollment_manager,
+                            selected_staff, selected_class, selected_date, role,
+                            meeting_type_value, session_time_value,
+                            override_conflict, override_capacity, admin_notes
+                        )
+                        if success:
+                            st.success(f"✅ {message}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {message}")
+
+        with col_view:
+            st.write("#### 📋 View/Remove Enrollments")
+
+            # Filter options
+            filter_col1, filter_col2 = st.columns(2)
+            with filter_col1:
+                filter_class = st.selectbox(
+                    "Filter by Class:",
+                    options=["All Classes"] + sorted(excel_handler.get_all_classes()),
+                    key="admin_view_enroll_class_filter"
+                )
+            with filter_col2:
+                filter_staff = st.selectbox(
+                    "Filter by Staff:",
+                    options=["All Staff"] + sorted(excel_handler.get_staff_list()),
+                    key="admin_view_enroll_staff_filter"
+                )
+
+            # Get enrollments based on filters
+            enrollments = self._get_filtered_enrollments(unified_db, filter_class, filter_staff)
+
+            if enrollments:
+                st.write(f"**Found {len(enrollments)} enrollment(s)**")
+
+                for enrollment in enrollments:
+                    with st.container():
+                        col1, col2, col3 = st.columns([3, 2, 1])
+                        with col1:
+                            st.write(f"**{enrollment['staff_name']}**")
+                            st.caption(f"{enrollment['class_name']}")
+                        with col2:
+                            st.write(f"📅 {enrollment['class_date']}")
+                            if enrollment.get('role') and enrollment['role'] != 'General':
+                                st.caption(f"Role: {enrollment['role']}")
+                            if enrollment.get('meeting_type'):
+                                st.caption(f"Type: {enrollment['meeting_type']}")
+                        with col3:
+                            if st.button("🗑️", key=f"remove_enroll_{enrollment['id']}", help="Remove enrollment"):
+                                if self._admin_remove_enrollment(unified_db, enrollment['id']):
+                                    st.success("Enrollment removed")
+                                    st.rerun()
+                                else:
+                                    st.error("Failed to remove enrollment")
+                        st.markdown("---")
+            else:
+                st.info("No enrollments found matching the filters")
+
+    def _show_admin_educator_signups(self, unified_db, excel_handler, educator_manager):
+        """Admin interface for managing educator signups"""
+        st.write("### Educator Signup Management")
+
+        # Two columns: Add signup and View/Remove signups
+        col_add, col_view = st.columns([1, 1])
+
+        with col_add:
+            st.write("#### ➕ Add Educator Signup")
+            st.info("⚠️ **Admin Override**: Signups added here bypass capacity limits and conflict checks")
+
+            with st.form("admin_add_educator_form", clear_on_submit=True):
+                # Get all staff
+                all_staff = excel_handler.get_staff_list()
+                selected_staff = st.selectbox(
+                    "Select Staff Member:",
+                    options=[""] + sorted(all_staff),
+                    key="admin_educator_staff"
+                )
+
+                # Get classes that need educators
+                classes_needing_educators = []
+                all_classes = excel_handler.get_all_classes()
+                for class_name in all_classes:
+                    class_details = excel_handler.get_class_details(class_name)
+                    if class_details:
+                        instructor_count = class_details.get('instructors_per_day', 0)
+                        try:
+                            instructor_count = int(float(instructor_count)) if instructor_count else 0
+                        except (ValueError, TypeError):
+                            instructor_count = 0
+                        if instructor_count > 0:
+                            classes_needing_educators.append(class_name)
+
+                selected_class = st.selectbox(
+                    "Select Class:",
+                    options=[""] + sorted(classes_needing_educators),
+                    key="admin_educator_class"
+                )
+
+                # Date input
+                class_dates = []
+                if selected_class:
+                    class_details = excel_handler.get_class_details(selected_class)
+                    if class_details:
+                        is_two_day = class_details.get('is_two_day_class', 'No').lower() == 'yes'
+                        for i in range(1, 15):
+                            date_key = f'date_{i}'
+                            if date_key in class_details and class_details[date_key]:
+                                base_date = class_details[date_key]
+                                class_dates.append(base_date)
+                                if is_two_day:
+                                    try:
+                                        from datetime import datetime, timedelta
+                                        date_obj = datetime.strptime(base_date, '%m/%d/%Y')
+                                        day_2 = (date_obj + timedelta(days=1)).strftime('%m/%d/%Y')
+                                        class_dates.append(day_2)
+                                    except ValueError:
+                                        pass
+
+                selected_date = st.selectbox(
+                    "Select Date:",
+                    options=[""] + class_dates if class_dates else ["No dates available"],
+                    key="admin_educator_date"
+                )
+
+                # Override options
+                override_conflict = st.checkbox(
+                    "Override schedule conflicts",
+                    value=True,
+                    key="admin_educator_override_conflict"
+                )
+
+                override_capacity = st.checkbox(
+                    "Override educator capacity limits",
+                    value=True,
+                    key="admin_educator_override_capacity"
+                )
+
+                admin_notes = st.text_area(
+                    "Admin Notes (reason for override):",
+                    key="admin_educator_notes"
+                )
+
+                submitted = st.form_submit_button("Add Educator Signup", type="primary", use_container_width=True)
+
+                if submitted:
+                    if not selected_staff or not selected_class or not selected_date or selected_date == "No dates available":
+                        st.error("Please select staff member, class, and date")
+                    else:
+                        # Perform admin educator signup
+                        success, message = self._admin_add_educator_signup(
+                            unified_db, excel_handler, educator_manager,
+                            selected_staff, selected_class, selected_date,
+                            override_conflict, override_capacity, admin_notes
+                        )
+                        if success:
+                            st.success(f"✅ {message}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {message}")
+
+        with col_view:
+            st.write("#### 📋 View/Remove Educator Signups")
+
+            # Filter options
+            filter_col1, filter_col2 = st.columns(2)
+            with filter_col1:
+                filter_class = st.selectbox(
+                    "Filter by Class:",
+                    options=["All Classes"] + sorted(classes_needing_educators) if classes_needing_educators else ["All Classes"],
+                    key="admin_view_educator_class_filter"
+                )
+            with filter_col2:
+                filter_staff = st.selectbox(
+                    "Filter by Staff:",
+                    options=["All Staff"] + sorted(excel_handler.get_staff_list()),
+                    key="admin_view_educator_staff_filter"
+                )
+
+            # Get educator signups based on filters
+            signups = self._get_filtered_educator_signups(unified_db, filter_class, filter_staff)
+
+            if signups:
+                st.write(f"**Found {len(signups)} educator signup(s)**")
+
+                for signup in signups:
+                    with st.container():
+                        col1, col2, col3 = st.columns([3, 2, 1])
+                        with col1:
+                            st.write(f"**{signup['staff_name']}**")
+                            st.caption(f"{signup['class_name']}")
+                        with col2:
+                            st.write(f"📅 {signup['class_date']}")
+                            if signup.get('conflict_override'):
+                                st.caption("⚠️ Conflict override")
+                        with col3:
+                            if st.button("🗑️", key=f"remove_educator_{signup['id']}", help="Remove signup"):
+                                if self._admin_remove_educator_signup(unified_db, signup['id']):
+                                    st.success("Educator signup removed")
+                                    st.rerun()
+                                else:
+                                    st.error("Failed to remove signup")
+                        st.markdown("---")
+            else:
+                st.info("No educator signups found matching the filters")
+
+    def _admin_add_enrollment(self, unified_db, excel_handler, enrollment_manager,
+                              staff_name, class_name, class_date, role,
+                              meeting_type, session_time, override_conflict,
+                              override_capacity, admin_notes):
+        """Add enrollment with admin override capabilities"""
+        try:
+            # Build conflict details including admin notes
+            conflict_details = f"Admin override: {admin_notes}" if admin_notes else "Admin override"
+
+            # Direct database insert to bypass normal validations when override_capacity is True
+            if override_capacity:
+                # Use direct database method with admin bypass
+                success = unified_db.admin_add_enrollment(
+                    staff_name, class_name, class_date, role,
+                    meeting_type, session_time, True, conflict_details
+                )
+                if success:
+                    return True, f"Enrollment added for {staff_name} in {class_name} on {class_date}"
+                else:
+                    return False, "Failed to add enrollment (may already exist)"
+            else:
+                # Use normal enrollment process
+                if enrollment_manager:
+                    result = enrollment_manager.enroll_staff(
+                        staff_name, class_name, class_date, role,
+                        meeting_type, session_time, override_conflict
+                    )
+                    if result[0] == True:
+                        return True, result[1]
+                    elif result[0] == "duplicate_found":
+                        return False, "Staff already enrolled in this class"
+                    else:
+                        return False, result[1]
+                else:
+                    return False, "Enrollment manager not available"
+        except Exception as e:
+            return False, f"Error: {str(e)}"
+
+    def _admin_add_educator_signup(self, unified_db, excel_handler, educator_manager,
+                                   staff_name, class_name, class_date,
+                                   override_conflict, override_capacity, admin_notes):
+        """Add educator signup with admin override capabilities"""
+        try:
+            # Build conflict details including admin notes
+            conflict_details = f"Admin override: {admin_notes}" if admin_notes else "Admin override"
+
+            # Direct database insert to bypass normal validations when override_capacity is True
+            if override_capacity:
+                # Use direct database method with admin bypass
+                success = unified_db.admin_add_educator_signup(
+                    staff_name, class_name, class_date, True, conflict_details
+                )
+                if success:
+                    return True, f"Educator signup added for {staff_name} in {class_name} on {class_date}"
+                else:
+                    return False, "Failed to add educator signup (may already exist)"
+            else:
+                # Use normal signup process
+                if educator_manager:
+                    success, message = educator_manager.signup_as_educator(
+                        staff_name, class_name, class_date, override_conflict
+                    )
+                    return success, message
+                else:
+                    return False, "Educator manager not available"
+        except Exception as e:
+            return False, f"Error: {str(e)}"
+
+    def _admin_remove_enrollment(self, unified_db, enrollment_id):
+        """Remove an enrollment (admin action)"""
+        try:
+            return unified_db.cancel_enrollment(enrollment_id)
+        except Exception as e:
+            print(f"Error removing enrollment: {e}")
+            return False
+
+    def _admin_remove_educator_signup(self, unified_db, signup_id):
+        """Remove an educator signup (admin action)"""
+        try:
+            return unified_db.cancel_educator_signup(signup_id)
+        except Exception as e:
+            print(f"Error removing educator signup: {e}")
+            return False
+
+    def _get_filtered_enrollments(self, unified_db, class_filter, staff_filter):
+        """Get enrollments with optional filters"""
+        try:
+            unified_db.connect()
+
+            query = '''
+                SELECT id, staff_name, class_name, class_date, role, meeting_type,
+                       session_time, conflict_override, conflict_details, status
+                FROM training_enrollments
+                WHERE status = 'active'
+            '''
+            params = []
+
+            if class_filter and class_filter != "All Classes":
+                query += ' AND class_name = ?'
+                params.append(class_filter)
+
+            if staff_filter and staff_filter != "All Staff":
+                query += ' AND staff_name = ?'
+                params.append(staff_filter)
+
+            query += ' ORDER BY class_date DESC, staff_name'
+
+            unified_db.cursor.execute(query, params)
+            rows = unified_db.cursor.fetchall()
+
+            enrollments = []
+            for row in rows:
+                enrollments.append({
+                    'id': row['id'],
+                    'staff_name': row['staff_name'],
+                    'class_name': row['class_name'],
+                    'class_date': row['class_date'],
+                    'role': row['role'],
+                    'meeting_type': row['meeting_type'],
+                    'session_time': row['session_time'],
+                    'conflict_override': row['conflict_override'],
+                    'conflict_details': row['conflict_details'],
+                    'status': row['status']
+                })
+
+            unified_db.disconnect()
+            return enrollments
+        except Exception as e:
+            print(f"Error getting filtered enrollments: {e}")
+            if hasattr(unified_db, 'disconnect'):
+                unified_db.disconnect()
+            return []
+
+    def _get_filtered_educator_signups(self, unified_db, class_filter, staff_filter):
+        """Get educator signups with optional filters"""
+        try:
+            unified_db.connect()
+
+            query = '''
+                SELECT id, staff_name, class_name, class_date, conflict_override,
+                       conflict_details, signup_date, status
+                FROM training_educator_signups
+                WHERE status = 'active'
+            '''
+            params = []
+
+            if class_filter and class_filter != "All Classes":
+                query += ' AND class_name = ?'
+                params.append(class_filter)
+
+            if staff_filter and staff_filter != "All Staff":
+                query += ' AND staff_name = ?'
+                params.append(staff_filter)
+
+            query += ' ORDER BY class_date DESC, staff_name'
+
+            unified_db.cursor.execute(query, params)
+            rows = unified_db.cursor.fetchall()
+
+            signups = []
+            for row in rows:
+                signups.append({
+                    'id': row['id'],
+                    'staff_name': row['staff_name'],
+                    'class_name': row['class_name'],
+                    'class_date': row['class_date'],
+                    'conflict_override': row['conflict_override'],
+                    'conflict_details': row['conflict_details'],
+                    'signup_date': row['signup_date'],
+                    'status': row['status']
+                })
+
+            unified_db.disconnect()
+            return signups
+        except Exception as e:
+            print(f"Error getting filtered educator signups: {e}")
+            if hasattr(unified_db, 'disconnect'):
+                unified_db.disconnect()
+            return []
+
     def _show_track_status_manager(self):
         """Show track status management functionality"""
         st.subheader("🔧 Track Management System")

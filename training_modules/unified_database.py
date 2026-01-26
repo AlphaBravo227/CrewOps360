@@ -323,7 +323,98 @@ class UnifiedDatabase:
             return False
         finally:
             self.disconnect()
-    
+
+    def admin_add_enrollment(self, staff_name, class_name, class_date, role='General',
+                             meeting_type=None, session_time=None, conflict_override=False,
+                             conflict_details=None):
+        """
+        Admin method to add enrollment bypassing capacity checks.
+        This is used by admins to override normal enrollment limits.
+        """
+        print(f"DEBUG: admin_add_enrollment called for {staff_name}, {class_name}, {class_date}")
+
+        self.connect()
+        try:
+            # Check if this exact enrollment already exists
+            self.cursor.execute('''
+                SELECT id, status FROM training_enrollments
+                WHERE staff_name = ? AND class_name = ? AND class_date = ?
+                AND (meeting_type = ? OR (meeting_type IS NULL AND ? IS NULL))
+                AND (session_time = ? OR (session_time IS NULL AND ? IS NULL))
+            ''', (staff_name, class_name, class_date, meeting_type, meeting_type,
+                  session_time, session_time))
+
+            existing = self.cursor.fetchone()
+
+            if existing:
+                if existing['status'] == 'cancelled':
+                    # Reactivate cancelled enrollment
+                    print(f"DEBUG: Reactivating cancelled enrollment ID {existing['id']}")
+
+                    current_time = self._get_eastern_time()
+                    enrollment_timestamp = self._format_eastern_timestamp(current_time)
+                    override_timestamp = self._format_eastern_timestamp(current_time)
+
+                    self.cursor.execute('''
+                        UPDATE training_enrollments
+                        SET status = 'active', role = ?, conflict_override = ?,
+                            conflict_details = ?, override_acknowledged = ?, enrollment_date = ?
+                        WHERE id = ?
+                    ''', (role, conflict_override, conflict_details,
+                          override_timestamp, enrollment_timestamp, existing['id']))
+
+                    self.conn.commit()
+                    print(f"DEBUG: Admin enrollment reactivated successfully")
+                    return True
+                else:
+                    print(f"DEBUG: Enrollment already exists and is active")
+                    return False
+
+            # Create new enrollment (bypassing capacity checks)
+            current_time = self._get_eastern_time()
+            enrollment_timestamp = self._format_eastern_timestamp(current_time)
+            override_timestamp = self._format_eastern_timestamp(current_time)
+
+            print(f"DEBUG: Admin inserting new enrollment with timestamp {enrollment_timestamp}")
+
+            self.cursor.execute('''
+                INSERT INTO training_enrollments
+                (staff_name, class_name, class_date, role, meeting_type, session_time,
+                 conflict_override, conflict_details, override_acknowledged, enrollment_date, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+            ''', (staff_name, class_name, class_date, role, meeting_type, session_time,
+                  conflict_override, conflict_details, override_timestamp, enrollment_timestamp))
+
+            inserted_id = self.cursor.lastrowid
+            print(f"SUCCESS: Admin enrollment created with ID: {inserted_id}")
+
+            # Add audit entry with admin indicator
+            audit_timestamp = self._format_eastern_timestamp(current_time)
+            self.cursor.execute('''
+                INSERT INTO training_enrollment_audit
+                (action, staff_name, class_name, class_date, role, meeting_type,
+                 session_time, conflict_override, conflict_details, action_date, details)
+                VALUES ('admin_enrolled', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Admin override enrollment')
+            ''', (staff_name, class_name, class_date, role, meeting_type, session_time,
+                  conflict_override, conflict_details, audit_timestamp))
+
+            self.conn.commit()
+            print(f"DEBUG: Admin enrollment inserted and committed successfully")
+            return True
+
+        except sqlite3.IntegrityError as e:
+            print(f"DEBUG: IntegrityError in admin_add_enrollment - {e}")
+            self.conn.rollback()
+            return False
+        except Exception as e:
+            print(f"DEBUG: Unexpected error in admin_add_enrollment - {e}")
+            import traceback
+            traceback.print_exc()
+            self.conn.rollback()
+            return False
+        finally:
+            self.disconnect()
+
     def cancel_enrollment(self, enrollment_id):
         """Cancel a training enrollment"""
         self.connect()
@@ -460,7 +551,94 @@ class UnifiedDatabase:
             return False
         finally:
             self.disconnect()
-    
+
+    def admin_add_educator_signup(self, staff_name, class_name, class_date,
+                                  conflict_override=False, conflict_details=None):
+        """
+        Admin method to add educator signup bypassing capacity checks.
+        This is used by admins to override normal educator limits.
+        """
+        print(f"DEBUG: admin_add_educator_signup called for {staff_name}, {class_name}, {class_date}")
+
+        self.connect()
+        try:
+            # Check if this exact signup already exists
+            self.cursor.execute('''
+                SELECT id, status FROM training_educator_signups
+                WHERE staff_name = ? AND class_name = ? AND class_date = ?
+            ''', (staff_name, class_name, class_date))
+
+            existing = self.cursor.fetchone()
+
+            if existing:
+                if existing['status'] == 'cancelled':
+                    # Reactivate cancelled signup
+                    print(f"DEBUG: Reactivating cancelled educator signup ID {existing['id']}")
+
+                    current_time = self._get_eastern_time()
+                    signup_timestamp = self._format_eastern_timestamp(current_time)
+                    override_timestamp = self._format_eastern_timestamp(current_time)
+
+                    self.cursor.execute('''
+                        UPDATE training_educator_signups
+                        SET status = 'active', conflict_override = ?,
+                            conflict_details = ?, override_acknowledged = ?, signup_date = ?
+                        WHERE id = ?
+                    ''', (conflict_override, conflict_details,
+                          override_timestamp, signup_timestamp, existing['id']))
+
+                    self.conn.commit()
+                    print(f"DEBUG: Admin educator signup reactivated successfully")
+                    return True
+                else:
+                    print(f"DEBUG: Educator signup already exists and is active")
+                    return False
+
+            # Create new educator signup (bypassing capacity checks)
+            current_time = self._get_eastern_time()
+            signup_timestamp = self._format_eastern_timestamp(current_time)
+            override_timestamp = self._format_eastern_timestamp(current_time)
+
+            print(f"DEBUG: Admin inserting new educator signup with timestamp {signup_timestamp}")
+
+            self.cursor.execute('''
+                INSERT INTO training_educator_signups
+                (staff_name, class_name, class_date, conflict_override, conflict_details,
+                 override_acknowledged, signup_date, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
+            ''', (staff_name, class_name, class_date, conflict_override, conflict_details,
+                  override_timestamp, signup_timestamp))
+
+            inserted_id = self.cursor.lastrowid
+            print(f"SUCCESS: Admin educator signup created with ID: {inserted_id}")
+
+            # Add audit entry with admin indicator
+            audit_timestamp = self._format_eastern_timestamp(current_time)
+            self.cursor.execute('''
+                INSERT INTO training_educator_audit
+                (action, staff_name, class_name, class_date, conflict_override,
+                 conflict_details, action_date, details)
+                VALUES ('admin_educator_signup', ?, ?, ?, ?, ?, ?, 'Admin override signup')
+            ''', (staff_name, class_name, class_date, conflict_override,
+                  conflict_details, audit_timestamp))
+
+            self.conn.commit()
+            print(f"DEBUG: Admin educator signup inserted and committed successfully")
+            return True
+
+        except sqlite3.IntegrityError as e:
+            print(f"DEBUG: IntegrityError in admin_add_educator_signup - {e}")
+            self.conn.rollback()
+            return False
+        except Exception as e:
+            print(f"DEBUG: Unexpected error in admin_add_educator_signup - {e}")
+            import traceback
+            traceback.print_exc()
+            self.conn.rollback()
+            return False
+        finally:
+            self.disconnect()
+
     def cancel_educator_signup(self, signup_id):
         """Cancel an educator signup"""
         self.connect()
