@@ -250,6 +250,30 @@ def display_module_selection():
 
         st.markdown("<br>", unsafe_allow_html=True)
 
+        # Shift Location Preferences Module
+        st.markdown("""
+        <div class="module-card" style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 2px solid #4CAF50;">
+            <div style="text-align: center;">
+                <h2 style="color: #2E7D32; margin-bottom: 1rem;">📍 Shift Location Preferences</h2>
+                <p style="color: #333; font-size: 1.1rem; margin-bottom: 1.5rem; line-height: 1.6;">
+                    Set your preferred work locations for day and night shifts.
+                    Rank locations by preference to help with scheduling.
+                </p>
+                <ul style="text-align: left; color: #555; margin-bottom: 2rem;">
+                    <li>☀️ Day shift location preferences (5 locations)</li>
+                    <li>🌙 Night shift location preferences (3 locations)</li>
+                    <li>📊 First Choice = most desirable</li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("📍 Enter Shift Location Preferences", use_container_width=True, key="location_pref_btn"):
+            st.session_state.selected_module = "shift_location_preferences"
+            st.rerun()
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
         # Summer Leave Requests Module
         st.markdown("""
         <div class="module-card">
@@ -272,6 +296,59 @@ def display_module_selection():
         if st.button("☀️ Enter Summer Leave Requests", use_container_width=True, key="summer_leave_btn"):
             st.session_state.selected_module = "summer_leave"
             st.rerun()
+
+# Shift Location Preferences Module
+def display_shift_location_preferences_module():
+    """Display the Shift Location Preferences module for staff to set their location preferences"""
+    from modules.preference_editor import display_location_preference_editor
+    from modules.db_utils import initialize_database
+
+    st.markdown("")
+    st.markdown("")
+
+    # Back button
+    if st.button("← Back to CrewOps360", key="back_from_location_prefs"):
+        st.session_state.selected_module = None
+        st.rerun()
+
+    # Header
+    st.markdown("""
+    <div style="text-align: center; padding: 1rem;">
+        <h1 style="color: #2E7D32;">📍 Shift Location Preferences</h1>
+        <p style="color: #666; font-size: 1.1rem;">
+            Set your preferred work locations for day and night shifts
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # Initialize database
+    initialize_database()
+
+    # Check if master data is loaded
+    if 'master_df' not in st.session_state or st.session_state.master_df is None:
+        st.warning("Staff data not loaded. Please enter Clinical Track Hub first to initialize data.")
+        if st.button("🚁 Go to Clinical Track Hub"):
+            st.session_state.selected_module = "clinical_track_hub"
+            st.rerun()
+        return
+
+    # Staff selection
+    st.markdown("### Select Staff Member")
+    staff_names = st.session_state.master_df.index.tolist()
+    selected_staff = st.selectbox(
+        "Choose a staff member to edit preferences:",
+        options=[""] + staff_names,
+        key="location_pref_staff_select",
+        format_func=lambda x: "-- Select Staff Member --" if x == "" else x
+    )
+
+    if selected_staff:
+        st.markdown("---")
+        display_location_preference_editor(selected_staff)
+    else:
+        st.info("Please select a staff member above to view or edit their location preferences.")
 
 # Enhanced Training Events App Section with Educator Signup
 # This replaces the display_training_events_app() function in app.py
@@ -1886,23 +1963,6 @@ def run_clinical_track_hub():
                         st.rerun()
             else:
                 st.warning("Missing data. Please ensure all files are loaded.")
-
-        # Check if we're in location preference editing mode
-        elif st.session_state.get('location_pref_active', False) and st.session_state.get('pref_selected_staff'):
-            pref_staff = st.session_state.pref_selected_staff
-
-            # Back button to return to main hub
-            if st.button("← Back to Clinical Track Hub", type="secondary"):
-                st.session_state.location_pref_active = False
-                st.session_state.pref_selected_staff = None
-                st.rerun()
-
-            st.markdown("---")
-
-            # Display location preference editor
-            from modules.preference_editor import display_location_preference_editor
-            display_location_preference_editor(pref_staff)
-
         else:
             # Split layout: Left = Staff Management, Right = Calendar Export + Track Display
             left_col, right_col = st.columns(2, gap="large")
@@ -1937,21 +1997,6 @@ def run_clinical_track_hub():
                             st.session_state.staff_track_active = True
                             st.rerun()
 
-                    # Shift Location Preferences Section (Standalone Access)
-                    st.markdown("---")
-                    st.markdown("### 📍 Shift Location Preferences")
-                    st.caption("Quick access to edit location preferences without entering Track Management")
-
-                    pref_staff_names = st.session_state.master_df.index.tolist()
-                    pref_selected_staff = st.selectbox("Select Staff Member", pref_staff_names, key="pref_staff_select")
-
-                    if pref_selected_staff:
-                        if st.button("📍 Edit Location Preferences", use_container_width=True, type="secondary"):
-                            st.session_state.pref_selected_staff = pref_selected_staff
-                            st.session_state.location_pref_active = True
-                            st.rerun()
-
-            
             # RIGHT SIDE: Calendar Export + Fiscal Year Track Display
             with right_col:
                 # Calendar Export Section (TOP)
@@ -1980,6 +2025,9 @@ elif st.session_state.selected_module == "clinical_track_hub":
 elif st.session_state.selected_module == "training_events":
     # Show Training & Events application (FULL VERSION)
     display_training_events_app()
+elif st.session_state.selected_module == "shift_location_preferences":
+    # Show Shift Location Preferences module
+    display_shift_location_preferences_module()
 elif st.session_state.selected_module == "summer_leave":
     # Show Summer Leave Requests application
     # Initialize Excel handler and track manager if not already done
