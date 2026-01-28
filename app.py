@@ -1886,7 +1886,24 @@ def run_clinical_track_hub():
                         st.rerun()
             else:
                 st.warning("Missing data. Please ensure all files are loaded.")
-        else:        
+
+        # Check if we're in location preference editing mode
+        elif st.session_state.get('location_pref_active', False) and st.session_state.get('pref_selected_staff'):
+            pref_staff = st.session_state.pref_selected_staff
+
+            # Back button to return to main hub
+            if st.button("← Back to Clinical Track Hub", type="secondary"):
+                st.session_state.location_pref_active = False
+                st.session_state.pref_selected_staff = None
+                st.rerun()
+
+            st.markdown("---")
+
+            # Display location preference editor
+            from modules.preference_editor import display_location_preference_editor
+            display_location_preference_editor(pref_staff)
+
+        else:
             # Split layout: Left = Staff Management, Right = Calendar Export + Track Display
             left_col, right_col = st.columns(2, gap="large")
             
@@ -1909,15 +1926,29 @@ def run_clinical_track_hub():
                     
                     #Track Management Section
                     st.markdown("### Track Management")
-                                    
+
                     staff_names = st.session_state.master_df.index.tolist()
                     selected_staff = st.selectbox("Select Staff Member", staff_names, key="main_staff_select")
-                    
+
                     # Store selected staff and proceed to Track Management
                     if selected_staff:
                         if st.button("🔧 Manage Staff Track with Validation", use_container_width=True, type="primary"):
                             st.session_state.selected_staff = selected_staff
                             st.session_state.staff_track_active = True
+                            st.rerun()
+
+                    # Shift Location Preferences Section (Standalone Access)
+                    st.markdown("---")
+                    st.markdown("### 📍 Shift Location Preferences")
+                    st.caption("Quick access to edit location preferences without entering Track Management")
+
+                    pref_staff_names = st.session_state.master_df.index.tolist()
+                    pref_selected_staff = st.selectbox("Select Staff Member", pref_staff_names, key="pref_staff_select")
+
+                    if pref_selected_staff:
+                        if st.button("📍 Edit Location Preferences", use_container_width=True, type="secondary"):
+                            st.session_state.pref_selected_staff = pref_selected_staff
+                            st.session_state.location_pref_active = True
                             st.rerun()
 
             
