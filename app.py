@@ -302,6 +302,7 @@ def display_shift_location_preferences_module():
     """Display the Shift Location Preferences module for staff to set their location preferences"""
     from modules.preference_editor import display_location_preference_editor
     from modules.db_utils import initialize_database
+    import glob
 
     st.markdown("")
     st.markdown("")
@@ -326,17 +327,50 @@ def display_shift_location_preferences_module():
     # Initialize database
     initialize_database()
 
-    # Check if master data is loaded
-    if 'master_df' not in st.session_state or st.session_state.master_df is None:
-        st.warning("Staff data not loaded. Please enter Clinical Track Hub first to initialize data.")
-        if st.button("🚁 Go to Clinical Track Hub"):
-            st.session_state.selected_module = "clinical_track_hub"
-            st.rerun()
+    # Load staff names from Excel files (independent of Clinical Track Hub)
+    staff_names = []
+
+    upload_dir = "upload files"
+    if os.path.exists(upload_dir):
+        excel_files = glob.glob(os.path.join(upload_dir, "*.xlsx")) + glob.glob(os.path.join(upload_dir, "*.xls"))
+
+        # Find the tracks file
+        tracks_file = None
+        for file_path in excel_files:
+            file_name = os.path.basename(file_path).lower()
+            if "track" in file_name and "preassign" not in file_name:
+                tracks_file = file_path
+                break
+
+        if tracks_file:
+            try:
+                tracks_df = pd.read_excel(tracks_file)
+
+                # Auto-detect staff column
+                staff_col = None
+                for col in tracks_df.columns:
+                    if isinstance(col, str):
+                        col_lower = col.lower()
+                        if "staff" in col_lower and "name" in col_lower:
+                            staff_col = col
+                            break
+                        elif "name" in col_lower:
+                            staff_col = col
+                            break
+
+                if staff_col is None:
+                    staff_col = tracks_df.columns[0]
+
+                staff_names = tracks_df[staff_col].tolist()
+            except Exception as e:
+                st.error(f"Error loading staff data: {str(e)}")
+
+    if not staff_names:
+        st.error("Could not load staff data. Please ensure the Tracks.xlsx file exists in the 'upload files' folder.")
         return
 
     # Staff selection
     st.markdown("### Select Staff Member")
-    staff_names = st.session_state.master_df.index.tolist()
     selected_staff = st.selectbox(
         "Choose a staff member to edit preferences:",
         options=[""] + staff_names,
