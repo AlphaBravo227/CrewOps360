@@ -175,19 +175,24 @@ def display_location_preferences(selected_staff, staff_info):
     # Display location preferences in two columns
     loc_col1, loc_col2 = st.columns(2)
 
+    # Choice labels for display
+    day_choice_labels = ['First Choice', 'Second Choice', 'Third Choice', 'Fourth Choice', 'Fifth Choice']
+    night_choice_labels = ['First Choice', 'Second Choice', 'Third Choice']
+
     with loc_col1:
         st.subheader("☀️ Day Shift Locations")
-        st.caption("Rankings: 1 (least desirable) to 5 (most desirable)")
+        st.caption("1st Choice = most desirable")
 
-        # Sort by rank (descending)
+        # Sort by rank (ascending - rank 1 is best)
         day_locs = location_prefs['day_locations']
-        day_sorted = sorted(day_locs.items(), key=lambda x: x[1] if x[1] else 0, reverse=True)
+        day_sorted = sorted(day_locs.items(), key=lambda x: x[1] if x[1] else 999)
 
         # Create DataFrame for display
         day_data = []
         for location, rank in day_sorted:
             if rank:
-                day_data.append({'Location': location, 'Rank': rank})
+                choice_label = day_choice_labels[rank - 1] if rank <= len(day_choice_labels) else f"Choice {rank}"
+                day_data.append({'Choice': choice_label, 'Location': location})
 
         if day_data:
             day_df = pd.DataFrame(day_data)
@@ -197,17 +202,18 @@ def display_location_preferences(selected_staff, staff_info):
 
     with loc_col2:
         st.subheader("🌙 Night Shift Locations")
-        st.caption("Rankings: 1 (least desirable) to 3 (most desirable)")
+        st.caption("1st Choice = most desirable")
 
-        # Sort by rank (descending)
+        # Sort by rank (ascending - rank 1 is best)
         night_locs = location_prefs['night_locations']
-        night_sorted = sorted(night_locs.items(), key=lambda x: x[1] if x[1] else 0, reverse=True)
+        night_sorted = sorted(night_locs.items(), key=lambda x: x[1] if x[1] else 999)
 
         # Create DataFrame for display
         night_data = []
         for location, rank in night_sorted:
             if rank:
-                night_data.append({'Location': location, 'Rank': rank})
+                choice_label = night_choice_labels[rank - 1] if rank <= len(night_choice_labels) else f"Choice {rank}"
+                night_data.append({'Choice': choice_label, 'Location': location})
 
         if night_data:
             night_df = pd.DataFrame(night_data)

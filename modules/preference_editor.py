@@ -786,13 +786,17 @@ def display_preference_history(staff_name):
 DAY_LOCATIONS = ['KMHT', 'KLWM', 'KBED', '1B9', 'KPYM']
 NIGHT_LOCATIONS = ['KLWM', 'KBED', 'KPYM']
 
-def validate_location_preferences(day_prefs, night_prefs, zip_code, reduced_rest_answered, n_to_d_flex_answered):
+# Choice labels for the new UI (1 = First Choice = most desirable)
+DAY_CHOICE_LABELS = ['First Choice', 'Second Choice', 'Third Choice', 'Fourth Choice', 'Fifth Choice']
+NIGHT_CHOICE_LABELS = ['First Choice', 'Second Choice', 'Third Choice']
+
+def validate_location_preferences(day_choice_selections, night_choice_selections, zip_code, reduced_rest_answered, n_to_d_flex_answered):
     """
     Validate location preferences
 
     Args:
-        day_prefs (dict): Day location preferences
-        night_prefs (dict): Night location preferences
+        day_choice_selections (dict): Day choice selections {rank: location} - e.g., {1: 'KMHT', 2: 'KLWM', ...}
+        night_choice_selections (dict): Night choice selections {rank: location}
         zip_code (str): Zip code
         reduced_rest_answered (bool): Whether reduced rest was answered
         n_to_d_flex_answered (bool): Whether N to D flex was answered
@@ -814,43 +818,31 @@ def validate_location_preferences(day_prefs, night_prefs, zip_code, reduced_rest
     if not n_to_d_flex_answered:
         errors.append("🔴 Required: Please answer 'N to D Flex' question (Yes, No, or Maybe)")
 
-    # Validate day location preferences (all required, unique 1-5)
-    day_values = [v for v in day_prefs.values() if v is not None]
-    if len(day_values) < len(DAY_LOCATIONS):
-        errors.append("🔴 Required: Please rank all day shift locations (1-5)")
-    elif len(day_values) == len(DAY_LOCATIONS):
-        expected_day_ranks = set(range(1, 6))  # 1, 2, 3, 4, 5
-        actual_day_ranks = set(day_values)
+    # Validate day location preferences (all choices must have unique locations)
+    day_locations_selected = [loc for loc in day_choice_selections.values() if loc is not None]
+    if len(day_locations_selected) < len(DAY_LOCATIONS):
+        errors.append("🔴 Required: Please select a location for all day shift choices")
+    elif len(day_locations_selected) == len(DAY_LOCATIONS):
+        # Check for duplicate locations
+        if len(day_locations_selected) != len(set(day_locations_selected)):
+            errors.append("❌ Each day shift location can only be selected once")
+        # Check that all locations are valid
+        invalid_locs = [loc for loc in day_locations_selected if loc not in DAY_LOCATIONS]
+        if invalid_locs:
+            errors.append(f"❌ Invalid day location(s): {invalid_locs}")
 
-        if len(day_values) != len(set(day_values)):
-            errors.append("❌ Each day location ranking must be unique (1-5, each used once)")
-
-        if actual_day_ranks != expected_day_ranks:
-            missing = expected_day_ranks - actual_day_ranks
-            extra = actual_day_ranks - expected_day_ranks
-            if missing:
-                errors.append(f"❌ Missing day location rankings: {sorted(missing)}")
-            if extra:
-                errors.append(f"❌ Invalid day location rankings: {sorted(extra)}")
-
-    # Validate night location preferences (all required, unique 1-3)
-    night_values = [v for v in night_prefs.values() if v is not None]
-    if len(night_values) < len(NIGHT_LOCATIONS):
-        errors.append("🔴 Required: Please rank all night shift locations (1-3)")
-    elif len(night_values) == len(NIGHT_LOCATIONS):
-        expected_night_ranks = set(range(1, 4))  # 1, 2, 3
-        actual_night_ranks = set(night_values)
-
-        if len(night_values) != len(set(night_values)):
-            errors.append("❌ Each night location ranking must be unique (1-3, each used once)")
-
-        if actual_night_ranks != expected_night_ranks:
-            missing = expected_night_ranks - actual_night_ranks
-            extra = actual_night_ranks - expected_night_ranks
-            if missing:
-                errors.append(f"❌ Missing night location rankings: {sorted(missing)}")
-            if extra:
-                errors.append(f"❌ Invalid night location rankings: {sorted(extra)}")
+    # Validate night location preferences (all choices must have unique locations)
+    night_locations_selected = [loc for loc in night_choice_selections.values() if loc is not None]
+    if len(night_locations_selected) < len(NIGHT_LOCATIONS):
+        errors.append("🔴 Required: Please select a location for all night shift choices")
+    elif len(night_locations_selected) == len(NIGHT_LOCATIONS):
+        # Check for duplicate locations
+        if len(night_locations_selected) != len(set(night_locations_selected)):
+            errors.append("❌ Each night shift location can only be selected once")
+        # Check that all locations are valid
+        invalid_locs = [loc for loc in night_locations_selected if loc not in NIGHT_LOCATIONS]
+        if invalid_locs:
+            errors.append(f"❌ Invalid night location(s): {invalid_locs}")
 
     return len(errors) == 0, errors
 
@@ -878,21 +870,23 @@ def display_location_preference_editor(staff_name):
 
             with col1:
                 st.markdown("**Day Shift Locations:**")
-                st.caption("(Higher rank = more desirable)")
-                # Sort by rank (descending)
-                day_sorted = sorted(existing_prefs['day_locations'].items(), key=lambda x: x[1] if x[1] else 0, reverse=True)
+                st.caption("(1st Choice = most desirable)")
+                # Sort by rank (ascending - rank 1 is best)
+                day_sorted = sorted(existing_prefs['day_locations'].items(), key=lambda x: x[1] if x[1] else 999)
                 for location, rank in day_sorted:
                     if rank:
-                        st.markdown(f"**Rank {rank}:** {location}")
+                        choice_label = DAY_CHOICE_LABELS[rank - 1] if rank <= len(DAY_CHOICE_LABELS) else f"Choice {rank}"
+                        st.markdown(f"**{choice_label}:** {location}")
 
             with col2:
                 st.markdown("**Night Shift Locations:**")
-                st.caption("(Higher rank = more desirable)")
-                # Sort by rank (descending)
-                night_sorted = sorted(existing_prefs['night_locations'].items(), key=lambda x: x[1] if x[1] else 0, reverse=True)
+                st.caption("(1st Choice = most desirable)")
+                # Sort by rank (ascending - rank 1 is best)
+                night_sorted = sorted(existing_prefs['night_locations'].items(), key=lambda x: x[1] if x[1] else 999)
                 for location, rank in night_sorted:
                     if rank:
-                        st.markdown(f"**Rank {rank}:** {location}")
+                        choice_label = NIGHT_CHOICE_LABELS[rank - 1] if rank <= len(NIGHT_CHOICE_LABELS) else f"Choice {rank}"
+                        st.markdown(f"**{choice_label}:** {location}")
 
             with col3:
                 st.markdown("**Additional Information:**")
@@ -910,68 +904,90 @@ def display_location_preference_editor(staff_name):
 
     st.markdown("---")
     st.markdown("### 📍 Shift Location Preferences")
-    st.info("💡 **Instructions:** Rank each location from 1 (least desirable) to 5 or 3 (most desirable). Each number can only be used once within each shift type. Higher numbers = more desirable locations.")
+    st.info("💡 **Instructions:** Select your preferred location for each choice. First Choice = most desirable. Each location can only be selected once within each shift type.")
 
     # Create two columns for day and night locations
     loc_col1, loc_col2 = st.columns(2)
 
     with loc_col1:
         st.markdown("### ☀️ Day Shift Locations")
-        st.markdown("**Rank from 1 (least desirable) to 5 (most desirable)**")
+        st.markdown("**Select your preferred location for each choice**")
         st.caption("Locations: KMHT, KLWM, KBED, 1B9, KPYM")
-        st.caption("⚠️ Each ranking (1-5) must be used exactly once")
+        st.caption("⚠️ Each location can only be selected once")
 
-        day_preferences = {}
-        day_ranks = [1, 2, 3, 4, 5]
+        # Build existing choices from existing preferences (rank -> location)
+        existing_day_choices = {}
+        if success and existing_prefs:
+            for loc, rank in existing_prefs['day_locations'].items():
+                if rank:
+                    existing_day_choices[rank] = loc
 
-        for location in DAY_LOCATIONS:
-            # Get current value if exists
-            current_value = None
-            if success and existing_prefs:
-                current_value = existing_prefs['day_locations'].get(location)
+        day_choice_selections = {}  # {choice_rank: selected_location}
+
+        for rank, choice_label in enumerate(DAY_CHOICE_LABELS, start=1):
+            # Get current location for this choice rank
+            current_location = existing_day_choices.get(rank)
 
             # Find index for selectbox
-            if current_value and current_value in day_ranks:
-                initial_index = day_ranks.index(current_value) + 1
+            if current_location and current_location in DAY_LOCATIONS:
+                initial_index = DAY_LOCATIONS.index(current_location) + 1
             else:
                 initial_index = 0
 
-            day_preferences[location] = st.selectbox(
-                f"📍 {location}",
-                options=[None] + day_ranks,
+            day_choice_selections[rank] = st.selectbox(
+                f"📍 {choice_label}",
+                options=[None] + DAY_LOCATIONS,
                 index=initial_index,
-                key=f"day_{location}_{staff_name}",
-                help=f"Select ranking for {location} (5=most desirable, 1=least desirable)"
+                key=f"day_choice_{rank}_{staff_name}",
+                format_func=lambda x: "None" if x is None else x,
+                help=f"Select location for {choice_label}"
             )
+
+        # Convert choice selections to location preferences (location -> rank)
+        day_preferences = {}
+        for rank, location in day_choice_selections.items():
+            if location:
+                day_preferences[location] = rank
 
     with loc_col2:
         st.markdown("### 🌙 Night Shift Locations")
-        st.markdown("**Rank from 1 (least desirable) to 3 (most desirable)**")
+        st.markdown("**Select your preferred location for each choice**")
         st.caption("Locations: KLWM, KBED, KPYM")
-        st.caption("⚠️ Each ranking (1-3) must be used exactly once")
+        st.caption("⚠️ Each location can only be selected once")
 
-        night_preferences = {}
-        night_ranks = [1, 2, 3]
+        # Build existing choices from existing preferences (rank -> location)
+        existing_night_choices = {}
+        if success and existing_prefs:
+            for loc, rank in existing_prefs['night_locations'].items():
+                if rank:
+                    existing_night_choices[rank] = loc
 
-        for location in NIGHT_LOCATIONS:
-            # Get current value if exists
-            current_value = None
-            if success and existing_prefs:
-                current_value = existing_prefs['night_locations'].get(location)
+        night_choice_selections = {}  # {choice_rank: selected_location}
+
+        for rank, choice_label in enumerate(NIGHT_CHOICE_LABELS, start=1):
+            # Get current location for this choice rank
+            current_location = existing_night_choices.get(rank)
 
             # Find index for selectbox
-            if current_value and current_value in night_ranks:
-                initial_index = night_ranks.index(current_value) + 1
+            if current_location and current_location in NIGHT_LOCATIONS:
+                initial_index = NIGHT_LOCATIONS.index(current_location) + 1
             else:
                 initial_index = 0
 
-            night_preferences[location] = st.selectbox(
-                f"📍 {location}",
-                options=[None] + night_ranks,
+            night_choice_selections[rank] = st.selectbox(
+                f"📍 {choice_label}",
+                options=[None] + NIGHT_LOCATIONS,
                 index=initial_index,
-                key=f"night_{location}_{staff_name}",
-                help=f"Select ranking for {location} (3=most desirable, 1=least desirable)"
+                key=f"night_choice_{rank}_{staff_name}",
+                format_func=lambda x: "None" if x is None else x,
+                help=f"Select location for {choice_label}"
             )
+
+        # Convert choice selections to location preferences (location -> rank)
+        night_preferences = {}
+        for rank, location in night_choice_selections.items():
+            if location:
+                night_preferences[location] = rank
 
     # Additional preferences section
     st.markdown("---")
@@ -1050,9 +1066,9 @@ def display_location_preference_editor(staff_name):
     # Validation and preview
     st.markdown("---")
 
-    # Validate all preferences
+    # Validate all preferences (pass choice_selections for duplicate checking)
     is_valid, errors = validate_location_preferences(
-        day_preferences, night_preferences, zip_code,
+        day_choice_selections, night_choice_selections, zip_code,
         reduced_rest_answered, n_to_d_flex_answered
     )
 
@@ -1069,17 +1085,23 @@ def display_location_preference_editor(staff_name):
 
             with preview_col1:
                 st.markdown("**Day Shift Locations:**")
-                day_sorted = sorted(day_preferences.items(), key=lambda x: x[1] if x[1] else 0, reverse=True)
-                for location, rank in day_sorted:
-                    if rank:
-                        st.markdown(f"**Rank {rank}:** {location}")
+                st.caption("(1st Choice = most desirable)")
+                # Sort by rank (ascending - rank 1 is best)
+                for rank in sorted(day_choice_selections.keys()):
+                    location = day_choice_selections[rank]
+                    if location:
+                        choice_label = DAY_CHOICE_LABELS[rank - 1] if rank <= len(DAY_CHOICE_LABELS) else f"Choice {rank}"
+                        st.markdown(f"**{choice_label}:** {location}")
 
             with preview_col2:
                 st.markdown("**Night Shift Locations:**")
-                night_sorted = sorted(night_preferences.items(), key=lambda x: x[1] if x[1] else 0, reverse=True)
-                for location, rank in night_sorted:
-                    if rank:
-                        st.markdown(f"**Rank {rank}:** {location}")
+                st.caption("(1st Choice = most desirable)")
+                # Sort by rank (ascending - rank 1 is best)
+                for rank in sorted(night_choice_selections.keys()):
+                    location = night_choice_selections[rank]
+                    if location:
+                        choice_label = NIGHT_CHOICE_LABELS[rank - 1] if rank <= len(NIGHT_CHOICE_LABELS) else f"Choice {rank}"
+                        st.markdown(f"**{choice_label}:** {location}")
 
             with preview_col3:
                 st.markdown("**Additional Information:**")
