@@ -429,16 +429,22 @@ class AdminExportManager:
         for _, row in location_prefs_df.iterrows():
             staff_name = row['staff_name']
 
-            # Get role from original file if available
+            # Get role, no_matrix, and seniority from original file if available
             role = "Unknown"
+            no_matrix = 0
+            seniority = 0
             if original_prefs_df is not None and not original_prefs_df.empty:
                 staff_row = original_prefs_df[original_prefs_df['STAFF NAME'] == staff_name]
                 if not staff_row.empty:
                     role = staff_row.iloc[0].get('ROLE', 'Unknown')
+                    no_matrix = staff_row.iloc[0].get('No Matrix', 0)
+                    seniority = staff_row.iloc[0].get('Seniority', 0)
 
             export_row = {
                 'STAFF NAME': staff_name,
                 'ROLE': role,
+                'No Matrix': no_matrix,
+                'Seniority': seniority,
                 'DAY_KMHT': row['DAY_KMHT'],
                 'DAY_KLWM': row['DAY_KLWM'],
                 'DAY_KBED': row['DAY_KBED'],
@@ -635,6 +641,8 @@ def display_admin_export_section(preferences_df: pd.DataFrame):
                     ['Total Staff with Preferences', len(location_df)],
                     ['', ''],
                     ['Column Descriptions', ''],
+                    ['No Matrix', 'Staff member excluded from matrix scheduling (1=Yes, 0=No)'],
+                    ['Seniority', 'Staff member seniority ranking'],
                     ['DAY_KMHT', 'Day shift preference for KMHT (1-5, higher=more desirable)'],
                     ['DAY_KLWM', 'Day shift preference for KLWM (1-5, higher=more desirable)'],
                     ['DAY_KBED', 'Day shift preference for KBED (1-5, higher=more desirable)'],
