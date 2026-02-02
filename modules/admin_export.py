@@ -97,7 +97,7 @@ class AdminExportManager:
 
         return location_prefs
 
-    def get_legacy_shift_preferences(self, staff_name: str) -> Optional[Dict[str, int]]:
+    def get_legacy_shift_preferences_from_db(self, staff_name: str) -> Optional[Dict[str, int]]:
         """
         Get legacy shift preferences for a staff member from user_preferences table
 
@@ -136,6 +136,30 @@ class AdminExportManager:
         except Exception as e:
             print(f"Error getting legacy preferences for {staff_name}: {str(e)}")
             return None
+
+    def get_legacy_shift_preferences_from_excel(self, excel_row) -> Optional[Dict[str, int]]:
+        """
+        Extract legacy shift preferences from Original Excel row
+
+        Args:
+            excel_row: Pandas Series representing a row from the original preferences file
+
+        Returns:
+            Dict of shift names to preference scores, or None if no valid preferences found
+        """
+        # All possible shift columns in the original Excel file
+        shift_columns = ['D7B', 'GR', 'D11B', 'D11H', 'FW', 'D9L', 'LG', 'D7P', 'PG',
+                        'D11M', 'MG', 'N7B', 'NG', 'N9L', 'N7P', 'NP']
+
+        shift_prefs = {}
+        for shift in shift_columns:
+            if shift in excel_row.index:
+                value = excel_row[shift]
+                # Only include if it's a valid numeric preference score
+                if pd.notna(value) and isinstance(value, (int, float)) and value >= 0:
+                    shift_prefs[shift] = int(value)
+
+        return shift_prefs if shift_prefs else None
 
     def check_database_status(self) -> str:
         """Check if database exists and what tables it contains"""
@@ -581,8 +605,14 @@ class AdminExportManager:
                     'PREFERENCE_SOURCE': 'New System'
                 }
             else:
-                # Try to get legacy shift preferences and convert them
-                legacy_prefs = self.get_legacy_shift_preferences(staff_name)
+                # Try to get legacy shift preferences - first from database, then from Excel
+                legacy_prefs = self.get_legacy_shift_preferences_from_db(staff_name)
+                data_source = 'App Updated'
+
+                if not legacy_prefs:
+                    # Fall back to Original Excel file
+                    legacy_prefs = self.get_legacy_shift_preferences_from_excel(orig_row)
+                    data_source = 'Original Excel'
 
                 if legacy_prefs:
                     # Convert legacy preferences to location preferences
@@ -607,14 +637,14 @@ class AdminExportManager:
                         'NIGHT_KLWM': converted_prefs.get('NIGHT_KLWM', 2),
                         'NIGHT_KBED': converted_prefs.get('NIGHT_KBED', 2),
                         'NIGHT_KPYM': converted_prefs.get('NIGHT_KPYM', 2),
-                        'ZIP_CODE': orig_row.get('ZIP CODE', ''),
+                        'ZIP_CODE': orig_row.get('ZIP CODE', ''),  # ZIP not available in legacy
                         'REDUCED_REST_OK': reduced_rest,
                         'N_TO_D_FLEX': n_to_d_flex,
-                        'LAST_UPDATED': 'Legacy Converted',
-                        'PREFERENCE_SOURCE': 'Legacy Converted'
+                        'LAST_UPDATED': f'Legacy Converted ({data_source})',
+                        'PREFERENCE_SOURCE': f'Legacy Converted ({data_source})'
                     }
                 else:
-                    # No preferences in either system - use defaults
+                    # No preferences in any system - use defaults
                     # Get boolean preferences with priority logic
                     boolean_prefs_dict = self._get_all_boolean_preferences()
                     reduced_rest, n_to_d_flex = self._get_boolean_preferences_with_priority(
@@ -836,7 +866,7 @@ def display_admin_export_section(preferences_df: pd.DataFrame):
                     ['ZIP_CODE', 'Staff member zip code'],
                     ['REDUCED_REST_OK', '1=Yes, 0=No'],
                     ['N_TO_D_FLEX', 'Yes/No/Maybe'],
-                    ['PREFERENCE_SOURCE', 'New System: filled out location prefs | Legacy Converted: converted from old shift system | Default Values: no preferences found']
+                    ['PREFERENCE_SOURCE', 'New System: filled out location prefs | Legacy Converted (App Updated): converted from database | Legacy Converted (Original Excel): converted from uploaded file | Default Values: no preferences found']
                 ]
 
                 summary_df = pd.DataFrame(summary_data, columns=['Field', 'Description'])
