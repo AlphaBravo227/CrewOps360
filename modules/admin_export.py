@@ -17,13 +17,126 @@ from .db_utils import get_all_location_preferences
 class AdminExportManager:
     """Manages admin export functionality for preferences"""
 
+    # Mapping from bases to shifts (D11B is now D11H)
+    BASE_TO_SHIFTS = {
+        "DAY_KMHT": ["D11H", "D11B"],  # D11B is the old name for D11H
+        "DAY_KLWM": ["D9L", "LG"],
+        "DAY_KBED": ["D7B", "GR"],
+        "DAY_1B9": ["D11M", "MG"],
+        "DAY_KPYM": ["D7P", "PG"],
+        "NIGHT_KLWM": ["N9L"],
+        "NIGHT_KBED": ["N7B", "NG"],
+        "NIGHT_KPYM": ["N7P", "NP"]
+    }
+
     def __init__(self, db_path: str = "data/medflight_tracks.db"):
         self.db_path = db_path
 
         # Ensure data directory exists
         if not os.path.exists("data"):
             os.makedirs("data", exist_ok=True)
-    
+
+    def convert_legacy_shift_prefs_to_location_prefs(self, shift_prefs: Dict[str, int]) -> Dict[str, int]:
+        """
+        Convert legacy shift-based preferences (9-0 scale) to location-based preferences (1-5 for days, 1-3 for nights)
+
+        Algorithm:
+        1. For each base, find all shifts that map to it and take the maximum (best) score
+        2. Rank bases by their scores from highest to lowest
+        3. Assign ranks: highest score → 1 (most preferred), next → 2, etc.
+
+        Args:
+            shift_prefs: Dict of shift names to preference scores (e.g., {"D7P": 9, "D7B": 8, ...})
+
+        Returns:
+            Dict with location preference rankings (e.g., {"DAY_KPYM": 1, "DAY_KBED": 2, ...})
+        """
+        # Convert shift names to uppercase for consistent matching
+        shift_prefs_upper = {k.upper(): v for k, v in shift_prefs.items()}
+
+        # Map bases to their maximum scores from legacy shift preferences
+        base_scores = {}
+        for base, shifts in self.BASE_TO_SHIFTS.items():
+            max_score = None
+            for shift in shifts:
+                shift_upper = shift.upper()
+                if shift_upper in shift_prefs_upper:
+                    score = shift_prefs_upper[shift_upper]
+                    if max_score is None or score > max_score:
+                        max_score = score
+
+            if max_score is not None:
+                base_scores[base] = max_score
+
+        # Separate day and night bases
+        day_bases = {k: v for k, v in base_scores.items() if k.startswith("DAY_")}
+        night_bases = {k: v for k, v in base_scores.items() if k.startswith("NIGHT_")}
+
+        # Sort by score (highest first) and assign ranks
+        location_prefs = {}
+
+        # Day bases: rank 1-5 (1 = most preferred)
+        sorted_day_bases = sorted(day_bases.items(), key=lambda x: x[1], reverse=True)
+        for rank, (base, score) in enumerate(sorted_day_bases, start=1):
+            location_prefs[base] = rank
+
+        # Fill in any missing day bases with default values (if not all 5 day bases were ranked)
+        for base in ["DAY_KMHT", "DAY_KLWM", "DAY_KBED", "DAY_1B9", "DAY_KPYM"]:
+            if base not in location_prefs:
+                location_prefs[base] = 3  # Default middle value
+
+        # Night bases: rank 1-3 (1 = most preferred)
+        sorted_night_bases = sorted(night_bases.items(), key=lambda x: x[1], reverse=True)
+        for rank, (base, score) in enumerate(sorted_night_bases, start=1):
+            location_prefs[base] = rank
+
+        # Fill in any missing night bases with default values
+        for base in ["NIGHT_KLWM", "NIGHT_KBED", "NIGHT_KPYM"]:
+            if base not in location_prefs:
+                location_prefs[base] = 2  # Default middle value
+
+        return location_prefs
+
+    def get_legacy_shift_preferences(self, staff_name: str) -> Optional[Dict[str, int]]:
+        """
+        Get legacy shift preferences for a staff member from user_preferences table
+
+        Args:
+            staff_name: Name of staff member
+
+        Returns:
+            Dict of shift names to preference scores, or None if not found
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Check if table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_preferences'")
+            if not cursor.fetchone():
+                conn.close()
+                return None
+
+            # Get active preferences for this staff member
+            cursor.execute("""
+                SELECT shift_name, preference_score
+                FROM user_preferences
+                WHERE staff_name = ? AND is_active = 1
+            """, (staff_name,))
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            if not rows:
+                return None
+
+            # Convert to dict
+            return {shift_name: score for shift_name, score in rows}
+
+        except Exception as e:
+            print(f"Error getting legacy preferences for {staff_name}: {str(e)}")
+            return None
+
     def check_database_status(self) -> str:
         """Check if database exists and what tables it contains"""
         try:
@@ -408,56 +521,125 @@ class AdminExportManager:
 
     def export_location_preferences(self, original_prefs_df: pd.DataFrame = None) -> pd.DataFrame:
         """
-        Export location-based preferences with role information from original file
+        Export location-based preferences with role information from original file.
+        Includes all staff from original file, converting legacy shift preferences for those
+        who haven't filled out new location preferences.
 
         Args:
-            original_prefs_df: Original preferences DataFrame (for role info)
+            original_prefs_df: Original preferences DataFrame (for role info and staff list)
 
         Returns:
             DataFrame with location preferences ready for export
         """
-        # Get location preferences
-        location_prefs_df = self.get_location_preferences()
-
-        if location_prefs_df.empty:
-            st.warning("No location preferences found in database yet.")
+        if original_prefs_df is None or original_prefs_df.empty:
+            st.warning("No original preferences file provided - cannot export.")
             return pd.DataFrame()
 
-        # Create export data
+        # Get location preferences from new system
+        location_prefs_df = self.get_location_preferences()
+
+        # Create a dict of staff who have new location preferences
+        location_prefs_dict = {}
+        if not location_prefs_df.empty:
+            for _, row in location_prefs_df.iterrows():
+                location_prefs_dict[row['staff_name'].lower()] = row.to_dict()
+
+        # Create export data for all staff
         export_data = []
 
-        for _, row in location_prefs_df.iterrows():
-            staff_name = row['staff_name']
+        for _, orig_row in original_prefs_df.iterrows():
+            staff_name = orig_row['STAFF NAME']
+            staff_name_lower = staff_name.lower()
 
-            # Get role, no_matrix, and seniority from original file if available
-            role = "Unknown"
-            no_matrix = 0
-            seniority = 0
-            if original_prefs_df is not None and not original_prefs_df.empty:
-                staff_row = original_prefs_df[original_prefs_df['STAFF NAME'] == staff_name]
-                if not staff_row.empty:
-                    role = staff_row.iloc[0].get('ROLE', 'Unknown')
-                    no_matrix = staff_row.iloc[0].get('No Matrix', 0)
-                    seniority = staff_row.iloc[0].get('Seniority', 0)
+            # Get common attributes from original file
+            role = orig_row.get('ROLE', 'Unknown')
+            no_matrix = orig_row.get('No Matrix', 0)
+            seniority = orig_row.get('Seniority', 0)
 
-            export_row = {
-                'STAFF NAME': staff_name,
-                'ROLE': role,
-                'No Matrix': no_matrix,
-                'Seniority': seniority,
-                'DAY_KMHT': row['DAY_KMHT'],
-                'DAY_KLWM': row['DAY_KLWM'],
-                'DAY_KBED': row['DAY_KBED'],
-                'DAY_1B9': row['DAY_1B9'],
-                'DAY_KPYM': row['DAY_KPYM'],
-                'NIGHT_KLWM': row['NIGHT_KLWM'],
-                'NIGHT_KBED': row['NIGHT_KBED'],
-                'NIGHT_KPYM': row['NIGHT_KPYM'],
-                'ZIP_CODE': row['ZIP_CODE'],
-                'REDUCED_REST_OK': row['REDUCED_REST_OK'],
-                'N_TO_D_FLEX': row['N_TO_D_FLEX'],
-                'LAST_UPDATED': row['last_updated']
-            }
+            # Check if staff has new location preferences
+            if staff_name_lower in location_prefs_dict:
+                # Use new system preferences
+                loc_prefs = location_prefs_dict[staff_name_lower]
+
+                export_row = {
+                    'STAFF NAME': staff_name,
+                    'ROLE': role,
+                    'No Matrix': no_matrix,
+                    'Seniority': seniority,
+                    'DAY_KMHT': loc_prefs['DAY_KMHT'],
+                    'DAY_KLWM': loc_prefs['DAY_KLWM'],
+                    'DAY_KBED': loc_prefs['DAY_KBED'],
+                    'DAY_1B9': loc_prefs['DAY_1B9'],
+                    'DAY_KPYM': loc_prefs['DAY_KPYM'],
+                    'NIGHT_KLWM': loc_prefs['NIGHT_KLWM'],
+                    'NIGHT_KBED': loc_prefs['NIGHT_KBED'],
+                    'NIGHT_KPYM': loc_prefs['NIGHT_KPYM'],
+                    'ZIP_CODE': loc_prefs['ZIP_CODE'],
+                    'REDUCED_REST_OK': loc_prefs['REDUCED_REST_OK'],
+                    'N_TO_D_FLEX': loc_prefs['N_TO_D_FLEX'],
+                    'LAST_UPDATED': loc_prefs['last_updated'],
+                    'PREFERENCE_SOURCE': 'New System'
+                }
+            else:
+                # Try to get legacy shift preferences and convert them
+                legacy_prefs = self.get_legacy_shift_preferences(staff_name)
+
+                if legacy_prefs:
+                    # Convert legacy preferences to location preferences
+                    converted_prefs = self.convert_legacy_shift_prefs_to_location_prefs(legacy_prefs)
+
+                    # Get boolean preferences with priority logic
+                    boolean_prefs_dict = self._get_all_boolean_preferences()
+                    reduced_rest, n_to_d_flex = self._get_boolean_preferences_with_priority(
+                        staff_name, boolean_prefs_dict, orig_row
+                    )
+
+                    export_row = {
+                        'STAFF NAME': staff_name,
+                        'ROLE': role,
+                        'No Matrix': no_matrix,
+                        'Seniority': seniority,
+                        'DAY_KMHT': converted_prefs.get('DAY_KMHT', 3),
+                        'DAY_KLWM': converted_prefs.get('DAY_KLWM', 3),
+                        'DAY_KBED': converted_prefs.get('DAY_KBED', 3),
+                        'DAY_1B9': converted_prefs.get('DAY_1B9', 3),
+                        'DAY_KPYM': converted_prefs.get('DAY_KPYM', 3),
+                        'NIGHT_KLWM': converted_prefs.get('NIGHT_KLWM', 2),
+                        'NIGHT_KBED': converted_prefs.get('NIGHT_KBED', 2),
+                        'NIGHT_KPYM': converted_prefs.get('NIGHT_KPYM', 2),
+                        'ZIP_CODE': orig_row.get('ZIP CODE', ''),
+                        'REDUCED_REST_OK': reduced_rest,
+                        'N_TO_D_FLEX': n_to_d_flex,
+                        'LAST_UPDATED': 'Legacy Converted',
+                        'PREFERENCE_SOURCE': 'Legacy Converted'
+                    }
+                else:
+                    # No preferences in either system - use defaults
+                    # Get boolean preferences with priority logic
+                    boolean_prefs_dict = self._get_all_boolean_preferences()
+                    reduced_rest, n_to_d_flex = self._get_boolean_preferences_with_priority(
+                        staff_name, boolean_prefs_dict, orig_row
+                    )
+
+                    export_row = {
+                        'STAFF NAME': staff_name,
+                        'ROLE': role,
+                        'No Matrix': no_matrix,
+                        'Seniority': seniority,
+                        'DAY_KMHT': 3,
+                        'DAY_KLWM': 3,
+                        'DAY_KBED': 3,
+                        'DAY_1B9': 3,
+                        'DAY_KPYM': 3,
+                        'NIGHT_KLWM': 2,
+                        'NIGHT_KBED': 2,
+                        'NIGHT_KPYM': 2,
+                        'ZIP_CODE': orig_row.get('ZIP CODE', ''),
+                        'REDUCED_REST_OK': reduced_rest,
+                        'N_TO_D_FLEX': n_to_d_flex,
+                        'LAST_UPDATED': 'No Preferences',
+                        'PREFERENCE_SOURCE': 'Default Values'
+                    }
 
             export_data.append(export_row)
 
@@ -643,17 +825,18 @@ def display_admin_export_section(preferences_df: pd.DataFrame):
                     ['Column Descriptions', ''],
                     ['No Matrix', 'Staff member excluded from matrix scheduling (1=Yes, 0=No)'],
                     ['Seniority', 'Staff member seniority ranking'],
-                    ['DAY_KMHT', 'Day shift preference for KMHT (1-5, higher=more desirable)'],
-                    ['DAY_KLWM', 'Day shift preference for KLWM (1-5, higher=more desirable)'],
-                    ['DAY_KBED', 'Day shift preference for KBED (1-5, higher=more desirable)'],
-                    ['DAY_1B9', 'Day shift preference for 1B9 (1-5, higher=more desirable)'],
-                    ['DAY_KPYM', 'Day shift preference for KPYM (1-5, higher=more desirable)'],
-                    ['NIGHT_KLWM', 'Night shift preference for KLWM (1-3, higher=more desirable)'],
-                    ['NIGHT_KBED', 'Night shift preference for KBED (1-3, higher=more desirable)'],
-                    ['NIGHT_KPYM', 'Night shift preference for KPYM (1-3, higher=more desirable)'],
+                    ['DAY_KMHT', 'Day shift preference for KMHT (1-5, 1=most preferred)'],
+                    ['DAY_KLWM', 'Day shift preference for KLWM (1-5, 1=most preferred)'],
+                    ['DAY_KBED', 'Day shift preference for KBED (1-5, 1=most preferred)'],
+                    ['DAY_1B9', 'Day shift preference for 1B9 (1-5, 1=most preferred)'],
+                    ['DAY_KPYM', 'Day shift preference for KPYM (1-5, 1=most preferred)'],
+                    ['NIGHT_KLWM', 'Night shift preference for KLWM (1-3, 1=most preferred)'],
+                    ['NIGHT_KBED', 'Night shift preference for KBED (1-3, 1=most preferred)'],
+                    ['NIGHT_KPYM', 'Night shift preference for KPYM (1-3, 1=most preferred)'],
                     ['ZIP_CODE', 'Staff member zip code'],
                     ['REDUCED_REST_OK', '1=Yes, 0=No'],
-                    ['N_TO_D_FLEX', 'Yes/No/Maybe']
+                    ['N_TO_D_FLEX', 'Yes/No/Maybe'],
+                    ['PREFERENCE_SOURCE', 'New System: filled out location prefs | Legacy Converted: converted from old shift system | Default Values: no preferences found']
                 ]
 
                 summary_df = pd.DataFrame(summary_data, columns=['Field', 'Description'])
