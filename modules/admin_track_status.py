@@ -7,7 +7,10 @@ Combines track status management and track editing in a unified interface
 import streamlit as st
 import sqlite3
 from datetime import datetime
+import pytz
 from modules.db_utils import get_db_connection
+
+_eastern_tz = pytz.timezone('America/New_York')
 
 def log_status_change(track_id, staff_name, old_status, new_status, admin_user):
     """
@@ -35,7 +38,7 @@ def log_status_change(track_id, staff_name, old_status, new_status, admin_user):
             return (False, "Track not found")
         
         track_data = result[0]
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
         
         # Determine status text
         status_text = "activated" if new_status == 1 else "deactivated"

@@ -4,6 +4,9 @@ import pandas as pd
 from datetime import datetime, timedelta
 import os
 import glob
+import pytz
+
+_eastern_tz = pytz.timezone('America/New_York')
 import sqlite3
 import json
 import hashlib
@@ -907,7 +910,7 @@ def run_clinical_track_hub():
             cursor.execute("DELETE FROM tracks")
             cursor.execute("DELETE FROM track_history")
             
-            submission_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            submission_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
             
             conversion_count = 0
             error_count = 0
@@ -1121,7 +1124,7 @@ def run_clinical_track_hub():
                             # Show file info
                             st.info(f"📄 **File:** {filename}")
                             st.info(f"📊 **Size:** {len(file_content)} characters")
-                            st.info(f"🗓️ **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                            st.info(f"🗓️ **Generated:** {datetime.now(_eastern_tz).strftime('%Y-%m-%d %H:%M:%S')}")
                             
                         else:
                             st.error("❌ Failed to generate calendar file. Please check if the staff member has a valid track.")
@@ -1537,7 +1540,7 @@ def run_clinical_track_hub():
                         backup_dir = "backups"
                         os.makedirs(backup_dir, exist_ok=True)
                         
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        timestamp = datetime.now(_eastern_tz).strftime("%Y%m%d_%H%M%S")
                         backup_file = f"{backup_dir}/medflight_tracks_backup_{timestamp}.db"
                         
                         import shutil
@@ -1555,7 +1558,7 @@ def run_clinical_track_hub():
                         backup_dir = "backups"
                         if os.path.exists(backup_dir):
                             backup_files = glob.glob(os.path.join(backup_dir, "*.db"))
-                            old_files = [f for f in backup_files if os.path.getctime(f) < (datetime.now() - timedelta(days=30)).timestamp()]
+                            old_files = [f for f in backup_files if os.path.getctime(f) < (datetime.now(_eastern_tz) - timedelta(days=30)).timestamp()]
                             
                             deleted_count = 0
                             for old_file in old_files:
@@ -1594,7 +1597,7 @@ def run_clinical_track_hub():
                 
                 if st.button("Generate Export", use_container_width=True):
                     try:
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        timestamp = datetime.now(_eastern_tz).strftime("%Y%m%d_%H%M%S")
                         
                         if export_option == "Raw Database":
                             with st.spinner("Preparing database download..."):
@@ -1620,7 +1623,7 @@ def run_clinical_track_hub():
                                         st.success(f"✅ Database ready for download ({file_size_mb:.2f} MB)")
                                         st.info(f"📄 **File:** {filename}")
                                         st.info(f"💾 **Size:** {file_size_mb:.2f} MB")
-                                        st.info(f"🗓️ **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                                        st.info(f"🗓️ **Generated:** {datetime.now(_eastern_tz).strftime('%Y-%m-%d %H:%M:%S')}")
                                         
                                     except Exception as e:
                                         st.error(f"❌ Error reading database file: {str(e)}")
@@ -1829,7 +1832,7 @@ def run_clinical_track_hub():
                             st.markdown("#### 🧹 Backup Cleanup")
                             
                             old_backups = [b for b in all_backups 
-                                         if datetime.strptime(b['Modified'], "%Y-%m-%d %H:%M:%S") < datetime.now() - timedelta(days=30)]
+                                         if datetime.strptime(b['Modified'], "%Y-%m-%d %H:%M:%S") < datetime.now(_eastern_tz) - timedelta(days=30)]
                             
                             if old_backups:
                                 st.info(f"Found {len(old_backups)} backups older than 30 days.")

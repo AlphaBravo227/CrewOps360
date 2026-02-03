@@ -3,6 +3,9 @@
 import streamlit as st
 from datetime import datetime, timedelta
 import pandas as pd
+import pytz
+
+_eastern_tz = pytz.timezone('America/New_York')
 
 # Update the AdminAccess class to include availability analyzer initialization
 class AdminAccess:
@@ -26,7 +29,7 @@ class AdminAccess:
         
         # Check if session has expired
         login_time = st.session_state.training_admin_login_time
-        current_time = datetime.now()
+        current_time = datetime.now(_eastern_tz)
         elapsed_minutes = (current_time - login_time).total_seconds() / 60
         
         if elapsed_minutes > self.session_timeout:
@@ -66,7 +69,7 @@ class AdminAccess:
             if submitted:
                 if pin_input == self.admin_pin:
                     st.session_state.training_admin_authenticated = True
-                    st.session_state.training_admin_login_time = datetime.now()
+                    st.session_state.training_admin_login_time = datetime.now(_eastern_tz)
                     st.success("✅ Training admin access granted")
                     st.rerun()
                 else:
@@ -78,7 +81,7 @@ class AdminAccess:
         
         # Show session info
         login_time = st.session_state.training_admin_login_time
-        elapsed_minutes = (datetime.now() - login_time).total_seconds() / 60
+        elapsed_minutes = (datetime.now(_eastern_tz) - login_time).total_seconds() / 60
         remaining_minutes = max(0, self.session_timeout - elapsed_minutes)
         
         st.info(f"⏱️ Session expires in {remaining_minutes:.0f} minutes")
@@ -144,7 +147,7 @@ class AdminAccess:
             st.stop()
         
         # Extend session on activity
-        st.session_state.training_admin_login_time = datetime.now()
+        st.session_state.training_admin_login_time = datetime.now(_eastern_tz)
     
     def show_admin_function_page(self):
         """Show the selected admin function page"""
@@ -167,7 +170,7 @@ class AdminAccess:
             st.metric("Session Status", "🟢 Active")
         with col2:
             login_time = st.session_state.training_admin_login_time
-            elapsed_minutes = (datetime.now() - login_time).total_seconds() / 60
+            elapsed_minutes = (datetime.now(_eastern_tz) - login_time).total_seconds() / 60
             remaining_minutes = max(0, self.session_timeout - elapsed_minutes)
             st.metric("Time Remaining", f"{remaining_minutes:.0f} min")
         with col3:
@@ -310,7 +313,7 @@ class AdminAccess:
                         st.download_button(
                             "Download CSV",
                             csv,
-                            f"training_compliance_{datetime.now().strftime('%Y%m%d')}.csv",
+                            f"training_compliance_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.csv",
                             "text/csv"
                         )
                 else:
@@ -371,14 +374,14 @@ class AdminAccess:
         with col1:
             start_date = st.date_input(
                 "Start Date",
-                value=datetime.now(),
+                value=datetime.now(_eastern_tz),
                 key="availability_start_date"
             )
         
         with col2:
             end_date = st.date_input(
                 "End Date",
-                value=datetime.now() + timedelta(days=30),
+                value=datetime.now(_eastern_tz) + timedelta(days=30),
                 key="availability_end_date"
             )
         
@@ -733,14 +736,14 @@ class AdminAccess:
         with col1:
             placeholder_start = st.date_input(
                 "Start Date (Preview)",
-                value=datetime.now(),
+                value=datetime.now(_eastern_tz),
                 disabled=True,
                 help="Date range selection for educator availability analysis"
             )
         with col2:
             placeholder_end = st.date_input(
                 "End Date (Preview)", 
-                value=datetime.now() + timedelta(days=30),
+                value=datetime.now(_eastern_tz) + timedelta(days=30),
                 disabled=True,
                 help="Date range selection for educator availability analysis"
             )

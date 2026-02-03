@@ -4,6 +4,9 @@ import openpyxl
 from datetime import datetime, timedelta
 import streamlit as st
 import calendar
+import pytz
+
+_eastern_tz = pytz.timezone('America/New_York')
 from .config import NON_CLASS_COLUMNS, DEFAULT_CLASS_DETAILS
 
 class ExcelAdminFunctions:
@@ -153,7 +156,7 @@ class ExcelAdminFunctions:
             
             # ===== NEW: Filter classes starting within 90 days (or already started) =====
             classes_starting_soon = []
-            current_date = datetime.now()
+            current_date = datetime.now(_eastern_tz)
             ninety_days_out = current_date + timedelta(days=90)
 
             for cls in classes_not_enrolled:
@@ -264,7 +267,7 @@ class ExcelAdminFunctions:
                 unique_classes = set(signup['class_name'] for signup in educator_signups)
                 
                 # Get recent signups (last 30 days)
-                thirty_days_ago = datetime.now().replace(day=1)  # Simplified for demo
+                thirty_days_ago = datetime.now(_eastern_tz).replace(day=1)  # Simplified for demo
                 recent_signups = sum(1 for signup in educator_signups 
                                    if signup.get('signup_date_display'))  # Simplified check
                 
@@ -1606,7 +1609,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                 st.download_button(
                                     label="📊 Download Compliance Report (Excel)",
                                     data=excel_data,
-                                    file_name=f"compliance_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                                    file_name=f"compliance_report_{datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M')}.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     use_container_width=True
                                 )
@@ -1624,7 +1627,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                             st.download_button(
                                 label="📄 Download as CSV (Fallback)",
                                 data=csv,
-                                file_name=f"compliance_report_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                                file_name=f"compliance_report_{datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M')}.csv",
                                 mime="text/csv",
                                 use_container_width=True
                             )
@@ -1739,7 +1742,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                 st.download_button(
                                     "Download Coverage CSV",
                                     csv,
-                                    f"educator_coverage_{datetime.now().strftime('%Y%m%d')}.csv",
+                                    f"educator_coverage_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.csv",
                                     "text/csv"
                                 )
                         
@@ -1749,7 +1752,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                 st.download_button(
                                     "Download Needs CSV",
                                     csv,
-                                    f"educator_needs_{datetime.now().strftime('%Y%m%d')}.csv",
+                                    f"educator_needs_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.csv",
                                     "text/csv"
                                 )
                         
@@ -1759,7 +1762,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                 st.download_button(
                                     "Download Participation CSV",
                                     csv,
-                                    f"educator_participation_{datetime.now().strftime('%Y%m%d')}.csv",
+                                    f"educator_participation_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.csv",
                                     "text/csv"
                                 )
                     
@@ -1856,7 +1859,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                 st.download_button(
                                     "Download Roster Excel",
                                     excel_data,
-                                    f"{selected_class.replace(' ', '_')}_roster_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                                    f"{selected_class.replace(' ', '_')}_roster_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.xlsx",
                                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     use_container_width=True
                                 )
@@ -1885,7 +1888,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                 st.download_button(
                                     "Download Completion Excel",
                                     excel_data,
-                                    f"{selected_class.replace(' ', '_')}_completion_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                                    f"{selected_class.replace(' ', '_')}_completion_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.xlsx",
                                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     use_container_width=True
                                 )
@@ -1915,7 +1918,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                     st.download_button(
                                         "Download Educator Excel",
                                         excel_data,
-                                        f"{selected_class.replace(' ', '_')}_educators_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                                        f"{selected_class.replace(' ', '_')}_educators_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.xlsx",
                                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                         use_container_width=True
                                     )
@@ -1966,13 +1969,13 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
         with col1:
             start_date = st.date_input(
                 "Start Date",
-                value=datetime.now().replace(day=1),  # Default to first of current month
+                value=datetime.now(_eastern_tz).replace(day=1),  # Default to first of current month
                 key="schedule_report_start_date"
             )
         
         with col2:
             # Default end date to end of current month
-            now = datetime.now()
+            now = datetime.now(_eastern_tz)
             last_day = calendar.monthrange(now.year, now.month)[1]
             default_end = now.replace(day=last_day)
             
@@ -2073,7 +2076,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                             label="📊 Download as Excel",
                             type="primary",
                             data=excel_data,
-                            file_name=f"education_schedule_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                            file_name=f"education_schedule_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}_{datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M')}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True
                         )

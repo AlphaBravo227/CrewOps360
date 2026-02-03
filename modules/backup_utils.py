@@ -5,6 +5,9 @@ Module for handling track submission backups
 import os
 import shutil
 from datetime import datetime
+import pytz
+
+_eastern_tz = pytz.timezone('America/New_York')
 
 def create_backup(staff_name):
     """
@@ -25,7 +28,7 @@ def create_backup(staff_name):
         os.makedirs('backups', exist_ok=True)
         
         # Create timestamp for backup
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(_eastern_tz).strftime("%Y%m%d_%H%M%S")
         
         # Create backup filename
         backup_filename = f"backups/medflight_tracks_{timestamp}.db"

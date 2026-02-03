@@ -13,6 +13,9 @@ import streamlit as st
 import sqlite3
 import json
 from datetime import datetime
+import pytz
+
+_eastern_tz = pytz.timezone('America/New_York')
 from modules.db_utils import get_db_connection
 from modules.admin_pdf_generator import generate_admin_edit_pdf
 
@@ -193,7 +196,7 @@ def save_edited_track(track_id, staff_name, edited_track_data, admin_user, chang
         
         # Convert edited track data to JSON
         track_json = json.dumps(edited_track_data)
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
         
         # Log to track_history with admin_edit status
         notes = f"Admin edit by {admin_user}. Changes: {len(changes_summary)} days modified"
