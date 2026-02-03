@@ -18,7 +18,8 @@ from modules.db_utils import (
 )
 
 # Constants
-SUMMER_START_DATE = datetime(2026, 5, 31)  # May 31, 2026 (Sunday)
+SUMMER_START_DATE = datetime(2026, 5, 31)  # May 31, 2026 (Sunday) - Default for Nurse/Medic
+CCEMT_START_DATE = datetime(2026, 6, 7)    # June 7, 2026 (Sunday) - CCEMT specific
 SUMMER_END_DATE = datetime(2026, 9, 12)    # September 12, 2026 (Saturday)
 
 # Weekly caps by role
@@ -79,15 +80,23 @@ def ensure_summer_leave_tables():
         print(f"Error ensuring summer leave tables: {e}")
         return False
 
-def get_summer_weeks():
+def get_summer_weeks(role=None):
     """
     Generate list of all weeks in the summer leave period (Sunday-Saturday)
+
+    Args:
+        role (str): Role of the staff member (optional). If 'CCEMT', uses CCEMT start date.
 
     Returns:
         list: List of tuples (week_start_date, week_end_date, display_string)
     """
     weeks = []
-    current_date = SUMMER_START_DATE
+
+    # Use role-specific start date
+    if role == 'CCEMT':
+        current_date = CCEMT_START_DATE
+    else:
+        current_date = SUMMER_START_DATE
 
     while current_date <= SUMMER_END_DATE:
         # Calculate week end (Saturday)
@@ -126,7 +135,7 @@ def get_staff_track_schedule(staff_name, role, track_manager):
     if not track_manager or role not in ['NURSE', 'MEDIC', 'CCEMT']:
         return None
 
-    weeks = get_summer_weeks()
+    weeks = get_summer_weeks(role)
     schedule_by_week = {}
 
     for week_start_str, week_end_str, display_str in weeks:
@@ -200,7 +209,14 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
     """
     st.header("☀️ Summer Leave Time Selection")
     st.markdown(f"**Staff:** {staff_name} | **Role:** {role}")
-    st.markdown(f"**Period:** {SUMMER_START_DATE.strftime('%B %d, %Y')} - {SUMMER_END_DATE.strftime('%B %d, %Y')}")
+
+    # Display role-specific date range
+    if role == 'CCEMT':
+        start_date_display = CCEMT_START_DATE.strftime('%B %d, %Y')
+    else:
+        start_date_display = SUMMER_START_DATE.strftime('%B %d, %Y')
+
+    st.markdown(f"**Period:** {start_date_display} - {SUMMER_END_DATE.strftime('%B %d, %Y')}")
     st.markdown("---")
 
     # Check if LT is open for this user
@@ -237,7 +253,7 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
         st.info("You can select a different week below. Your previous selection will be automatically cancelled.")
 
     # Get all available weeks
-    weeks = get_summer_weeks()
+    weeks = get_summer_weeks(role)
 
     # Get track schedule if applicable
     schedule_by_week = get_staff_track_schedule(staff_name, role, track_manager)
@@ -482,8 +498,8 @@ def display_admin_interface(staff_list, role_mapping):
             st.markdown("---")
             st.markdown("### Add/Update Selection")
 
-            # Week selector
-            weeks = get_summer_weeks()
+            # Week selector (use staff's role to get appropriate weeks)
+            weeks = get_summer_weeks(staff_role)
             week_options = [display_str for _, _, display_str in weeks]
             week_mapping = {display_str: (start, end) for start, end, display_str in weeks}
 
