@@ -284,7 +284,7 @@ def display_module_selection():
                     View available weeks and manage your selection.
                 </p>
                 <ul style="text-align: left; color: #555; margin-bottom: 2rem;">
-                    <li>📅 View available weeks (May 13 - Sep 12, 2026)</li>
+                    <li>📅 View available weeks (May 31 - Sep 12, 2026)</li>
                     <li>✅ Select your preferred week</li>
                     <li>📊 View your work schedule for each week</li>
                     <li>🔄 Change or cancel your selection</li>
