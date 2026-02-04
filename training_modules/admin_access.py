@@ -1215,7 +1215,8 @@ class AdminAccess:
                         role=role,
                         meeting_type=meeting_type,
                         session_time=session_time,
-                        override_conflict=True  # Admin can override conflicts
+                        override_conflict=True,  # Admin can override conflicts
+                        override_capacity=True   # Admin can override capacity limits
                     )
 
                     # Handle tuple return (success, message) or special case ("duplicate_found", enrollments)
@@ -1263,7 +1264,8 @@ class AdminAccess:
                         staff_name=selected_staff,
                         class_name=class_name,
                         class_date=class_date,
-                        override_conflict=True  # Admin can override conflicts
+                        override_conflict=True,  # Admin can override conflicts
+                        override_capacity=True   # Admin can override capacity limits
                     )
 
                     # Handle tuple return (success, message)
