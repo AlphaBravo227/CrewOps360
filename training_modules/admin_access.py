@@ -1065,13 +1065,18 @@ class AdminAccess:
                     st.error("Failed to remove educator")
 
     def _display_add_student_form(self, class_name, class_date, class_details):
-        """Display form to add a new student enrollment"""
+        """Display form to add a new student enrollment with session availability info"""
         # Get all staff
         staff_list = self.excel_admin_functions.excel.get_staff_list()
 
         if not staff_list:
             st.warning("No staff found")
             return
+
+        # Get available session options to show capacity
+        session_options = st.session_state.training_enrollment_manager.get_available_session_options(
+            class_name, class_date
+        )
 
         # Create unique key for this form
         form_key = f"add_student_{class_name}_{class_date}".replace(" ", "_").replace("/", "_")
@@ -1084,37 +1089,112 @@ class AdminAccess:
                 key=f"{form_key}_staff"
             )
 
-            # Role selection (for classes that have role-based enrollment)
-            class_type = class_details.get('class_type', '')
+            # Initialize variables
             role = 'General'
-
-            # Check if this class has role-based enrollment
-            if 'Nurse' in class_type or 'Medic' in class_type or 'CCEMT' in class_type:
-                role = st.selectbox(
-                    "Role",
-                    options=['General', 'Nurse', 'Medic', 'CCEMT'],
-                    key=f"{form_key}_role"
-                )
-
-            # Session time selection (for multi-session classes)
             session_time = None
-            if class_details.get('has_multiple_sessions'):
-                session_times = class_details.get('session_times', [])
-                if session_times:
-                    session_time = st.selectbox(
-                        "Session Time",
-                        options=[""] + session_times,
-                        key=f"{form_key}_session"
+            meeting_type = None
+
+            # Check for multi-session classes
+            if session_options and len(session_options) > 0:
+                # Multi-session class - show session options with capacity
+                st.markdown("**Available Sessions:**")
+
+                session_choices = []
+                for opt in session_options:
+                    if opt.get('type') == 'nurse_medic_separate':
+                        # Show separate options for nurse and medic
+                        display_time = opt.get('display_time', opt.get('session_time'))
+                        nurse_count = len(opt.get('nurses', []))
+                        medic_count = len(opt.get('medics', []))
+                        ccemt_count = len(opt.get('ccemts', []))
+
+                        if opt.get('has_ccemt'):
+                            session_choices.append(f"{display_time} - Nurse ({nurse_count}/1)")
+                            session_choices.append(f"{display_time} - Medic ({medic_count}/1)")
+                            session_choices.append(f"{display_time} - CCEMT ({ccemt_count}/1)")
+                        else:
+                            max_per_role = int(class_details.get('students_per_class', 21)) // 2
+                            session_choices.append(f"{display_time} - Nurse ({nurse_count}/{max_per_role})")
+                            session_choices.append(f"{display_time} - Medic ({medic_count}/{max_per_role})")
+                    else:
+                        # Regular session - show total enrollment
+                        display_time = opt.get('display_time', opt.get('session_time'))
+                        enrolled_count = len(opt.get('enrolled', []))
+                        max_students = int(class_details.get('students_per_class', 21))
+                        session_choices.append(f"{display_time} ({enrolled_count}/{max_students})")
+
+                if session_choices:
+                    selected_option = st.selectbox(
+                        "Select Session",
+                        options=[""] + session_choices,
+                        key=f"{form_key}_session_option"
                     )
 
-            # Meeting type (for Staff Meetings)
-            meeting_type = None
-            if 'Staff Meeting' in class_name:
-                meeting_type = st.selectbox(
-                    "Meeting Type",
-                    options=["", "LIVE", "Virtual"],
-                    key=f"{form_key}_meeting"
-                )
+                    # Parse the selected option to extract session_time and role
+                    if selected_option:
+                        # Extract session time from the display string
+                        for opt in session_options:
+                            display_time = opt.get('display_time', opt.get('session_time'))
+                            if display_time in selected_option:
+                                session_time = opt.get('session_time')
+
+                                # Check if role is specified in selection
+                                if ' - Nurse' in selected_option:
+                                    role = 'Nurse'
+                                elif ' - Medic' in selected_option:
+                                    role = 'Medic'
+                                elif ' - CCEMT' in selected_option:
+                                    role = 'CCEMT'
+                                break
+            else:
+                # Single session class or Staff Meeting
+                class_type = class_details.get('class_type', '')
+
+                # Check if this class has role-based enrollment
+                if 'Nurse' in class_type or 'Medic' in class_type or 'CCEMT' in class_type:
+                    # Show current enrollment by role
+                    enrollments = st.session_state.training_enrollment_manager.db.get_class_enrollments(
+                        class_name, class_date
+                    )
+                    nurse_count = len([e for e in enrollments if e.get('role') == 'Nurse'])
+                    medic_count = len([e for e in enrollments if e.get('role') == 'Medic'])
+                    ccemt_count = len([e for e in enrollments if e.get('role') == 'CCEMT'])
+
+                    has_ccemt = class_details.get('has_ccemt', 'No').lower() == 'yes'
+                    if has_ccemt:
+                        role_options = [
+                            f"Nurse ({nurse_count}/1)",
+                            f"Medic ({medic_count}/1)",
+                            f"CCEMT ({ccemt_count}/1)"
+                        ]
+                    else:
+                        max_per_role = int(class_details.get('students_per_class', 21)) // 2
+                        role_options = [
+                            f"Nurse ({nurse_count}/{max_per_role})",
+                            f"Medic ({medic_count}/{max_per_role})"
+                        ]
+
+                    selected_role_option = st.selectbox(
+                        "Select Role",
+                        options=[""] + role_options,
+                        key=f"{form_key}_role"
+                    )
+
+                    if selected_role_option:
+                        if 'Nurse' in selected_role_option:
+                            role = 'Nurse'
+                        elif 'Medic' in selected_role_option:
+                            role = 'Medic'
+                        elif 'CCEMT' in selected_role_option:
+                            role = 'CCEMT'
+
+                # Meeting type (for Staff Meetings)
+                if 'Staff Meeting' in class_name:
+                    meeting_type = st.selectbox(
+                        "Meeting Type",
+                        options=["", "LIVE", "Virtual"],
+                        key=f"{form_key}_meeting"
+                    )
 
             # Submit button
             submitted = st.form_submit_button("➕ Add Student")
@@ -1124,6 +1204,8 @@ class AdminAccess:
                     st.error("Please select a staff member")
                 elif 'Staff Meeting' in class_name and not meeting_type:
                     st.error("Please select meeting type")
+                elif session_options and len(session_options) > 0 and not session_time:
+                    st.error("Please select a session")
                 else:
                     # Add the enrollment
                     result = st.session_state.training_enrollment_manager.enroll_staff(
@@ -1136,11 +1218,18 @@ class AdminAccess:
                         override_conflict=True  # Admin can override conflicts
                     )
 
-                    if result['success']:
-                        st.success(f"Added {selected_staff} to {class_name}")
-                        st.rerun()
+                    # Handle tuple return (success, message) or special case ("duplicate_found", enrollments)
+                    if isinstance(result, tuple):
+                        success, message = result
+                        if success is True:
+                            st.success(f"Added {selected_staff} to {class_name}")
+                            st.rerun()
+                        elif success == "duplicate_found":
+                            st.warning(f"{selected_staff} is already enrolled in this class")
+                        else:
+                            st.error(f"Failed to add enrollment: {message}")
                     else:
-                        st.error(f"Failed to add enrollment: {result.get('message', 'Unknown error')}")
+                        st.error("Unexpected response from enrollment system")
 
     def _display_add_educator_form(self, class_name, class_date):
         """Display form to add a new educator signup"""
@@ -1177,11 +1266,16 @@ class AdminAccess:
                         override_conflict=True  # Admin can override conflicts
                     )
 
-                    if result['success']:
-                        st.success(f"Added {selected_staff} as educator")
-                        st.rerun()
+                    # Handle tuple return (success, message)
+                    if isinstance(result, tuple):
+                        success, message = result
+                        if success:
+                            st.success(f"Added {selected_staff} as educator")
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to add educator: {message}")
                     else:
-                        st.error(f"Failed to add educator: {result.get('message', 'Unknown error')}")
+                        st.error("Unexpected response from educator system")
 
     def _show_track_status_manager(self):
         """Show track status management functionality"""
