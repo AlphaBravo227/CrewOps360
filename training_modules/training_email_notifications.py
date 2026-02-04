@@ -68,13 +68,17 @@ class TrainingEmailNotifier:
             # Try parsing different date formats
             try:
                 class_date = datetime.strptime(class_date_str, '%m/%d/%Y')
+                # Make timezone-aware to match today
+                class_date = _eastern_tz.localize(class_date)
             except ValueError:
                 try:
                     class_date = datetime.strptime(class_date_str, '%Y-%m-%d')
+                    # Make timezone-aware to match today
+                    class_date = _eastern_tz.localize(class_date)
                 except ValueError:
                     # If we can't parse the date, assume it's not within 60 days
                     return False
-            
+
             today = datetime.now(_eastern_tz)
             days_until_class = (class_date - today).days
             

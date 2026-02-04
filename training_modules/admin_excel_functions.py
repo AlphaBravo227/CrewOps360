@@ -170,7 +170,9 @@ class ExcelAdminFunctions:
                             try:
                                 date_str = class_details[date_key]
                                 date_obj = datetime.strptime(date_str, '%m/%d/%Y')
-                                
+                                # Make timezone-aware to match current_date and ninety_days_out
+                                date_obj = _eastern_tz.localize(date_obj)
+
                                 # For two-day classes, use Day 1 as the date
                                 if earliest_date is None or date_obj < earliest_date:
                                     earliest_date = date_obj
