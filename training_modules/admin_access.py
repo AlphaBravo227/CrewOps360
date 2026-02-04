@@ -933,8 +933,28 @@ class AdminAccess:
                             st.markdown(f"**Type:** {class_details.get('class_type', 'N/A')}")
                             st.markdown("---")
 
-                            # Display each session/date
+                            # Expand two-day classes to show both days
+                            is_two_day = st.session_state.training_enrollment_manager._is_two_day_class(selected_class)
+                            dates_to_display = []
+
                             for date in class_dates:
+                                if is_two_day:
+                                    # Get both days for two-day classes
+                                    both_days = st.session_state.training_enrollment_manager._get_two_day_dates(date)
+                                    dates_to_display.extend(both_days)
+                                else:
+                                    dates_to_display.append(date)
+
+                            # Remove duplicates while preserving order
+                            seen = set()
+                            unique_dates = []
+                            for date in dates_to_display:
+                                if date not in seen:
+                                    seen.add(date)
+                                    unique_dates.append(date)
+
+                            # Display each session/date
+                            for date in unique_dates:
                                 self._display_session_roster_editor(selected_class, date, class_details)
                         else:
                             st.warning("No sessions found for this class")
