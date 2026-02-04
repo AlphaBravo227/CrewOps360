@@ -833,7 +833,7 @@ class AdminAccess:
             st.error("Admin functions not initialized")
             return
         
-        tab1, tab2, tab3 = st.tabs(["📋 Class Overview", "📊 Utilization", "📅 Schedules"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📋 Class Overview", "📊 Utilization", "📅 Schedules", "✏️ Edit Class Rosters"])
         
         with tab1:
             st.write("### Class Overview")
@@ -906,7 +906,283 @@ class AdminAccess:
                     
             except Exception as e:
                 st.error(f"Error loading utilization data: {str(e)}")
-        
+
+        with tab4:
+            st.write("### Edit Class Rosters")
+            st.info("Manage student enrollments and educator assignments for each class session")
+
+            try:
+                # Get all classes
+                all_classes = self.excel_admin_functions.excel.get_all_classes()
+
+                if all_classes:
+                    # Class selection dropdown
+                    selected_class = st.selectbox(
+                        "Select a class to edit:",
+                        options=[""] + all_classes,
+                        key="edit_roster_class_selector"
+                    )
+
+                    if selected_class:
+                        # Get class dates/sessions
+                        class_dates = self.excel_admin_functions.excel.get_class_dates(selected_class)
+                        class_details = self.excel_admin_functions.excel.get_class_details(selected_class)
+
+                        if class_dates and class_details:
+                            st.markdown(f"**Class:** {selected_class}")
+                            st.markdown(f"**Type:** {class_details.get('class_type', 'N/A')}")
+                            st.markdown("---")
+
+                            # Display each session/date
+                            for date in class_dates:
+                                self._display_session_roster_editor(selected_class, date, class_details)
+                        else:
+                            st.warning("No sessions found for this class")
+                else:
+                    st.info("No classes found")
+
+            except Exception as e:
+                st.error(f"Error loading class roster editor: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
+
+    def _display_session_roster_editor(self, class_name, class_date, class_details):
+        """Display roster editor for a single class session with add/remove capabilities"""
+
+        # Create an expander for each session
+        with st.expander(f"📅 {class_date}", expanded=False):
+            # Get enrollments and educator signups for this session
+            enrollments = st.session_state.training_enrollment_manager.db.get_class_enrollments(
+                class_name, class_date
+            )
+            educator_signups = st.session_state.training_educator_manager.db.get_educator_signups_for_class(
+                class_name, class_date
+            )
+
+            # Get class capacity
+            capacity = class_details.get('capacity', 'N/A')
+
+            # Display capacity and enrollment count
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Capacity", capacity)
+            with col2:
+                st.metric("Students Enrolled", len(enrollments))
+            with col3:
+                st.metric("Educators Signed Up", len(educator_signups))
+
+            st.markdown("---")
+
+            # Create two columns for Students and Educators
+            col_students, col_educators = st.columns(2)
+
+            with col_students:
+                st.markdown("### 👥 Enrolled Students")
+
+                if enrollments:
+                    # Group by role if needed
+                    roles_present = set(e.get('role', 'General') for e in enrollments)
+
+                    if len(roles_present) > 1 and 'General' not in roles_present:
+                        # Display by role groups (Nurse, Medic, CCEMT)
+                        for role in sorted(roles_present):
+                            role_enrollments = [e for e in enrollments if e.get('role') == role]
+                            if role_enrollments:
+                                st.markdown(f"**{role}:**")
+                                for enrollment in role_enrollments:
+                                    self._display_enrollment_row_with_remove(enrollment)
+                    else:
+                        # Display all enrollments
+                        for enrollment in enrollments:
+                            self._display_enrollment_row_with_remove(enrollment)
+                else:
+                    st.info("No students enrolled")
+
+                # Add new student form
+                st.markdown("---")
+                st.markdown("**➕ Add New Student**")
+                self._display_add_student_form(class_name, class_date, class_details)
+
+            with col_educators:
+                st.markdown("### 👨‍🏫 Educator Signups")
+
+                if educator_signups:
+                    for signup in educator_signups:
+                        self._display_educator_row_with_remove(signup)
+                else:
+                    st.info("No educators signed up")
+
+                # Add new educator form
+                st.markdown("---")
+                st.markdown("**➕ Add New Educator**")
+                self._display_add_educator_form(class_name, class_date)
+
+    def _display_enrollment_row_with_remove(self, enrollment):
+        """Display a single enrollment with remove button"""
+        col1, col2 = st.columns([4, 1])
+
+        with col1:
+            # Display staff name and details
+            display_text = enrollment['staff_name']
+
+            # Add role if not General
+            if enrollment.get('role') and enrollment['role'] != 'General':
+                display_text += f" ({enrollment['role']})"
+
+            # Add session time if applicable
+            if enrollment.get('session_time'):
+                display_text += f" - {enrollment['session_time']}"
+
+            # Add meeting type for Staff Meetings
+            if enrollment.get('meeting_type'):
+                display_text += f" - {enrollment['meeting_type']}"
+
+            st.write(display_text)
+
+        with col2:
+            # Remove button
+            if st.button("🗑️", key=f"remove_enrollment_{enrollment['id']}", help="Remove enrollment"):
+                if st.session_state.training_enrollment_manager.cancel_enrollment(enrollment['id']):
+                    st.success(f"Removed {enrollment['staff_name']}")
+                    st.rerun()
+                else:
+                    st.error("Failed to remove enrollment")
+
+    def _display_educator_row_with_remove(self, signup):
+        """Display a single educator signup with remove button"""
+        col1, col2 = st.columns([4, 1])
+
+        with col1:
+            st.write(signup['staff_name'])
+
+        with col2:
+            # Remove button
+            if st.button("🗑️", key=f"remove_educator_{signup['id']}", help="Remove educator"):
+                if st.session_state.training_educator_manager.cancel_educator_signup(signup['id']):
+                    st.success(f"Removed {signup['staff_name']}")
+                    st.rerun()
+                else:
+                    st.error("Failed to remove educator")
+
+    def _display_add_student_form(self, class_name, class_date, class_details):
+        """Display form to add a new student enrollment"""
+        # Get all staff
+        staff_list = self.excel_admin_functions.excel.get_staff_list()
+
+        if not staff_list:
+            st.warning("No staff found")
+            return
+
+        # Create unique key for this form
+        form_key = f"add_student_{class_name}_{class_date}".replace(" ", "_").replace("/", "_")
+
+        with st.form(key=form_key):
+            # Staff selection
+            selected_staff = st.selectbox(
+                "Select Staff Member",
+                options=[""] + sorted(staff_list),
+                key=f"{form_key}_staff"
+            )
+
+            # Role selection (for classes that have role-based enrollment)
+            class_type = class_details.get('class_type', '')
+            role = 'General'
+
+            # Check if this class has role-based enrollment
+            if 'Nurse' in class_type or 'Medic' in class_type or 'CCEMT' in class_type:
+                role = st.selectbox(
+                    "Role",
+                    options=['General', 'Nurse', 'Medic', 'CCEMT'],
+                    key=f"{form_key}_role"
+                )
+
+            # Session time selection (for multi-session classes)
+            session_time = None
+            if class_details.get('has_multiple_sessions'):
+                session_times = class_details.get('session_times', [])
+                if session_times:
+                    session_time = st.selectbox(
+                        "Session Time",
+                        options=[""] + session_times,
+                        key=f"{form_key}_session"
+                    )
+
+            # Meeting type (for Staff Meetings)
+            meeting_type = None
+            if 'Staff Meeting' in class_name:
+                meeting_type = st.selectbox(
+                    "Meeting Type",
+                    options=["", "LIVE", "Virtual"],
+                    key=f"{form_key}_meeting"
+                )
+
+            # Submit button
+            submitted = st.form_submit_button("➕ Add Student")
+
+            if submitted:
+                if not selected_staff:
+                    st.error("Please select a staff member")
+                elif 'Staff Meeting' in class_name and not meeting_type:
+                    st.error("Please select meeting type")
+                else:
+                    # Add the enrollment
+                    result = st.session_state.training_enrollment_manager.enroll_staff(
+                        staff_name=selected_staff,
+                        class_name=class_name,
+                        class_date=class_date,
+                        role=role,
+                        meeting_type=meeting_type,
+                        session_time=session_time,
+                        override_conflict=True  # Admin can override conflicts
+                    )
+
+                    if result['success']:
+                        st.success(f"Added {selected_staff} to {class_name}")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed to add enrollment: {result.get('message', 'Unknown error')}")
+
+    def _display_add_educator_form(self, class_name, class_date):
+        """Display form to add a new educator signup"""
+        # Get all staff
+        staff_list = self.excel_admin_functions.excel.get_staff_list()
+
+        if not staff_list:
+            st.warning("No staff found")
+            return
+
+        # Create unique key for this form
+        form_key = f"add_educator_{class_name}_{class_date}".replace(" ", "_").replace("/", "_")
+
+        with st.form(key=form_key):
+            # Staff selection
+            selected_staff = st.selectbox(
+                "Select Educator",
+                options=[""] + sorted(staff_list),
+                key=f"{form_key}_staff"
+            )
+
+            # Submit button
+            submitted = st.form_submit_button("➕ Add Educator")
+
+            if submitted:
+                if not selected_staff:
+                    st.error("Please select a staff member")
+                else:
+                    # Add the educator signup
+                    result = st.session_state.training_educator_manager.signup_as_educator(
+                        staff_name=selected_staff,
+                        class_name=class_name,
+                        class_date=class_date,
+                        override_conflict=True  # Admin can override conflicts
+                    )
+
+                    if result['success']:
+                        st.success(f"Added {selected_staff} as educator")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed to add educator: {result.get('message', 'Unknown error')}")
+
     def _show_track_status_manager(self):
         """Show track status management functionality"""
         st.subheader("🔧 Track Management System")
