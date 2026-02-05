@@ -321,7 +321,7 @@ def get_staff_track_schedule(staff_name, role, track_manager):
 
     return schedule_by_week
 
-def display_track_schedule(schedule_by_week, selected_week_display=None, week_availability=None):
+def display_track_schedule(schedule_by_week, selected_week_display=None, week_availability=None, week_shift_info=None):
     """
     Display track schedule in a compact format
 
@@ -329,6 +329,7 @@ def display_track_schedule(schedule_by_week, selected_week_display=None, week_av
         schedule_by_week (dict): Schedule data by week
         selected_week_display (str): Highlight this week if provided
         week_availability (dict): Dictionary mapping week display strings to availability status
+        week_shift_info (dict): Dictionary mapping week display strings to shift usage info (shifts_used, shifts_remaining, cap)
     """
     if not schedule_by_week:
         st.info("No track data available for your role")
@@ -340,13 +341,23 @@ def display_track_schedule(schedule_by_week, selected_week_display=None, week_av
         # Check if this week is available
         is_available = week_availability.get(week_display, True) if week_availability else True
 
-        # Build the header with availability indicator
+        # Get shift info for this week
+        shift_info = week_shift_info.get(week_display) if week_shift_info else None
+
+        # Build the header with availability indicator and shift info
         if week_display == selected_week_display:
             header = f"**📅 {week_display}** ⭐ **(Selected)**"
         elif not is_available:
             header = f"**📅 {week_display}** 🔴 **FULL - Not Available**"
         else:
             header = f"**📅 {week_display}**"
+
+        # Add shift usage info if available
+        if shift_info:
+            shifts_used = shift_info['shifts_used']
+            cap = shift_info['cap']
+            shifts_remaining = shift_info['shifts_remaining']
+            header += f" - {shifts_remaining} shifts remaining ({shifts_used}/{cap} shifts used)"
 
         st.markdown(header)
 
@@ -446,7 +457,7 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
     week_options = []
     week_mapping = {}
     week_availability = {}  # Track availability for each week
-    week_shifts_remaining = {}  # Track shifts remaining for each week
+    week_shift_info = {}  # Track shift usage info for each week
 
     for week_start_str, week_end_str, display_str in weeks:
         # Check availability for this week (now based on shifts, not people)
@@ -456,30 +467,31 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
         shifts_remaining = cap - shifts_used
         is_available = shifts_remaining > 0
 
-        # Store availability and remaining shifts for display
+        # Store availability and shift info for display
         week_availability[display_str] = is_available
-        week_shifts_remaining[display_str] = shifts_remaining
+        week_shift_info[display_str] = {
+            'shifts_used': shifts_used,
+            'cap': cap,
+            'shifts_remaining': shifts_remaining
+        }
 
         if is_available:
             status = f"{shifts_remaining} shifts remaining"
         else:
-            status = "Full"
+            status = "FULL - Not Available"
 
         option_label = f"{display_str} - {status} ({shifts_used}/{cap} shifts used)"
 
-        # Include all weeks (available and full) in the mapping
-        week_mapping[option_label] = (week_start_str, week_end_str, display_str, shifts_remaining)
-
-        # Only add to dropdown if available
-        if is_available:
-            week_options.append(option_label)
+        # Include all weeks (available and full) in the mapping and dropdown
+        week_mapping[option_label] = (week_start_str, week_end_str, display_str, shifts_remaining, is_available)
+        week_options.append(option_label)
 
     if not week_options:
         st.warning("No weeks are currently available for your role.")
         # Still show schedule even if no weeks available, so user can see their shifts
         if schedule_by_week:
             st.markdown("---")
-            display_track_schedule(schedule_by_week, None, week_availability)
+            display_track_schedule(schedule_by_week, None, week_availability, week_shift_info)
         return
 
     # Week selection dropdown with placeholder
@@ -494,69 +506,74 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
 
     # Show shift selection and submit button if a valid week is selected
     if selected_option and selected_option != placeholder:
-        week_start_str, week_end_str, display_str, shifts_remaining = week_mapping[selected_option]
+        week_start_str, week_end_str, display_str, shifts_remaining, is_available = week_mapping[selected_option]
 
-        # Determine shift options for dropdown
-        max_shifts_available = min(shifts_per_week, shifts_remaining)
+        # Check if week is full
+        if not is_available:
+            st.error("❌ **This week is full and cannot be selected.**")
+            st.info("Please choose a different week with available shifts.")
+        else:
+            # Determine shift options for dropdown
+            max_shifts_available = min(shifts_per_week, shifts_remaining)
 
-        # Check if this is a partial week (user can't use all their shifts)
-        is_partial = max_shifts_available < shifts_per_week
+            # Check if this is a partial week (user can't use all their shifts)
+            is_partial = max_shifts_available < shifts_per_week
 
-        if is_partial:
-            st.warning(f"⚠️ **Partial Week Notice:** This week only has {shifts_remaining} shift(s) remaining. You can only use {max_shifts_available} shift(s) for this week.")
+            if is_partial:
+                st.warning(f"⚠️ **Partial Week Notice:** This week only has {shifts_remaining} shift(s) remaining. You can only use {max_shifts_available} shift(s) for this week.")
 
-        # Create shift selection dropdown
-        shift_options = list(range(max_shifts_available, 0, -1))  # From max down to 1
+            # Create shift selection dropdown
+            shift_options = list(range(max_shifts_available, 0, -1))  # From max down to 1
 
-        st.markdown("### How many shifts would you like to use?")
-        selected_shifts = st.selectbox(
-            "Number of shifts:",
-            options=shift_options,
-            index=0,  # Default to maximum available
-            key="shift_count_select"
-        )
+            st.markdown("### How many shifts would you like to use?")
+            selected_shifts = st.selectbox(
+                "Number of shifts:",
+                options=shift_options,
+                index=0,  # Default to maximum available
+                key="shift_count_select"
+            )
 
-        st.info(f"You are requesting **{selected_shifts}** shift(s) for the week of **{display_str}**")
+            st.info(f"You are requesting **{selected_shifts}** shift(s) for the week of **{display_str}**")
 
-        # Submit button
-        if st.button("✅ Submit My Selection", type="primary"):
-            success, message = save_summer_leave_selection(staff_name, role, week_start_str, week_end_str, selected_shifts)
-            if success:
-                st.success(f"✅ {message}")
+            # Submit button
+            if st.button("✅ Submit My Selection", type="primary"):
+                success, message = save_summer_leave_selection(staff_name, role, week_start_str, week_end_str, selected_shifts)
+                if success:
+                    st.success(f"✅ {message}")
 
-                # Send email notification to same group as training events
-                try:
-                    # Get updated shift count for this week/role
-                    total_shifts_used = get_week_selections_by_role(week_start_str, role)
-                    role_cap = ROLE_CAPS.get(role, 2)
+                    # Send email notification to same group as training events
+                    try:
+                        # Get updated shift count for this week/role
+                        total_shifts_used = get_week_selections_by_role(week_start_str, role)
+                        role_cap = ROLE_CAPS.get(role, 2)
 
-                    # Send notification
-                    email_success, email_message = send_summer_leave_notification(
-                        staff_name, role, week_start_str, week_end_str,
-                        total_shifts_used, role_cap
-                    )
+                        # Send notification
+                        email_success, email_message = send_summer_leave_notification(
+                            staff_name, role, week_start_str, week_end_str,
+                            total_shifts_used, role_cap
+                        )
 
-                    # Don't fail the whole operation if email fails
-                    if not email_success:
-                        print(f"Email notification failed: {email_message}")
-                except Exception as e:
-                    print(f"Error sending summer leave notification: {str(e)}")
+                        # Don't fail the whole operation if email fails
+                        if not email_success:
+                            print(f"Email notification failed: {email_message}")
+                    except Exception as e:
+                        print(f"Error sending summer leave notification: {str(e)}")
 
-                st.balloons()
-                st.rerun()
-            else:
-                st.error(f"❌ {message}")
+                    st.balloons()
+                    st.rerun()
+                else:
+                    st.error(f"❌ {message}")
 
     # Always show track schedule so user can see when they're working
     if schedule_by_week:
         st.markdown("---")
         # If a valid week is selected, highlight it in the schedule
         if selected_option and selected_option != placeholder:
-            week_start_str, week_end_str, display_str, shifts_remaining = week_mapping[selected_option]
-            display_track_schedule(schedule_by_week, display_str, week_availability)
+            week_start_str, week_end_str, display_str, shifts_remaining, is_available = week_mapping[selected_option]
+            display_track_schedule(schedule_by_week, display_str, week_availability, week_shift_info)
         else:
             # Show schedule without any week highlighted
-            display_track_schedule(schedule_by_week, None, week_availability)
+            display_track_schedule(schedule_by_week, None, week_availability, week_shift_info)
 
 def display_admin_interface(staff_list, role_mapping):
     """
