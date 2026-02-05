@@ -11,7 +11,10 @@ import sqlite3
 import os
 import json
 from datetime import datetime
+import pytz
 from .shift_definitions import day_shifts, night_shifts
+
+_eastern_tz = pytz.timezone('America/New_York')
 from .db_utils import (
     get_db_connection,
     initialize_database,
@@ -243,7 +246,7 @@ def save_preferences_to_database(staff_name, shift_preferences, boolean_preferen
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        current_timestamp = datetime.now().isoformat()
+        current_timestamp = datetime.now(_eastern_tz).isoformat()
         
         # Save shift preferences
         for shift_name, preference_score in shift_preferences.items():

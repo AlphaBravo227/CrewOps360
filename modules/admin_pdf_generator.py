@@ -9,6 +9,9 @@ Generates PDFs for admin track edits with:
 import os
 from fpdf import FPDF
 from datetime import datetime
+import pytz
+
+_eastern_tz = pytz.timezone('America/New_York')
 from modules.pdf_generator import (
     sanitize_text_for_pdf, 
     count_shifts_comprehensive,
@@ -46,7 +49,7 @@ class AdminEditPDF(SchedulePDF):
         
         # Add date
         self.set_font('Arial', '', 10)
-        current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
         self.cell(0, 10, f'Generated: {current_date}', 0, 1, 'R')
         
         # Add line
@@ -355,7 +358,7 @@ def generate_admin_edit_pdf(staff_name, track_data, changes, version, admin_user
     pdf.alias_nb_pages()
     
     # Get timestamp
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
     
     # Add changes summary page
     add_changes_summary_page(pdf, staff_name, version, changes, admin_user, timestamp)
@@ -394,7 +397,7 @@ def generate_admin_edit_pdf(staff_name, track_data, changes, version, admin_user
         last_name = staff_name
     
     safe_lastname = ''.join(c if c.isalnum() else '_' for c in last_name)
-    timestamp_short = datetime.now().strftime('%Y%m%d%H%M%S')
+    timestamp_short = datetime.now(_eastern_tz).strftime('%Y%m%d%H%M%S')
     filename = f"{safe_lastname}_v{version}_admin_edit_{timestamp_short}.pdf"
     
     return pdf_bytes, filename

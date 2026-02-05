@@ -20,6 +20,8 @@ import base64
 import json
 import pytz
 
+_eastern_tz = pytz.timezone('America/New_York')
+
 class FiscalYearDisplay:
     """Fiscal Year display component for integration with existing app"""
     
@@ -850,7 +852,7 @@ class FiscalYearDisplay:
             
             temp_file = os.path.join(
                 export_dir, 
-                f'FY2026_Tracks_Export{filename_suffix}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
+                f'FY2026_Tracks_Export{filename_suffix}_{datetime.now(_eastern_tz).strftime("%Y%m%d_%H%M%S")}.xlsx'
             )
             wb.save(temp_file)
             

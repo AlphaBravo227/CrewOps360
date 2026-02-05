@@ -7,6 +7,9 @@ UPDATED: Now includes effective role in track submission data, email notificatio
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+import pytz
+
+_eastern_tz = pytz.timezone('America/New_York')
 from ..track_validator import validate_track
 from ..shift_counter import count_shifts, count_shifts_by_pay_period, count_weekend_shifts_updated
 from ..db_utils import save_track_to_db, get_track_from_db
@@ -389,7 +392,7 @@ def save_track_to_db_enhanced(staff_name, enhanced_track_data, is_new=False):
         track_json = json.dumps(track_data)
         
         # Get current date and time
-        submission_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        submission_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
         
         # Check if staff member already has a track
         cursor.execute(
@@ -759,7 +762,7 @@ def submit_track(selected_staff, staff_track, days, shifts_per_pay_period, night
                                     'staff_name': selected_staff,
                                     'original_role': staff_role,  # This will now be correct
                                     'effective_role': effective_role,  # This will now be correct
-                                    'submission_timestamp': datetime.now().isoformat(),
+                                    'submission_timestamp': datetime.now(_eastern_tz).isoformat(),
                                     'track_source': 'Annual Rebid' if use_database_logic else 'Current Track Changes',
                                     'is_new_track': is_new_track,
                                     'has_preassignments': bool(staff_preassignments),

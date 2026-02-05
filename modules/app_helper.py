@@ -3,6 +3,9 @@ import shutil
 import tempfile
 import sqlite3
 from datetime import datetime
+import pytz
+
+_eastern_tz = pytz.timezone('America/New_York')
 
 def validate_uploaded_database(uploaded_file):
     """
@@ -91,7 +94,7 @@ def restore_database_from_backup(backup_path):
         
         # Create a backup of the current database before replacing
         if os.path.exists(current_db_path):
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(_eastern_tz).strftime("%Y%m%d_%H%M%S")
             pre_restore_backup = f'backups/pre_restore_backup_{timestamp}.db'
             
             # Ensure backups directory exists
@@ -138,7 +141,7 @@ def restore_database_from_upload(uploaded_file):
         
         # Create a backup of the current database before replacing
         if os.path.exists(current_db_path):
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(_eastern_tz).strftime("%Y%m%d_%H%M%S")
             pre_restore_backup = f'backups/pre_restore_backup_{timestamp}.db'
             
             # Ensure backups directory exists

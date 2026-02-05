@@ -8,6 +8,9 @@ import os
 from fpdf import FPDF  # fpdf2 package uses 'fpdf' as the module name
 import pandas as pd
 from datetime import datetime
+import pytz
+
+_eastern_tz = pytz.timezone('America/New_York')
 
 class SchedulePDF(FPDF):
     """Custom PDF class for schedule generation"""
@@ -26,7 +29,7 @@ class SchedulePDF(FPDF):
         
         # Add date
         self.set_font('Arial', '', 10)
-        current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
         self.cell(0, 10, f'Generated: {current_date}', 0, 1, 'R')
         
         # Add line
@@ -465,6 +468,6 @@ def generate_schedule_pdf(staff_name, track_data, days, shifts_per_pay_period=0,
     
     # Create filename with sanitized staff name
     safe_name = ''.join(c if c.isalnum() else '_' for c in staff_name)
-    filename = f"{safe_name}_schedule_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
+    filename = f"{safe_name}_schedule_{datetime.now(_eastern_tz).strftime('%Y%m%d%H%M%S')}.pdf"
     
     return pdf_bytes, filename

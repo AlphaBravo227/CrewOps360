@@ -10,7 +10,10 @@ import json
 import streamlit as st
 import os
 from datetime import datetime
+import pytz
 from .db_utils import initialize_database, get_db_connection
+
+_eastern_tz = pytz.timezone('America/New_York')
 
 def get_effective_role(staff_role):
     """
@@ -365,7 +368,7 @@ def create_backup_before_migration():
             return False, "Database file not found"
         
         # Create backup with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(_eastern_tz).strftime("%Y%m%d_%H%M%S")
         backup_path = f'data/medflight_tracks_backup_before_migration_{timestamp}.db'
         
         shutil.copy2(db_path, backup_path)

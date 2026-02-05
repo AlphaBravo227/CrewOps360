@@ -9,6 +9,9 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import time
+import pytz
+
+_eastern_tz = pytz.timezone('America/New_York')
 from .email_notifications import email_notifier
 from .db_utils import save_track_swap_to_db
 
@@ -194,7 +197,7 @@ def display_track_swap_form():
                     st.session_state['swap_submission_success'] = {
                         'swap_id': swap_id,
                         'message': message,
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        'timestamp': datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S"),
                         'requester': requester_last_name,
                         'other_member': other_member_last_name
                     }
@@ -243,7 +246,7 @@ def submit_track_swap_request(requester_last_name, requester_email, other_member
             'requester_email': requester_email,
             'other_member_last_name': other_member_last_name,
             'swap_details': swap_details,
-            'submission_timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'submission_timestamp': datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S"),
             'swap_id': swap_id
         }
         

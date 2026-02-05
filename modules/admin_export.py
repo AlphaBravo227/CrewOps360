@@ -12,6 +12,9 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 import json
+import pytz
+
+_eastern_tz = pytz.timezone('America/New_York')
 from .db_utils import get_all_location_preferences
 
 class AdminExportManager:
@@ -872,7 +875,7 @@ def display_admin_export_section(preferences_df: pd.DataFrame):
                 summary_df = pd.DataFrame(summary_data, columns=['Field', 'Description'])
                 summary_df.to_excel(writer, sheet_name='Field Descriptions', index=False)
 
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(_eastern_tz).strftime("%Y%m%d_%H%M%S")
             filename = f"location_preferences_{timestamp}.xlsx"
 
             st.download_button(
@@ -895,7 +898,7 @@ def display_admin_export_section(preferences_df: pd.DataFrame):
             raw_data = export_manager.export_raw_preferences_data()
             
             if raw_data:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                timestamp = datetime.now(_eastern_tz).strftime("%Y%m%d_%H%M%S")
                 filename = f"preferences_raw_{timestamp}.dl"
                 
                 st.download_button(
@@ -937,7 +940,7 @@ def display_admin_export_section(preferences_df: pd.DataFrame):
                 summary_df = pd.DataFrame(summary_data, columns=['Metric', 'Count'])
                 summary_df.to_excel(writer, sheet_name='Summary', index=False)
             
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(_eastern_tz).strftime("%Y%m%d_%H%M%S")
             filename = f"comprehensive_preferences_{timestamp}.xlsx"
             
             st.download_button(

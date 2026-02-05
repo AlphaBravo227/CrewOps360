@@ -14,6 +14,9 @@ import streamlit as st
 import os
 import json
 import base64
+import pytz
+
+_eastern_tz = pytz.timezone('America/New_York')
 from email import encoders
 
 class EmailNotifier:
@@ -121,7 +124,7 @@ class EmailNotifier:
         Returns:
             tuple: (subject, body)
         """
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
         
         # Create subject
         action = "New Track Submitted" if submission_type == "new" else "Track Updated"
@@ -238,7 +241,7 @@ class EmailNotifier:
             test_body = f"""
 This is a test email to verify email notifications are working correctly.
 
-Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+Timestamp: {datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")}
 Sender: {self.sender_email}
 
 If you receive this email, the notification system is working properly.

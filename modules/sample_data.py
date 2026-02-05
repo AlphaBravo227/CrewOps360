@@ -6,6 +6,9 @@ Module for loading sample data for development and testing
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+import pytz
+
+_eastern_tz = pytz.timezone('America/New_York')
 
 def load_sample_data():
     """
@@ -32,7 +35,7 @@ def load_sample_data():
     
     # Create sample current tracks data
     # First, generate the column names (6 weeks of days)
-    start_date = datetime.now() - timedelta(days=datetime.now().weekday())  # Start from the most recent Monday
+    start_date = datetime.now(_eastern_tz) - timedelta(days=datetime.now(_eastern_tz).weekday())  # Start from the most recent Monday
     days = []
     
     for i in range(42):  # 6 weeks = 42 days

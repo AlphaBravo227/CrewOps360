@@ -11,6 +11,9 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 import streamlit as st
 import os
+import pytz
+
+_eastern_tz = pytz.timezone('America/New_York')
 
 class TrainingEmailNotifier:
     """Handle email notifications for training event enrollments and cancellations"""
@@ -65,14 +68,18 @@ class TrainingEmailNotifier:
             # Try parsing different date formats
             try:
                 class_date = datetime.strptime(class_date_str, '%m/%d/%Y')
+                # Make timezone-aware to match today
+                class_date = _eastern_tz.localize(class_date)
             except ValueError:
                 try:
                     class_date = datetime.strptime(class_date_str, '%Y-%m-%d')
+                    # Make timezone-aware to match today
+                    class_date = _eastern_tz.localize(class_date)
                 except ValueError:
                     # If we can't parse the date, assume it's not within 60 days
                     return False
-            
-            today = datetime.now()
+
+            today = datetime.now(_eastern_tz)
             days_until_class = (class_date - today).days
             
             # Check if class is within 60 days (including past classes up to today)
@@ -167,7 +174,7 @@ class TrainingEmailNotifier:
         Returns:
             tuple: (subject, body)
         """
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
         
         # Create subject
         action = "Enrollment" if action_type == "enrollment" else "Cancellation"

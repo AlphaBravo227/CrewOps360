@@ -277,20 +277,25 @@ class EducatorManager:
         
         return '; '.join(filtered_conflicts)
     
-    def signup_as_educator(self, staff_name, class_name, class_date, override_conflict=False):
-        """Sign up staff member as educator with conflict checking"""
-        
+    def signup_as_educator(self, staff_name, class_name, class_date, override_conflict=False, override_capacity=False):
+        """Sign up staff member as educator with conflict checking
+
+        Args:
+            override_capacity: If True, bypass capacity checks (admin override)
+        """
+
         try:
-            # Check if signup is allowed
-            can_signup_result = self.can_signup_as_educator(staff_name, class_name, class_date)
-            
-            # Handle the case where can_signup_as_educator might return None
-            if can_signup_result is None:
-                return False, "Error checking signup eligibility"
-            
-            can_signup, message = can_signup_result
-            if not can_signup:
-                return False, message
+            # Check if signup is allowed (unless admin override)
+            if not override_capacity:
+                can_signup_result = self.can_signup_as_educator(staff_name, class_name, class_date)
+
+                # Handle the case where can_signup_as_educator might return None
+                if can_signup_result is None:
+                    return False, "Error checking signup eligibility"
+
+                can_signup, message = can_signup_result
+                if not can_signup:
+                    return False, message
             
             # Check for conflicts if track manager is available
             conflict_details = None

@@ -11,6 +11,10 @@ import json
 from datetime import datetime
 import streamlit as st
 import threading
+import pytz
+
+# Eastern timezone for user-facing timestamps
+_eastern_tz = pytz.timezone('America/New_York')
 
 # Dictionary to store thread-local connections
 thread_local_connections = {}
@@ -108,7 +112,7 @@ def verify_database_integrity():
                 return False
         
         # Test write capability
-        test_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        test_timestamp = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("INSERT INTO track_history (track_id, staff_name, track_data, submission_date, status) VALUES (?, ?, ?, ?, ?)",
                       (0, "INTEGRITY_TEST", "{}", test_timestamp, "integrity_check"))
         
@@ -294,7 +298,7 @@ def save_track_swap_to_db(requester_name, requester_email, other_member_name, sw
         cursor = conn.cursor()
         
         # Get current date and time
-        submission_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        submission_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
         
         # Insert track swap request
         cursor.execute("""
@@ -407,7 +411,7 @@ def save_track_to_db(staff_name, track_data, is_new=False):
             track_json = json.dumps(actual_track_data)
         
         # Get current date and time
-        submission_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        submission_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
         
         # Check if staff member already has a track
         cursor.execute(
@@ -797,7 +801,7 @@ def save_preassignment(staff_name, day, activity):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        created_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        created_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
         
         cursor.execute(
             "SELECT id FROM preassignments WHERE staff_name = ? AND day = ?",
@@ -1168,7 +1172,7 @@ def save_location_preferences_to_db(staff_name, day_locations, night_locations, 
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        current_timestamp = datetime.now().isoformat()
+        current_timestamp = datetime.now(_eastern_tz).isoformat()
 
         # Convert boolean to integer for storage
         reduced_rest_value = 1 if reduced_rest_ok else 0
@@ -1376,7 +1380,7 @@ def set_summer_leave_config(staff_name, lt_open):
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        modified_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        modified_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
         lt_open_int = 1 if lt_open else 0
 
         # Check if config exists
@@ -1460,7 +1464,7 @@ def save_summer_leave_selection(staff_name, role, week_start_date, week_end_date
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
 
         # Check if selection already exists
         cursor.execute("SELECT id FROM summer_leave_requests WHERE staff_name = ?", (staff_name,))
@@ -1503,7 +1507,7 @@ def cancel_summer_leave_selection(staff_name):
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
 
         cursor.execute("""
             UPDATE summer_leave_requests

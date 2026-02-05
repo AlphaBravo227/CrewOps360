@@ -136,10 +136,14 @@ class EnrollmentManager:
             print(f"Error checking weekly limit for {staff_name}: {e}")
             return True, None, None  # Allow enrollment if error occurs
 
-    def enroll_staff(self, staff_name, class_name, class_date, role='General', 
+    def enroll_staff(self, staff_name, class_name, class_date, role='General',
                     meeting_type=None, session_time=None, override_conflict=False,
-                    replace_existing=False, existing_enrollment_id=None):
-        """Enroll a staff member in a class with proper two-day class support"""
+                    override_capacity=False, replace_existing=False, existing_enrollment_id=None):
+        """Enroll a staff member in a class with proper two-day class support
+
+        Args:
+            override_capacity: If True, bypass capacity/slot checks (admin override)
+        """
         
         # Check if this is a Staff Meeting class or two-day class
         is_staff_meeting = self.excel.is_staff_meeting(class_name)
@@ -209,11 +213,12 @@ class EnrollmentManager:
                     day_label = f"Day {i+1}" if is_two_day else "Date"
                     combined_conflict_details.append(f"{day_label}: {conflict_info}")
         
-        # Check if enrollment is allowed for ALL dates
-        for date in enrollment_dates:
-            can_enroll_result = self.can_enroll(staff_name, class_name, date, role, meeting_type, session_time)
-            if not can_enroll_result:
-                return False, f"No available slots for {date}"
+        # Check if enrollment is allowed for ALL dates (unless admin override)
+        if not override_capacity:
+            for date in enrollment_dates:
+                can_enroll_result = self.can_enroll(staff_name, class_name, date, role, meeting_type, session_time)
+                if not can_enroll_result:
+                    return False, f"No available slots for {date}"
         
         # Perform the enrollment for all dates
         combined_conflict_str = "; ".join(combined_conflict_details) if combined_conflict_details else None
