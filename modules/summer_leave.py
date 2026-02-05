@@ -63,8 +63,8 @@ def load_staff_shifts_from_excel():
 
         requirements_path = requirements_files[0]
 
-        # Use pandas like the rest of the app
-        df = pd.read_excel(requirements_path)
+        # Use pandas with openpyxl engine in read-only mode to avoid file locks
+        df = pd.read_excel(requirements_path, engine='openpyxl')
 
         staff_shifts = {}
         # Iterate through rows (skip header)
@@ -108,8 +108,8 @@ def load_staff_roles_from_excel():
 
         preferences_path = preferences_files[0]
 
-        # Use pandas like the rest of the app
-        df = pd.read_excel(preferences_path)
+        # Use pandas with openpyxl engine to avoid file locks
+        df = pd.read_excel(preferences_path, engine='openpyxl')
 
         staff_roles = {}
         # Iterate through rows (skip header)
