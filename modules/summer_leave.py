@@ -51,16 +51,28 @@ def load_staff_shifts_from_excel():
         return _staff_shifts_cache
 
     try:
-        # Use relative path pattern like the rest of the app
-        requirements_path = os.path.join("upload files", "Requirements.xlsx")
-        wb = load_workbook(requirements_path)
-        ws = wb.active
+        # Use glob pattern like the rest of the app to find Requirements file
+        import glob
+        upload_dir = "upload files"
+
+        # Find Requirements file
+        requirements_files = glob.glob(os.path.join(upload_dir, "*equirement*.xlsx"))
+        if not requirements_files:
+            print("No Requirements file found in upload files directory")
+            return {}
+
+        requirements_path = requirements_files[0]
+
+        # Use pandas like the rest of the app
+        df = pd.read_excel(requirements_path)
 
         staff_shifts = {}
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if row[0]:  # Staff name exists
-                staff_name = str(row[0]).strip()
-                shifts_per_pay_period = row[1] if len(row) > 1 else None
+        # Iterate through rows (skip header)
+        for idx in range(len(df)):
+            row = df.iloc[idx]
+            if pd.notna(row.iloc[0]):  # Staff name exists
+                staff_name = str(row.iloc[0]).strip()
+                shifts_per_pay_period = row.iloc[1] if len(row) > 1 and pd.notna(row.iloc[1]) else None
                 staff_shifts[staff_name] = shifts_per_pay_period
 
         _staff_shifts_cache = staff_shifts
@@ -68,6 +80,8 @@ def load_staff_shifts_from_excel():
 
     except Exception as e:
         print(f"Error loading staff shifts from Requirements.xlsx: {e}")
+        import traceback
+        traceback.print_exc()
         return {}
 
 def load_staff_roles_from_excel():
@@ -83,23 +97,27 @@ def load_staff_roles_from_excel():
         return _staff_roles_cache
 
     try:
-        # Use relative path pattern like the rest of the app
-        # Look for any Preferences file in upload files directory
+        # Use glob pattern like the rest of the app
         import glob
-        preferences_files = glob.glob(os.path.join("upload files", "Preferences*.xlsx"))
+        upload_dir = "upload files"
+
+        preferences_files = glob.glob(os.path.join(upload_dir, "Preferences*.xlsx"))
         if not preferences_files:
             print("No Preferences file found in upload files directory")
             return {}
 
-        preferences_path = preferences_files[0]  # Use first match
-        wb = load_workbook(preferences_path)
-        ws = wb.active
+        preferences_path = preferences_files[0]
+
+        # Use pandas like the rest of the app
+        df = pd.read_excel(preferences_path)
 
         staff_roles = {}
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if row[0]:  # Staff name exists
-                staff_name = str(row[0]).strip()
-                role = str(row[1]).strip().lower() if len(row) > 1 and row[1] else None
+        # Iterate through rows (skip header)
+        for idx in range(len(df)):
+            row = df.iloc[idx]
+            if pd.notna(row.iloc[0]):  # Staff name exists
+                staff_name = str(row.iloc[0]).strip()
+                role = str(row.iloc[1]).strip().lower() if len(row) > 1 and pd.notna(row.iloc[1]) else None
 
                 # Convert 'dual' to 'nurse' as specified
                 if role == 'dual':
@@ -112,6 +130,8 @@ def load_staff_roles_from_excel():
 
     except Exception as e:
         print(f"Error loading staff roles from Preferences file: {e}")
+        import traceback
+        traceback.print_exc()
         return {}
 
 def get_shifts_per_week(staff_name):
