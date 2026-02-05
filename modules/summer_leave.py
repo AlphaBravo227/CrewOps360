@@ -150,8 +150,8 @@ def get_shifts_per_week(staff_name):
     if shifts_per_pay_period is None:
         return None
 
-    # Round down using integer division
-    return shifts_per_pay_period // 2
+    # Convert to int (pandas returns numpy.float64) and round down using integer division
+    return int(shifts_per_pay_period) // 2
 
 def get_staff_role_from_preferences(staff_name):
     """
