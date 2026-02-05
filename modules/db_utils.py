@@ -1423,7 +1423,7 @@ def get_summer_leave_selection(staff_name):
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT id, role, week_start_date, week_end_date, selection_date, modified_date
+            SELECT id, role, week_start_date, week_end_date, selection_date, modified_date, shifts_used
             FROM summer_leave_requests
             WHERE staff_name = ? AND status = 'active'
         """, (staff_name,))
@@ -1438,7 +1438,8 @@ def get_summer_leave_selection(staff_name):
                 'week_start_date': result[2],
                 'week_end_date': result[3],
                 'selection_date': result[4],
-                'modified_date': result[5]
+                'modified_date': result[5],
+                'shifts_used': result[6]
             }
         else:
             return None
@@ -1447,7 +1448,7 @@ def get_summer_leave_selection(staff_name):
         print(f"Error getting summer leave selection for {staff_name}: {str(e)}")
         return None
 
-def save_summer_leave_selection(staff_name, role, week_start_date, week_end_date):
+def save_summer_leave_selection(staff_name, role, week_start_date, week_end_date, shifts_used=None):
     """
     Save or update summer leave selection for a staff member
 
@@ -1456,6 +1457,7 @@ def save_summer_leave_selection(staff_name, role, week_start_date, week_end_date
         role (str): Staff member's role
         week_start_date (str): Start date of week (YYYY-MM-DD)
         week_end_date (str): End date of week (YYYY-MM-DD)
+        shifts_used (int): Number of shifts being used (optional, defaults to staff's shifts per week)
 
     Returns:
         tuple: (success, message)
@@ -1473,16 +1475,16 @@ def save_summer_leave_selection(staff_name, role, week_start_date, week_end_date
         if existing:
             cursor.execute("""
                 UPDATE summer_leave_requests
-                SET role = ?, week_start_date = ?, week_end_date = ?, modified_date = ?, status = 'active'
+                SET role = ?, week_start_date = ?, week_end_date = ?, modified_date = ?, status = 'active', shifts_used = ?
                 WHERE staff_name = ?
-            """, (role, week_start_date, week_end_date, current_date, staff_name))
+            """, (role, week_start_date, week_end_date, current_date, shifts_used, staff_name))
             message = f"Updated leave selection for {staff_name}"
         else:
             cursor.execute("""
                 INSERT INTO summer_leave_requests
-                (staff_name, role, week_start_date, week_end_date, selection_date, status)
-                VALUES (?, ?, ?, ?, ?, 'active')
-            """, (staff_name, role, week_start_date, week_end_date, current_date))
+                (staff_name, role, week_start_date, week_end_date, selection_date, status, shifts_used)
+                VALUES (?, ?, ?, ?, ?, 'active', ?)
+            """, (staff_name, role, week_start_date, week_end_date, current_date, shifts_used))
             message = f"Saved leave selection for {staff_name}"
 
         conn.commit()
@@ -1528,29 +1530,29 @@ def cancel_summer_leave_selection(staff_name):
 
 def get_week_selections_by_role(week_start_date, role):
     """
-    Get count of selections for a specific week and role
+    Get total shifts used for a specific week and role
 
     Args:
         week_start_date (str): Start date of week (YYYY-MM-DD)
         role (str): Role to filter by
 
     Returns:
-        int: Number of selections for this week and role
+        int: Total shifts used for this week and role
     """
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT COUNT(*) FROM summer_leave_requests
+            SELECT SUM(shifts_used) FROM summer_leave_requests
             WHERE week_start_date = ? AND role = ? AND status = 'active'
         """, (week_start_date, role))
 
         result = cursor.fetchone()
-        return result[0] if result else 0
+        return result[0] if result and result[0] is not None else 0
 
     except Exception as e:
-        print(f"Error getting week selections: {str(e)}")
+        print(f"Error getting week shift usage: {str(e)}")
         return 0
 
 def get_all_summer_leave_selections():
@@ -1565,7 +1567,7 @@ def get_all_summer_leave_selections():
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT staff_name, role, week_start_date, week_end_date, selection_date, modified_date
+            SELECT staff_name, role, week_start_date, week_end_date, selection_date, modified_date, shifts_used
             FROM summer_leave_requests
             WHERE status = 'active'
             ORDER BY role, staff_name
@@ -1581,7 +1583,8 @@ def get_all_summer_leave_selections():
                 'week_start_date': row[2],
                 'week_end_date': row[3],
                 'selection_date': row[4],
-                'modified_date': row[5]
+                'modified_date': row[5],
+                'shifts_used': row[6]
             })
 
         return selections

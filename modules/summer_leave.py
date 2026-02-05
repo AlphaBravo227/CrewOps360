@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import sqlite3
 import os
+from openpyxl import load_workbook
 from modules.db_utils import (
     get_summer_leave_config,
     set_summer_leave_config,
@@ -23,15 +24,116 @@ SUMMER_START_DATE = datetime(2026, 5, 31)  # May 31, 2026 (Sunday) - Default for
 CCEMT_START_DATE = datetime(2026, 6, 7)    # June 7, 2026 (Sunday) - CCEMT specific
 SUMMER_END_DATE = datetime(2026, 9, 12)    # September 12, 2026 (Saturday)
 
-# Weekly caps by role
+# Weekly shift caps by role (maximum shifts per week)
 ROLE_CAPS = {
-    'NURSE': 3,
-    'MEDIC': 3,
+    'NURSE': 11,
+    'MEDIC': 11,
     'AMT': 2,
     'CCEMT': 2,
     'COMMS': 2,
     'ATP': 2
 }
+
+# Cache for staff shifts and roles
+_staff_shifts_cache = None
+_staff_roles_cache = None
+
+def load_staff_shifts_from_excel():
+    """
+    Load staff shifts per pay period from Requirements.xlsx
+
+    Returns:
+        dict: Dictionary mapping staff_name to shifts_per_pay_period
+    """
+    global _staff_shifts_cache
+
+    if _staff_shifts_cache is not None:
+        return _staff_shifts_cache
+
+    try:
+        wb = load_workbook('/home/user/CrewOps360/upload files/Requirements.xlsx')
+        ws = wb.active
+
+        staff_shifts = {}
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0]:  # Staff name exists
+                staff_name = str(row[0]).strip()
+                shifts_per_pay_period = row[1] if len(row) > 1 else None
+                staff_shifts[staff_name] = shifts_per_pay_period
+
+        _staff_shifts_cache = staff_shifts
+        return staff_shifts
+
+    except Exception as e:
+        print(f"Error loading staff shifts from Requirements.xlsx: {e}")
+        return {}
+
+def load_staff_roles_from_excel():
+    """
+    Load staff roles from Preferences v6.xlsx
+
+    Returns:
+        dict: Dictionary mapping staff_name to role (nurse, medic, dual)
+    """
+    global _staff_roles_cache
+
+    if _staff_roles_cache is not None:
+        return _staff_roles_cache
+
+    try:
+        wb = load_workbook('/home/user/CrewOps360/upload files/Preferences v6.xlsx')
+        ws = wb.active
+
+        staff_roles = {}
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0]:  # Staff name exists
+                staff_name = str(row[0]).strip()
+                role = str(row[1]).strip().lower() if len(row) > 1 and row[1] else None
+
+                # Convert 'dual' to 'nurse' as specified
+                if role == 'dual':
+                    role = 'nurse'
+
+                staff_roles[staff_name] = role
+
+        _staff_roles_cache = staff_roles
+        return staff_roles
+
+    except Exception as e:
+        print(f"Error loading staff roles from Preferences v6.xlsx: {e}")
+        return {}
+
+def get_shifts_per_week(staff_name):
+    """
+    Get shifts per week for a staff member
+
+    Args:
+        staff_name (str): Name of staff member
+
+    Returns:
+        int or None: Shifts per week (shifts_per_pay_period / 2, rounded down), or None if not found
+    """
+    staff_shifts = load_staff_shifts_from_excel()
+    shifts_per_pay_period = staff_shifts.get(staff_name)
+
+    if shifts_per_pay_period is None:
+        return None
+
+    # Round down using integer division
+    return shifts_per_pay_period // 2
+
+def get_staff_role_from_preferences(staff_name):
+    """
+    Get role for a staff member from Preferences.xlsx
+
+    Args:
+        staff_name (str): Name of staff member
+
+    Returns:
+        str: Role (nurse, medic, etc.) or None if not found
+    """
+    staff_roles = load_staff_roles_from_excel()
+    return staff_roles.get(staff_name)
 
 def ensure_summer_leave_tables():
     """
@@ -44,8 +146,10 @@ def ensure_summer_leave_tables():
 
         # Check if tables exist
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='summer_leave_requests'")
-        if not cursor.fetchone():
-            # Create summer_leave_requests table
+        table_exists = cursor.fetchone() is not None
+
+        if not table_exists:
+            # Create summer_leave_requests table with shifts_used column
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS summer_leave_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,10 +159,36 @@ def ensure_summer_leave_tables():
                 week_end_date TEXT NOT NULL,
                 selection_date TEXT NOT NULL,
                 modified_date TEXT,
-                status TEXT DEFAULT 'active'
+                status TEXT DEFAULT 'active',
+                shifts_used INTEGER
             )
             ''')
             print("Created summer_leave_requests table")
+        else:
+            # Check if shifts_used column exists
+            cursor.execute("PRAGMA table_info(summer_leave_requests)")
+            columns = [row[1] for row in cursor.fetchall()]
+
+            if 'shifts_used' not in columns:
+                # Add shifts_used column
+                cursor.execute("ALTER TABLE summer_leave_requests ADD COLUMN shifts_used INTEGER")
+                print("Added shifts_used column to summer_leave_requests table")
+
+                # Migrate existing data - populate shifts_used with staff's shifts per week
+                cursor.execute("SELECT staff_name, role FROM summer_leave_requests WHERE status = 'active'")
+                existing_selections = cursor.fetchall()
+
+                for staff_name, role in existing_selections:
+                    shifts_per_week = get_shifts_per_week(staff_name)
+                    if shifts_per_week is not None:
+                        cursor.execute(
+                            "UPDATE summer_leave_requests SET shifts_used = ? WHERE staff_name = ?",
+                            (shifts_per_week, staff_name)
+                        )
+                        print(f"Migrated {staff_name}: {shifts_per_week} shifts/week")
+
+                conn.commit()
+                print("Migration complete: populated shifts_used for existing selections")
 
         # Check if config table exists
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='summer_leave_config'")
@@ -228,12 +358,25 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
         st.info("Please contact your supervisor if you believe this is an error.")
         return
 
+    # Get staff's shifts per week
+    shifts_per_week = get_shifts_per_week(staff_name)
+
+    if shifts_per_week is None:
+        st.error("❌ Unable to determine your shifts per week.")
+        st.info("Please contact your administrator to update your shift information in the Requirements file.")
+        return
+
+    # Display staff's shifts per week
+    st.info(f"📊 **Your Shifts Per Week:** {shifts_per_week}")
+
     # Get current selection
     current_selection = get_summer_leave_selection(staff_name)
 
     # Display current selection
     if current_selection:
+        shifts_used = current_selection.get('shifts_used', shifts_per_week)
         st.success(f"✅ You have selected: **{current_selection['week_start_date']} to {current_selection['week_end_date']}**")
+        st.info(f"**Shifts Used:** {shifts_used}")
 
         week_start = datetime.strptime(current_selection['week_start_date'], '%Y-%m-%d')
         week_end = datetime.strptime(current_selection['week_end_date'], '%Y-%m-%d')
@@ -272,23 +415,33 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
     week_options = []
     week_mapping = {}
     week_availability = {}  # Track availability for each week
+    week_shifts_remaining = {}  # Track shifts remaining for each week
 
     for week_start_str, week_end_str, display_str in weeks:
-        # Check availability for this week
-        selections_count = get_week_selections_by_role(week_start_str, role)
+        # Check availability for this week (now based on shifts, not people)
+        shifts_used = get_week_selections_by_role(week_start_str, role)
         cap = ROLE_CAPS.get(role, 2)
 
-        is_available = selections_count < cap
-        status = "Available" if is_available else "Full"
+        shifts_remaining = cap - shifts_used
+        is_available = shifts_remaining > 0
 
-        # Store availability for display in schedule
+        # Store availability and remaining shifts for display
         week_availability[display_str] = is_available
-
-        option_label = f"{display_str} - {status} ({selections_count}/{cap})"
+        week_shifts_remaining[display_str] = shifts_remaining
 
         if is_available:
+            status = f"{shifts_remaining} shifts remaining"
+        else:
+            status = "Full"
+
+        option_label = f"{display_str} - {status} ({shifts_used}/{cap} shifts used)"
+
+        # Include all weeks (available and full) in the mapping
+        week_mapping[option_label] = (week_start_str, week_end_str, display_str, shifts_remaining)
+
+        # Only add to dropdown if available
+        if is_available:
             week_options.append(option_label)
-            week_mapping[option_label] = (week_start_str, week_end_str, display_str)
 
     if not week_options:
         st.warning("No weeks are currently available for your role.")
@@ -308,26 +461,48 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
         index=0
     )
 
-    # Show submit button right after week selection if a valid week is selected
+    # Show shift selection and submit button if a valid week is selected
     if selected_option and selected_option != placeholder:
-        week_start_str, week_end_str, display_str = week_mapping[selected_option]
+        week_start_str, week_end_str, display_str, shifts_remaining = week_mapping[selected_option]
+
+        # Determine shift options for dropdown
+        max_shifts_available = min(shifts_per_week, shifts_remaining)
+
+        # Check if this is a partial week (user can't use all their shifts)
+        is_partial = max_shifts_available < shifts_per_week
+
+        if is_partial:
+            st.warning(f"⚠️ **Partial Week Notice:** This week only has {shifts_remaining} shift(s) remaining. You can only use {max_shifts_available} shift(s) for this week.")
+
+        # Create shift selection dropdown
+        shift_options = list(range(max_shifts_available, 0, -1))  # From max down to 1
+
+        st.markdown("### How many shifts would you like to use?")
+        selected_shifts = st.selectbox(
+            "Number of shifts:",
+            options=shift_options,
+            index=0,  # Default to maximum available
+            key="shift_count_select"
+        )
+
+        st.info(f"You are requesting **{selected_shifts}** shift(s) for the week of **{display_str}**")
 
         # Submit button
         if st.button("✅ Submit My Selection", type="primary"):
-            success, message = save_summer_leave_selection(staff_name, role, week_start_str, week_end_str)
+            success, message = save_summer_leave_selection(staff_name, role, week_start_str, week_end_str, selected_shifts)
             if success:
                 st.success(f"✅ {message}")
 
                 # Send email notification to same group as training events
                 try:
-                    # Get updated count for this week/role
-                    total_selected = get_week_selections_by_role(week_start_str, role)
+                    # Get updated shift count for this week/role
+                    total_shifts_used = get_week_selections_by_role(week_start_str, role)
                     role_cap = ROLE_CAPS.get(role, 2)
 
                     # Send notification
                     email_success, email_message = send_summer_leave_notification(
                         staff_name, role, week_start_str, week_end_str,
-                        total_selected, role_cap
+                        total_shifts_used, role_cap
                     )
 
                     # Don't fail the whole operation if email fails
@@ -346,7 +521,7 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
         st.markdown("---")
         # If a valid week is selected, highlight it in the schedule
         if selected_option and selected_option != placeholder:
-            week_start_str, week_end_str, display_str = week_mapping[selected_option]
+            week_start_str, week_end_str, display_str, shifts_remaining = week_mapping[selected_option]
             display_track_schedule(schedule_by_week, display_str, week_availability)
         else:
             # Show schedule without any week highlighted
@@ -381,19 +556,17 @@ def display_admin_interface(staff_list, role_mapping):
         for role in ROLE_CAPS.keys():
             role_selections = [sel for sel in all_selections if sel['role'] == role]
             role_stats[role] = {
-                'total_selections': len(role_selections),
                 'staff_with_selections': len(role_selections)
             }
 
         # Display as table
         stats_data = []
         for role, cap in ROLE_CAPS.items():
-            stats = role_stats.get(role, {'total_selections': 0, 'staff_with_selections': 0})
+            stats = role_stats.get(role, {'staff_with_selections': 0})
             stats_data.append({
                 'Role': role,
-                'Cap per Week': cap,
-                'Staff with Selections': stats['staff_with_selections'],
-                'Total Selections': stats['total_selections']
+                'Shift Cap per Week': cap,
+                'Staff with Selections': stats['staff_with_selections']
             })
 
         st.dataframe(pd.DataFrame(stats_data), use_container_width=True)
@@ -413,9 +586,12 @@ def display_admin_interface(staff_list, role_mapping):
                         role_week_selections = [sel for sel in week_selections if sel['role'] == role]
                         if role_week_selections:
                             cap = ROLE_CAPS[role]
-                            st.markdown(f"**{role}:** {len(role_week_selections)}/{cap}")
+                            # Calculate total shifts used for this role/week
+                            total_shifts = sum(sel.get('shifts_used', 0) or 0 for sel in role_week_selections)
+                            st.markdown(f"**{role}:** {total_shifts}/{cap} shifts used")
                             for sel in role_week_selections:
-                                st.markdown(f"  - {sel['staff_name']}")
+                                shifts = sel.get('shifts_used', '?')
+                                st.markdown(f"  - {sel['staff_name']} ({shifts} shifts)")
 
     with tab2:
         st.markdown("### Manage Staff LT Access")
@@ -432,7 +608,8 @@ def display_admin_interface(staff_list, role_mapping):
                 'Role': role,
                 'LT Open': lt_open,
                 'Has Selection': '✅' if selection else '❌',
-                'Week Selected': f"{selection['week_start_date']} to {selection['week_end_date']}" if selection else ''
+                'Week Selected': f"{selection['week_start_date']} to {selection['week_end_date']}" if selection else '',
+                'Shifts Used': selection.get('shifts_used', '') if selection else ''
             })
 
         df = pd.DataFrame(staff_data)
@@ -510,8 +687,12 @@ def display_admin_interface(staff_list, role_mapping):
 
             st.info(f"**{admin_selected_staff}** ({staff_role})")
 
+            # Get staff's shifts per week
+            staff_shifts_per_week = get_shifts_per_week(admin_selected_staff)
+
             if current_selection:
-                st.success(f"Current selection: {current_selection['week_start_date']} to {current_selection['week_end_date']}")
+                shifts_used = current_selection.get('shifts_used', '?')
+                st.success(f"Current selection: {current_selection['week_start_date']} to {current_selection['week_end_date']} ({shifts_used} shifts)")
 
                 if st.button("❌ Remove This Selection"):
                     success, message = cancel_summer_leave_selection(admin_selected_staff)
@@ -524,40 +705,55 @@ def display_admin_interface(staff_list, role_mapping):
             st.markdown("---")
             st.markdown("### Add/Update Selection")
 
-            # Week selector (use staff's role to get appropriate weeks)
-            weeks = get_summer_weeks(staff_role)
-            week_options = [display_str for _, _, display_str in weeks]
-            week_mapping = {display_str: (start, end) for start, end, display_str in weeks}
+            if staff_shifts_per_week is None:
+                st.warning(f"⚠️ {admin_selected_staff} does not have shift information in Requirements.xlsx")
+                st.info("Please update the Requirements file before adding a selection.")
+            else:
+                st.info(f"**{admin_selected_staff}'s Shifts Per Week:** {staff_shifts_per_week}")
 
-            selected_week = st.selectbox("Select Week:", options=week_options, key="admin_week_select")
+                # Week selector (use staff's role to get appropriate weeks)
+                weeks = get_summer_weeks(staff_role)
+                week_options = [display_str for _, _, display_str in weeks]
+                week_mapping = {display_str: (start, end) for start, end, display_str in weeks}
 
-            if selected_week and st.button("✅ Save Selection"):
-                week_start_str, week_end_str = week_mapping[selected_week]
-                success, message = save_summer_leave_selection(admin_selected_staff, staff_role, week_start_str, week_end_str)
-                if success:
-                    st.success(message)
+                selected_week = st.selectbox("Select Week:", options=week_options, key="admin_week_select")
 
-                    # Send email notification to same group as training events
-                    try:
-                        # Get updated count for this week/role
-                        total_selected = get_week_selections_by_role(week_start_str, staff_role)
-                        role_cap = ROLE_CAPS.get(staff_role, 2)
+                # Shift count selector
+                shift_options = list(range(staff_shifts_per_week, 0, -1))  # From max down to 1
+                selected_shifts = st.selectbox(
+                    "Number of Shifts:",
+                    options=shift_options,
+                    index=0,
+                    key="admin_shift_count_select"
+                )
 
-                        # Send notification
-                        email_success, email_message = send_summer_leave_notification(
-                            admin_selected_staff, staff_role, week_start_str, week_end_str,
-                            total_selected, role_cap
-                        )
+                if selected_week and st.button("✅ Save Selection"):
+                    week_start_str, week_end_str = week_mapping[selected_week]
+                    success, message = save_summer_leave_selection(admin_selected_staff, staff_role, week_start_str, week_end_str, selected_shifts)
+                    if success:
+                        st.success(message)
 
-                        # Don't fail the whole operation if email fails
-                        if not email_success:
-                            print(f"Email notification failed: {email_message}")
-                    except Exception as e:
-                        print(f"Error sending summer leave notification: {str(e)}")
+                        # Send email notification to same group as training events
+                        try:
+                            # Get updated shift count for this week/role
+                            total_shifts_used = get_week_selections_by_role(week_start_str, staff_role)
+                            role_cap = ROLE_CAPS.get(staff_role, 2)
 
-                    st.rerun()
-                else:
-                    st.error(message)
+                            # Send notification
+                            email_success, email_message = send_summer_leave_notification(
+                                admin_selected_staff, staff_role, week_start_str, week_end_str,
+                                total_shifts_used, role_cap
+                            )
+
+                            # Don't fail the whole operation if email fails
+                            if not email_success:
+                                print(f"Email notification failed: {email_message}")
+                        except Exception as e:
+                            print(f"Error sending summer leave notification: {str(e)}")
+
+                        st.rerun()
+                    else:
+                        st.error(message)
 
 def display_summer_leave_app(excel_handler, track_manager):
     """
