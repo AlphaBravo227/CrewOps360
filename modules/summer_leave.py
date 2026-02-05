@@ -51,7 +51,9 @@ def load_staff_shifts_from_excel():
         return _staff_shifts_cache
 
     try:
-        wb = load_workbook('/home/user/CrewOps360/upload files/Requirements.xlsx')
+        # Use relative path pattern like the rest of the app
+        requirements_path = os.path.join("upload files", "Requirements.xlsx")
+        wb = load_workbook(requirements_path)
         ws = wb.active
 
         staff_shifts = {}
@@ -81,7 +83,16 @@ def load_staff_roles_from_excel():
         return _staff_roles_cache
 
     try:
-        wb = load_workbook('/home/user/CrewOps360/upload files/Preferences v6.xlsx')
+        # Use relative path pattern like the rest of the app
+        # Look for any Preferences file in upload files directory
+        import glob
+        preferences_files = glob.glob(os.path.join("upload files", "Preferences*.xlsx"))
+        if not preferences_files:
+            print("No Preferences file found in upload files directory")
+            return {}
+
+        preferences_path = preferences_files[0]  # Use first match
+        wb = load_workbook(preferences_path)
         ws = wb.active
 
         staff_roles = {}
@@ -100,7 +111,7 @@ def load_staff_roles_from_excel():
         return staff_roles
 
     except Exception as e:
-        print(f"Error loading staff roles from Preferences v6.xlsx: {e}")
+        print(f"Error loading staff roles from Preferences file: {e}")
         return {}
 
 def get_shifts_per_week(staff_name):
