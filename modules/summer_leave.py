@@ -16,6 +16,7 @@ from modules.db_utils import (
     get_all_summer_leave_configs,
     get_db_connection
 )
+from training_modules.training_email_notifications import send_summer_leave_notification
 
 # Constants
 SUMMER_START_DATE = datetime(2026, 5, 31)  # May 31, 2026 (Sunday) - Default for Nurse/Medic
@@ -316,6 +317,25 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
             success, message = save_summer_leave_selection(staff_name, role, week_start_str, week_end_str)
             if success:
                 st.success(f"✅ {message}")
+
+                # Send email notification to same group as training events
+                try:
+                    # Get updated count for this week/role
+                    total_selected = get_week_selections_by_role(week_start_str, role)
+                    role_cap = ROLE_CAPS.get(role, 2)
+
+                    # Send notification
+                    email_success, email_message = send_summer_leave_notification(
+                        staff_name, role, week_start_str, week_end_str,
+                        total_selected, role_cap
+                    )
+
+                    # Don't fail the whole operation if email fails
+                    if not email_success:
+                        print(f"Email notification failed: {email_message}")
+                except Exception as e:
+                    print(f"Error sending summer leave notification: {str(e)}")
+
                 st.balloons()
                 st.rerun()
             else:
@@ -516,6 +536,25 @@ def display_admin_interface(staff_list, role_mapping):
                 success, message = save_summer_leave_selection(admin_selected_staff, staff_role, week_start_str, week_end_str)
                 if success:
                     st.success(message)
+
+                    # Send email notification to same group as training events
+                    try:
+                        # Get updated count for this week/role
+                        total_selected = get_week_selections_by_role(week_start_str, staff_role)
+                        role_cap = ROLE_CAPS.get(staff_role, 2)
+
+                        # Send notification
+                        email_success, email_message = send_summer_leave_notification(
+                            admin_selected_staff, staff_role, week_start_str, week_end_str,
+                            total_selected, role_cap
+                        )
+
+                        # Don't fail the whole operation if email fails
+                        if not email_success:
+                            print(f"Email notification failed: {email_message}")
+                    except Exception as e:
+                        print(f"Error sending summer leave notification: {str(e)}")
+
                     st.rerun()
                 else:
                     st.error(message)
