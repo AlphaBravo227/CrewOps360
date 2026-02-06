@@ -617,7 +617,7 @@ def display_admin_interface(staff_list, role_mapping):
                 'Staff with Selections': stats['staff_with_selections']
             })
 
-        st.dataframe(pd.DataFrame(stats_data), use_container_width=True)
+        st.dataframe(pd.DataFrame(stats_data), width='stretch')
 
         st.markdown("---")
         st.markdown("### All Selections by Week")
@@ -657,13 +657,13 @@ def display_admin_interface(staff_list, role_mapping):
                 'LT Open': lt_open,
                 'Has Selection': '✅' if selection else '❌',
                 'Week Selected': f"{selection['week_start_date']} to {selection['week_end_date']}" if selection else '',
-                'Shifts Used': selection.get('shifts_used', '') if selection else ''
+                'Shifts Used': selection.get('shifts_used', 0) if selection else 0
             })
 
         df = pd.DataFrame(staff_data)
 
         # Display dataframe
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width='stretch')
 
         st.markdown("---")
         st.markdown("### Toggle LT Access")
