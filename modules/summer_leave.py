@@ -360,7 +360,7 @@ def display_track_schedule(schedule_by_week, selected_week_display=None, week_av
             shifts_used = shift_info['shifts_used']
             cap = shift_info['cap']
             shifts_remaining = shift_info['shifts_remaining']
-            header += f" - {shifts_remaining} shifts remaining ({shifts_used}/{cap} shifts used)"
+            header += f" - {shifts_remaining} spots remaining ({shifts_used}/{cap} spots used)"
 
         st.markdown(header)
 
