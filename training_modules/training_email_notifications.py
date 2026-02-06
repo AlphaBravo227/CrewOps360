@@ -299,7 +299,7 @@ def send_training_event_notification(staff_name, class_name, class_date, role,
     )
 
 def send_summer_leave_notification(staff_name, role, week_start_date, week_end_date,
-                                    total_selected=None, role_cap=None):
+                                    total_selected=None, role_cap=None, shifts_used=None):
     """
     Send email notification when a user selects summer leave time
     Uses the same notification recipients as training events
@@ -311,6 +311,7 @@ def send_summer_leave_notification(staff_name, role, week_start_date, week_end_d
         week_end_date (str): End date of selected week (YYYY-MM-DD)
         total_selected (int): Total number selected for this week/role (optional)
         role_cap (int): Role capacity cap for the week (optional)
+        shifts_used (int): Number of shifts this individual is using (optional, for NURSE/MEDIC)
 
     Returns:
         tuple: (success, message)
@@ -339,8 +340,13 @@ Staff Member: {staff_name}
 Role: {role}
 Week Selected: {week_display}
 Week Dates: {week_start_date} to {week_end_date}
-Timestamp: {timestamp}
 """
+
+        # Add shifts used for NURSE/MEDIC roles
+        if shifts_used is not None:
+            body += f"Shifts Used: {shifts_used}\n"
+
+        body += f"Timestamp: {timestamp}\n"
 
         # Add capacity information if provided
         if total_selected is not None and role_cap is not None:
