@@ -572,7 +572,7 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
                         # Send notification
                         email_success, email_message = send_summer_leave_notification(
                             staff_name, role, week_start_str, week_end_str,
-                            total_shifts_used, role_cap
+                            total_shifts_used, role_cap, selected_shifts
                         )
 
                         # Don't fail the whole operation if email fails
@@ -835,7 +835,7 @@ def display_admin_interface(staff_list, role_mapping):
                             # Send notification
                             email_success, email_message = send_summer_leave_notification(
                                 admin_selected_staff, staff_role, week_start_str, week_end_str,
-                                total_shifts_used, role_cap
+                                total_shifts_used, role_cap, selected_shifts
                             )
 
                             # Don't fail the whole operation if email fails
