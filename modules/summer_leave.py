@@ -617,7 +617,7 @@ def display_admin_interface(staff_list, role_mapping):
                 'Staff with Selections': stats['staff_with_selections']
             })
 
-        st.dataframe(pd.DataFrame(stats_data), width='stretch')
+        st.dataframe(pd.DataFrame(stats_data), use_container_width=True)
 
         st.markdown("---")
         st.markdown("### All Selections by Week")
@@ -663,7 +663,7 @@ def display_admin_interface(staff_list, role_mapping):
         df = pd.DataFrame(staff_data)
 
         # Display dataframe
-        st.dataframe(df, width='stretch')
+        st.dataframe(df, use_container_width=True)
 
         st.markdown("---")
         st.markdown("### Toggle LT Access")
