@@ -34,6 +34,9 @@ ROLE_CAPS = {
     'ATP': 2
 }
 
+# Roles that use shift-based caps (others use person-based caps)
+SHIFT_BASED_ROLES = {'NURSE', 'MEDIC'}
+
 # Cache for staff shifts and roles
 _staff_shifts_cache = None
 _staff_roles_cache = None
@@ -400,16 +403,21 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
         st.info("Please contact your supervisor if you believe this is an error.")
         return
 
-    # Get staff's shifts per week
-    shifts_per_week = get_shifts_per_week(staff_name)
+    # Check if this role uses shift-based caps
+    is_shift_based = role in SHIFT_BASED_ROLES
 
-    if shifts_per_week is None:
-        st.error("❌ Unable to determine your shifts per week.")
-        st.info("Please contact your administrator to update your shift information in the Requirements file.")
-        return
+    # Get staff's shifts per week (only required for NURSE/MEDIC)
+    shifts_per_week = None
+    if is_shift_based:
+        shifts_per_week = get_shifts_per_week(staff_name)
 
-    # Display staff's shifts per week
-    st.info(f"📊 **Your Shifts Per Week:** {shifts_per_week}")
+        if shifts_per_week is None:
+            st.error("❌ Unable to determine your shifts per week.")
+            st.info("Please contact your administrator to update your shift information in the Requirements file.")
+            return
+
+        # Display staff's shifts per week
+        st.info(f"📊 **Your Shifts Per Week:** {shifts_per_week}")
 
     # Get current selection
     current_selection = get_summer_leave_selection(staff_name)
@@ -460,30 +468,37 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
     week_shift_info = {}  # Track shift usage info for each week
 
     for week_start_str, week_end_str, display_str in weeks:
-        # Check availability for this week (now based on shifts, not people)
-        shifts_used = get_week_selections_by_role(week_start_str, role)
+        # Check availability for this week (shifts for NURSE/MEDIC, people for others)
+        count_used = get_week_selections_by_role(week_start_str, role)
         cap = ROLE_CAPS.get(role, 2)
 
-        shifts_remaining = cap - shifts_used
-        is_available = shifts_remaining > 0
+        count_remaining = cap - count_used
+        is_available = count_remaining > 0
 
         # Store availability and shift info for display
         week_availability[display_str] = is_available
         week_shift_info[display_str] = {
-            'shifts_used': shifts_used,
+            'shifts_used': count_used,
             'cap': cap,
-            'shifts_remaining': shifts_remaining
+            'shifts_remaining': count_remaining
         }
 
         if is_available:
-            status = f"{shifts_remaining} shifts remaining"
+            if is_shift_based:
+                status = f"{count_remaining} shifts remaining"
+                option_label = f"{display_str} - {status} ({count_used}/{cap} shifts used)"
+            else:
+                status = f"{count_remaining} spots remaining"
+                option_label = f"{display_str} - {status} ({count_used}/{cap} people)"
         else:
             status = "FULL - Not Available"
-
-        option_label = f"{display_str} - {status} ({shifts_used}/{cap} shifts used)"
+            if is_shift_based:
+                option_label = f"{display_str} - {status} ({count_used}/{cap} shifts used)"
+            else:
+                option_label = f"{display_str} - {status} ({count_used}/{cap} people)"
 
         # Include all weeks (available and full) in the mapping and dropdown
-        week_mapping[option_label] = (week_start_str, week_end_str, display_str, shifts_remaining, is_available)
+        week_mapping[option_label] = (week_start_str, week_end_str, display_str, count_remaining, is_available)
         week_options.append(option_label)
 
     if not week_options:
@@ -506,34 +521,41 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
 
     # Show shift selection and submit button if a valid week is selected
     if selected_option and selected_option != placeholder:
-        week_start_str, week_end_str, display_str, shifts_remaining, is_available = week_mapping[selected_option]
+        week_start_str, week_end_str, display_str, count_remaining, is_available = week_mapping[selected_option]
 
         # Check if week is full
         if not is_available:
             st.error("❌ **This week is full and cannot be selected.**")
-            st.info("Please choose a different week with available shifts.")
+            st.info("Please choose a different week with available capacity.")
         else:
-            # Determine shift options for dropdown
-            max_shifts_available = min(shifts_per_week, shifts_remaining)
+            selected_shifts = None
 
-            # Check if this is a partial week (user can't use all their shifts)
-            is_partial = max_shifts_available < shifts_per_week
+            # For NURSE/MEDIC: Show shift selection dropdown
+            if is_shift_based:
+                # Determine shift options for dropdown
+                max_shifts_available = min(shifts_per_week, count_remaining)
 
-            if is_partial:
-                st.warning(f"⚠️ **Partial Week Notice:** This week only has {shifts_remaining} shift(s) remaining. You can only use {max_shifts_available} shift(s) for this week.")
+                # Check if this is a partial week (user can't use all their shifts)
+                is_partial = max_shifts_available < shifts_per_week
 
-            # Create shift selection dropdown
-            shift_options = list(range(max_shifts_available, 0, -1))  # From max down to 1
+                if is_partial:
+                    st.warning(f"⚠️ **Partial Week Notice:** This week only has {count_remaining} shift(s) remaining. You can only use {max_shifts_available} shift(s) for this week.")
 
-            st.markdown("### How many shifts would you like to use?")
-            selected_shifts = st.selectbox(
-                "Number of shifts:",
-                options=shift_options,
-                index=0,  # Default to maximum available
-                key="shift_count_select"
-            )
+                # Create shift selection dropdown
+                shift_options = list(range(max_shifts_available, 0, -1))  # From max down to 1
 
-            st.info(f"You are requesting **{selected_shifts}** shift(s) for the week of **{display_str}**")
+                st.markdown("### How many shifts would you like to use?")
+                selected_shifts = st.selectbox(
+                    "Number of shifts:",
+                    options=shift_options,
+                    index=0,  # Default to maximum available
+                    key="shift_count_select"
+                )
+
+                st.info(f"You are requesting **{selected_shifts}** shift(s) for the week of **{display_str}**")
+            else:
+                # For CCEMT and other roles: Simple confirmation
+                st.info(f"You are requesting the week of **{display_str}**")
 
             # Submit button
             if st.button("✅ Submit My Selection", type="primary"):
@@ -611,9 +633,11 @@ def display_admin_interface(staff_list, role_mapping):
         stats_data = []
         for role, cap in ROLE_CAPS.items():
             stats = role_stats.get(role, {'staff_with_selections': 0})
+            # Use different label for shift-based vs person-based roles
+            cap_label = f"{cap} shifts" if role in SHIFT_BASED_ROLES else f"{cap} people"
             stats_data.append({
                 'Role': role,
-                'Shift Cap per Week': cap,
+                'Weekly Cap': cap_label,
                 'Staff with Selections': stats['staff_with_selections']
             })
 
@@ -634,12 +658,21 @@ def display_admin_interface(staff_list, role_mapping):
                         role_week_selections = [sel for sel in week_selections if sel['role'] == role]
                         if role_week_selections:
                             cap = ROLE_CAPS[role]
-                            # Calculate total shifts used for this role/week
-                            total_shifts = sum(sel.get('shifts_used', 0) or 0 for sel in role_week_selections)
-                            st.markdown(f"**{role}:** {total_shifts}/{cap} shifts used")
-                            for sel in role_week_selections:
-                                shifts = sel.get('shifts_used', '?')
-                                st.markdown(f"  - {sel['staff_name']} ({shifts} shifts)")
+
+                            # Show shifts for NURSE/MEDIC, people count for others
+                            if role in SHIFT_BASED_ROLES:
+                                # Calculate total shifts used for this role/week
+                                total_shifts = sum(sel.get('shifts_used', 0) or 0 for sel in role_week_selections)
+                                st.markdown(f"**{role}:** {total_shifts}/{cap} shifts used")
+                                for sel in role_week_selections:
+                                    shifts = sel.get('shifts_used', '?')
+                                    st.markdown(f"  - {sel['staff_name']} ({shifts} shifts)")
+                            else:
+                                # Show person count for CCEMT and others
+                                person_count = len(role_week_selections)
+                                st.markdown(f"**{role}:** {person_count}/{cap} people")
+                                for sel in role_week_selections:
+                                    st.markdown(f"  - {sel['staff_name']}")
 
     with tab2:
         st.markdown("### Manage Staff LT Access")
@@ -735,12 +768,20 @@ def display_admin_interface(staff_list, role_mapping):
 
             st.info(f"**{admin_selected_staff}** ({staff_role})")
 
-            # Get staff's shifts per week
-            staff_shifts_per_week = get_shifts_per_week(admin_selected_staff)
+            # Check if this role uses shift-based caps
+            is_admin_shift_based = staff_role in SHIFT_BASED_ROLES
+
+            # Get staff's shifts per week (only for NURSE/MEDIC)
+            staff_shifts_per_week = None
+            if is_admin_shift_based:
+                staff_shifts_per_week = get_shifts_per_week(admin_selected_staff)
 
             if current_selection:
-                shifts_used = current_selection.get('shifts_used', '?')
-                st.success(f"Current selection: {current_selection['week_start_date']} to {current_selection['week_end_date']} ({shifts_used} shifts)")
+                if is_admin_shift_based:
+                    shifts_used = current_selection.get('shifts_used', '?')
+                    st.success(f"Current selection: {current_selection['week_start_date']} to {current_selection['week_end_date']} ({shifts_used} shifts)")
+                else:
+                    st.success(f"Current selection: {current_selection['week_start_date']} to {current_selection['week_end_date']}")
 
                 if st.button("❌ Remove This Selection"):
                     success, message = cancel_summer_leave_selection(admin_selected_staff)
@@ -753,11 +794,13 @@ def display_admin_interface(staff_list, role_mapping):
             st.markdown("---")
             st.markdown("### Add/Update Selection")
 
-            if staff_shifts_per_week is None:
+            # Check for shift data only for NURSE/MEDIC
+            if is_admin_shift_based and staff_shifts_per_week is None:
                 st.warning(f"⚠️ {admin_selected_staff} does not have shift information in Requirements.xlsx")
                 st.info("Please update the Requirements file before adding a selection.")
             else:
-                st.info(f"**{admin_selected_staff}'s Shifts Per Week:** {staff_shifts_per_week}")
+                if is_admin_shift_based:
+                    st.info(f"**{admin_selected_staff}'s Shifts Per Week:** {staff_shifts_per_week}")
 
                 # Week selector (use staff's role to get appropriate weeks)
                 weeks = get_summer_weeks(staff_role)
@@ -766,14 +809,16 @@ def display_admin_interface(staff_list, role_mapping):
 
                 selected_week = st.selectbox("Select Week:", options=week_options, key="admin_week_select")
 
-                # Shift count selector
-                shift_options = list(range(staff_shifts_per_week, 0, -1))  # From max down to 1
-                selected_shifts = st.selectbox(
-                    "Number of Shifts:",
-                    options=shift_options,
-                    index=0,
-                    key="admin_shift_count_select"
-                )
+                # Shift count selector (only for NURSE/MEDIC)
+                selected_shifts = None
+                if is_admin_shift_based:
+                    shift_options = list(range(staff_shifts_per_week, 0, -1))  # From max down to 1
+                    selected_shifts = st.selectbox(
+                        "Number of Shifts:",
+                        options=shift_options,
+                        index=0,
+                        key="admin_shift_count_select"
+                    )
 
                 if selected_week and st.button("✅ Save Selection"):
                     week_start_str, week_end_str = week_mapping[selected_week]

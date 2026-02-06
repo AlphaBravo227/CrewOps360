@@ -1530,29 +1530,43 @@ def cancel_summer_leave_selection(staff_name):
 
 def get_week_selections_by_role(week_start_date, role):
     """
-    Get total shifts used for a specific week and role
+    Get total shifts used or person count for a specific week and role
+
+    For NURSE/MEDIC: Returns sum of shifts_used (shift-based caps)
+    For other roles: Returns count of people (person-based caps)
 
     Args:
         week_start_date (str): Start date of week (YYYY-MM-DD)
         role (str): Role to filter by
 
     Returns:
-        int: Total shifts used for this week and role
+        int: Total shifts used (NURSE/MEDIC) or person count (others) for this week and role
     """
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT SUM(shifts_used) FROM summer_leave_requests
-            WHERE week_start_date = ? AND role = ? AND status = 'active'
-        """, (week_start_date, role))
+        # Shift-based counting for NURSE/MEDIC
+        if role in ['NURSE', 'MEDIC']:
+            cursor.execute("""
+                SELECT SUM(shifts_used) FROM summer_leave_requests
+                WHERE week_start_date = ? AND role = ? AND status = 'active'
+            """, (week_start_date, role))
 
-        result = cursor.fetchone()
-        return result[0] if result and result[0] is not None else 0
+            result = cursor.fetchone()
+            return result[0] if result and result[0] is not None else 0
+        else:
+            # Person-based counting for CCEMT, AMT, etc.
+            cursor.execute("""
+                SELECT COUNT(*) FROM summer_leave_requests
+                WHERE week_start_date = ? AND role = ? AND status = 'active'
+            """, (week_start_date, role))
+
+            result = cursor.fetchone()
+            return result[0] if result else 0
 
     except Exception as e:
-        print(f"Error getting week shift usage: {str(e)}")
+        print(f"Error getting week selections: {str(e)}")
         return 0
 
 def get_all_summer_leave_selections():
