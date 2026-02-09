@@ -21,6 +21,7 @@ from .db_utils import (
     save_location_preferences_to_db,
     get_location_preferences_from_db
 )
+from .email_notifications import send_location_preference_notification
 
 def initialize_preference_tables():
     """
@@ -1134,6 +1135,16 @@ def display_location_preference_editor(staff_name):
                     st.success(f"✅ {message}")
                     st.balloons()
                     st.info("🔄 Your preferences have been saved and will be used for scheduling!")
+
+                    # Send email notification to admins
+                    email_success, email_msg = send_location_preference_notification(
+                        staff_name, day_preferences, night_preferences,
+                        zip_code.strip(), reduced_rest_value, n_to_d_flex_value
+                    )
+                    if email_success:
+                        st.session_state['email_message'] = email_msg
+                    else:
+                        st.warning(f"Preferences saved, but email notification could not be sent: {email_msg}")
 
                     # Rerun to show updated preferences
                     st.rerun()
