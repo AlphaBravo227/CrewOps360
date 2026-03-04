@@ -11,6 +11,7 @@ class TrainingTrackManager:
         self.tracks_db_path = tracks_db_path
         self.tracks_cache = {}
         self.ccemt_schedule_cache = {}
+        self.ccemt_raw_cache = {}  # Raw CCEMT shift codes (e.g., 'PG', 'NP') for display purposes
         self.tracks_excel_handler = None  # For loading CCEMT schedules from Tracks.xlsx
         self.enrollment_excel_handler = None  # For getting staff roles from enrollment sheet
         
@@ -131,16 +132,20 @@ class TrainingTrackManager:
                 # Initialize schedule pattern for this staff member
                 # Store as day_index (0-27) -> shift code
                 self.ccemt_schedule_cache[staff_name] = {}
-                
+                self.ccemt_raw_cache[staff_name] = {}
+
                 # Read the 28-day pattern
                 for day_index, col_idx in pattern_shifts.items():
                     # Get the cell value (col_idx is 1-based, but row[x] is 0-based)
                     cell_value = row[col_idx - 1].value
-                    
+
                     if cell_value:
                         schedule_str = str(cell_value).strip().upper()
-                        
-                        # Classify shifts: anything starting with 'N' is night shift, 
+
+                        # Store the raw code for display purposes (e.g., 'PG', 'NP')
+                        self.ccemt_raw_cache[staff_name][day_index] = schedule_str
+
+                        # Classify shifts: anything starting with 'N' is night shift,
                         # everything else is day shift
                         if schedule_str.startswith('N'):
                             # Night shift (NG, NW, etc.)
@@ -282,6 +287,47 @@ class TrainingTrackManager:
         track_data = self.tracks_cache.get(staff_name, {})
         return track_data.get(pattern_day, "")    
     
+    def get_staff_raw_shift(self, staff_name, date):
+        """
+        Get the raw shift code for a staff member on a date, for display purposes.
+
+        For CCEMT staff, returns the original shift code from the Excel (e.g., 'PG', 'NP').
+        For regular track staff, returns the full shift code (e.g., 'D7B', 'N7P').
+
+        Args:
+            staff_name: Name of the staff member
+            date: Date to check (datetime or string in MM/DD/YYYY format)
+
+        Returns:
+            str: Raw shift code, or empty string if no shift / not found
+        """
+        if isinstance(date, str):
+            try:
+                date_obj = datetime.strptime(date, '%m/%d/%Y')
+            except ValueError:
+                return ""
+        else:
+            date_obj = date
+
+        staff_role = self.get_staff_role(staff_name)
+
+        if staff_role == 'CCEMT':
+            raw_cache = getattr(self, 'ccemt_raw_cache', {})
+            if staff_name in raw_cache:
+                days_since_start = (date_obj - self.ccemt_start_date).days
+                day_in_cycle = days_since_start % 28
+                return raw_cache[staff_name].get(day_in_cycle, "")
+            return ""
+
+        if staff_name not in self.tracks_cache:
+            return ""
+
+        pattern_day = self.get_pattern_day_name(date_obj)
+        if not pattern_day:
+            return ""
+
+        return self.tracks_cache.get(staff_name, {}).get(pattern_day, "")
+
     def check_class_conflict(self, staff_name, class_date, is_two_day=False, can_work_n_prior=False):
         """
         Check if a staff member has a conflict with a class date.

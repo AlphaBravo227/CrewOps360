@@ -597,7 +597,142 @@ def display_user_interface(staff_name, role, excel_handler, track_manager):
             # Show schedule without any week highlighted
             display_track_schedule(schedule_by_week, None, week_availability, week_shift_info)
 
-def display_admin_interface(staff_list, role_mapping):
+def _get_lt_display_code(staff_name, role, date, track_manager):
+    """
+    Get the LT display code for a staff member on a given date.
+
+    For CCEMT: returns 'LT-{raw_code}' (e.g., 'LT-PG', 'LT-NP').
+    For all others: returns 'LT-D' or 'LT-N' based on the shift prefix.
+    Returns empty string if no shift is scheduled that day.
+
+    Args:
+        staff_name (str): Staff member name
+        role (str): Staff member role
+        date (datetime): The date to look up
+        track_manager: TrainingTrackManager instance
+
+    Returns:
+        str: Display code like 'LT-D', 'LT-N', 'LT-PG', etc., or ''
+    """
+    if not track_manager:
+        return ""
+
+    if role == 'CCEMT':
+        raw_shift = track_manager.get_staff_raw_shift(staff_name, date)
+        return f"LT-{raw_shift}" if raw_shift else ""
+    else:
+        shift = track_manager.get_staff_shift(staff_name, date.strftime('%m/%d/%Y'))
+        if not shift:
+            return ""
+        if shift.startswith('D'):
+            return "LT-D"
+        elif shift.startswith('N'):
+            return "LT-N"
+        return ""
+
+
+def display_lt_schedule_report(staff_list, role_mapping, track_manager):
+    """
+    Display the LT Schedule report tab.
+
+    Shows a grid where rows are staff members and columns are dates in a
+    user-defined range. Each cell shows the LT shift label (e.g., 'LT-D',
+    'LT-N', 'LT-PG') only for dates that fall within the staff member's
+    selected leave window. Off days and dates outside the window are blank.
+
+    Args:
+        staff_list (list): List of all staff names
+        role_mapping (dict): Dictionary mapping staff names to roles
+        track_manager: TrainingTrackManager instance (may be None)
+    """
+    st.markdown("### LT Schedule Report")
+    st.markdown(
+        "Grid of shift labels during each staff member's selected leave window. "
+        "Cells are blank when no shift is scheduled or outside the leave window."
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input(
+            "Start Date",
+            value=SUMMER_START_DATE.date(),
+            key="lt_report_start"
+        )
+    with col2:
+        end_date = st.date_input(
+            "End Date",
+            value=SUMMER_END_DATE.date(),
+            key="lt_report_end"
+        )
+
+    if start_date > end_date:
+        st.warning("Start date must be on or before end date.")
+        return
+
+    if st.button("📋 Generate Report", type="primary", key="btn_generate_lt_report"):
+        all_selections = get_all_summer_leave_selections()
+        selections_lookup = {sel['staff_name']: sel for sel in all_selections}
+
+        # Build list of dates in the range
+        dates = []
+        current = datetime(start_date.year, start_date.month, start_date.day)
+        end_dt = datetime(end_date.year, end_date.month, end_date.day)
+        while current <= end_dt:
+            dates.append(current)
+            current += timedelta(days=1)
+
+        # Build report rows
+        report_rows = []
+        for staff_name in sorted(staff_list):
+            role = role_mapping.get(staff_name, 'Unknown')
+            selection = selections_lookup.get(staff_name)
+
+            row = {'Staff Name': staff_name, 'Role': role}
+
+            if selection:
+                leave_start = datetime.strptime(selection['week_start_date'], '%Y-%m-%d')
+                leave_end = datetime.strptime(selection['week_end_date'], '%Y-%m-%d')
+            else:
+                leave_start = None
+                leave_end = None
+
+            for date in dates:
+                col_label = date.strftime('%m/%d')
+                if leave_start and leave_end and leave_start <= date <= leave_end:
+                    row[col_label] = _get_lt_display_code(staff_name, role, date, track_manager)
+                else:
+                    row[col_label] = ""
+
+            report_rows.append(row)
+
+        df = pd.DataFrame(report_rows)
+        st.session_state['lt_report_df'] = df
+        st.session_state['lt_report_dates'] = (str(start_date), str(end_date))
+
+    if 'lt_report_df' in st.session_state:
+        df = st.session_state['lt_report_df']
+        start_str, end_str = st.session_state.get('lt_report_dates', ('', ''))
+
+        st.markdown(f"**Period:** {start_str} to {end_str} &nbsp;|&nbsp; **{len(df)} staff members**")
+        st.dataframe(df, use_container_width=True)
+
+        # Excel export
+        import io
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='LT Schedule')
+        output.seek(0)
+
+        st.download_button(
+            label="📥 Download as Excel",
+            data=output,
+            file_name=f"LT_Schedule_{start_str}_to_{end_str}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_lt_schedule"
+        )
+
+
+def display_admin_interface(staff_list, role_mapping, track_manager=None):
     """
     Display admin interface for managing summer leave
 
@@ -616,7 +751,7 @@ def display_admin_interface(staff_list, role_mapping):
     selections_lookup = {sel['staff_name']: sel for sel in all_selections}
 
     # Tabs for different admin functions
-    tab1, tab2, tab3 = st.tabs(["📊 Overview", "👥 Manage Staff", "➕ Add/Remove Selection"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "👥 Manage Staff", "➕ Add/Remove Selection", "📋 LT Schedule Report"])
 
     with tab1:
         st.markdown("### Summary by Role")
@@ -848,6 +983,9 @@ def display_admin_interface(staff_list, role_mapping):
                     else:
                         st.error(message)
 
+    with tab4:
+        display_lt_schedule_report(staff_list, role_mapping, track_manager)
+
 def display_summer_leave_app(excel_handler, track_manager):
     """
     Main entry point for Summer Leave module
@@ -914,7 +1052,7 @@ def display_summer_leave_app(excel_handler, track_manager):
 
     # Display appropriate interface
     if st.session_state.summer_leave_admin_mode:
-        display_admin_interface(staff_list, role_mapping)
+        display_admin_interface(staff_list, role_mapping, track_manager)
     else:
         # User selects their name
         st.markdown("### Select Your Name")
