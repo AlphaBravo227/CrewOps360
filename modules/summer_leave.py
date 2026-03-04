@@ -692,14 +692,33 @@ def display_lt_schedule_report(staff_list, role_mapping, track_manager):
             if selection:
                 leave_start = datetime.strptime(selection['week_start_date'], '%Y-%m-%d')
                 leave_end = datetime.strptime(selection['week_end_date'], '%Y-%m-%d')
+                shifts_used = selection.get('shifts_used')
             else:
                 leave_start = None
                 leave_end = None
+                shifts_used = None
+
+            # For NURSE/MEDIC with a partial week selection, only the first
+            # `shifts_used` scheduled shifts (in date order) across the full
+            # leave window are LT. The remainder are regular shifts (blank).
+            lt_dates = None
+            if selection and role in SHIFT_BASED_ROLES and shifts_used is not None:
+                lt_dates = set()
+                count = 0
+                check = leave_start
+                while check <= leave_end and count < shifts_used:
+                    if _get_lt_display_code(staff_name, role, check, track_manager):
+                        lt_dates.add(check)
+                        count += 1
+                    check += timedelta(days=1)
 
             for date in dates:
                 col_label = date.strftime('%m/%d')
                 if leave_start and leave_end and leave_start <= date <= leave_end:
-                    row[col_label] = _get_lt_display_code(staff_name, role, date, track_manager)
+                    if lt_dates is not None and date not in lt_dates:
+                        row[col_label] = ""
+                    else:
+                        row[col_label] = _get_lt_display_code(staff_name, role, date, track_manager)
                 else:
                     row[col_label] = ""
 
