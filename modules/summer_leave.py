@@ -683,6 +683,7 @@ def display_lt_schedule_report(staff_list, role_mapping, track_manager):
 
         # Build report rows
         report_rows = []
+        partial_notes = {}  # staff_name -> col_label of first window date (for Excel comment)
         for staff_name in sorted(staff_list):
             role = role_mapping.get(staff_name, 'Unknown')
             selection = selections_lookup.get(staff_name)
@@ -722,23 +723,24 @@ def display_lt_schedule_report(staff_list, role_mapping, track_manager):
                     check += timedelta(days=1)
 
             # First date in the report range that falls within the leave window
-            first_window_date = None
+            # (used to place the partial-week Excel comment)
+            first_window_col = None
             if is_partial_week:
                 for date in dates:
                     if leave_start <= date <= leave_end:
-                        first_window_date = date
+                        first_window_col = date.strftime('%m/%d')
                         break
+
+            if is_partial_week and first_window_col:
+                partial_notes[staff_name] = first_window_col
 
             for date in dates:
                 col_label = date.strftime('%m/%d')
                 if leave_start and leave_end and leave_start <= date <= leave_end:
                     if lt_dates is not None and date not in lt_dates:
-                        cell_val = ""
+                        row[col_label] = ""
                     else:
-                        cell_val = _get_lt_display_code(staff_name, role, date, track_manager)
-                    if is_partial_week and date == first_window_date:
-                        cell_val = f"{cell_val} (partial)".strip()
-                    row[col_label] = cell_val
+                        row[col_label] = _get_lt_display_code(staff_name, role, date, track_manager)
                 else:
                     row[col_label] = ""
 
@@ -747,6 +749,7 @@ def display_lt_schedule_report(staff_list, role_mapping, track_manager):
         df = pd.DataFrame(report_rows)
         st.session_state['lt_report_df'] = df
         st.session_state['lt_report_dates'] = (str(start_date), str(end_date))
+        st.session_state['lt_partial_notes'] = partial_notes
 
     if 'lt_report_df' in st.session_state:
         df = st.session_state['lt_report_df']
@@ -757,9 +760,27 @@ def display_lt_schedule_report(staff_list, role_mapping, track_manager):
 
         # Excel export
         import io
+        from openpyxl.comments import Comment
+        partial_notes = st.session_state.get('lt_partial_notes', {})
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='LT Schedule')
+            if partial_notes:
+                ws = writer.sheets['LT Schedule']
+                # Build lookup: column label -> Excel column index (1-based)
+                col_positions = {col: idx + 1 for idx, col in enumerate(df.columns)}
+                # Build lookup: staff name -> Excel row index (1-based; row 1 is header)
+                staff_positions = {row['Staff Name']: idx + 2
+                                   for idx, row in enumerate(df.to_dict('records'))}
+                for staff_name, col_label in partial_notes.items():
+                    row_idx = staff_positions.get(staff_name)
+                    col_idx = col_positions.get(col_label)
+                    if row_idx and col_idx:
+                        note = Comment(
+                            "Partial week: fewer LT shifts selected than total scheduled shifts this week.",
+                            "CrewOps360"
+                        )
+                        ws.cell(row=row_idx, column=col_idx).comment = note
         output.seek(0)
 
         st.download_button(
