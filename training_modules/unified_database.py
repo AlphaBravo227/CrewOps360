@@ -375,18 +375,37 @@ class UnifiedDatabase:
             signup_timestamp = self._format_eastern_timestamp(current_time)
             override_timestamp = self._format_eastern_timestamp(current_time) if conflict_override else None
             
-            # Insert with explicit column list (excludes id to allow auto-increment)
+            # Check if a cancelled record already exists (UNIQUE constraint blocks re-insert)
             self.cursor.execute('''
-                INSERT INTO training_educator_signups 
-                (staff_name, class_name, class_date, conflict_override, conflict_details, 
-                 override_acknowledged, signup_date, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
-            ''', (staff_name, class_name, class_date, conflict_override, conflict_details, 
-                 override_timestamp, signup_timestamp))
-            
-            # Get the auto-generated ID
-            inserted_id = self.cursor.lastrowid
-            print(f"SUCCESS: Educator signup created with ID: {inserted_id}")
+                SELECT id FROM training_educator_signups
+                WHERE staff_name = ? AND class_name = ? AND class_date = ?
+            ''', (staff_name, class_name, class_date))
+            existing = self.cursor.fetchone()
+
+            if existing:
+                # Reactivate the cancelled signup instead of inserting a duplicate
+                self.cursor.execute('''
+                    UPDATE training_educator_signups
+                    SET status = 'active', conflict_override = ?, conflict_details = ?,
+                        override_acknowledged = ?, signup_date = ?
+                    WHERE id = ?
+                ''', (conflict_override, conflict_details, override_timestamp,
+                      signup_timestamp, existing['id']))
+                inserted_id = existing['id']
+                print(f"SUCCESS: Educator signup reactivated with ID: {inserted_id}")
+            else:
+                # Insert with explicit column list (excludes id to allow auto-increment)
+                self.cursor.execute('''
+                    INSERT INTO training_educator_signups
+                    (staff_name, class_name, class_date, conflict_override, conflict_details,
+                     override_acknowledged, signup_date, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
+                ''', (staff_name, class_name, class_date, conflict_override, conflict_details,
+                     override_timestamp, signup_timestamp))
+
+                # Get the auto-generated ID
+                inserted_id = self.cursor.lastrowid
+                print(f"SUCCESS: Educator signup created with ID: {inserted_id}")
             
             # Add audit entry
             audit_timestamp = self._format_eastern_timestamp(current_time)
