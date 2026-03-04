@@ -702,6 +702,7 @@ def display_lt_schedule_report(staff_list, role_mapping, track_manager):
             # `shifts_used` scheduled shifts (in date order) across the full
             # leave window are LT. The remainder are regular shifts (blank).
             lt_dates = None
+            is_partial_week = False
             if selection and role in SHIFT_BASED_ROLES and shifts_used is not None:
                 lt_dates = set()
                 count = 0
@@ -712,13 +713,32 @@ def display_lt_schedule_report(staff_list, role_mapping, track_manager):
                         count += 1
                     check += timedelta(days=1)
 
+                # Detect partial: any scheduled shift in the window not in lt_dates
+                check = leave_start
+                while check <= leave_end:
+                    if check not in lt_dates and _get_lt_display_code(staff_name, role, check, track_manager):
+                        is_partial_week = True
+                        break
+                    check += timedelta(days=1)
+
+            # First date in the report range that falls within the leave window
+            first_window_date = None
+            if is_partial_week:
+                for date in dates:
+                    if leave_start <= date <= leave_end:
+                        first_window_date = date
+                        break
+
             for date in dates:
                 col_label = date.strftime('%m/%d')
                 if leave_start and leave_end and leave_start <= date <= leave_end:
                     if lt_dates is not None and date not in lt_dates:
-                        row[col_label] = ""
+                        cell_val = ""
                     else:
-                        row[col_label] = _get_lt_display_code(staff_name, role, date, track_manager)
+                        cell_val = _get_lt_display_code(staff_name, role, date, track_manager)
+                    if is_partial_week and date == first_window_date:
+                        cell_val = f"{cell_val} (partial)".strip()
+                    row[col_label] = cell_val
                 else:
                     row[col_label] = ""
 
