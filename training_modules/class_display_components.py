@@ -22,14 +22,34 @@ class ClassDisplayComponents:
         
         # Check if this is a two-day class
         is_two_day = class_details.get('is_two_day_class', 'No').lower() == 'yes'
-        
+        is_multi_session = class_details.get('is_multi_session', 'No').lower() == 'yes'
+        session_length = class_details.get('session_length')
+
+        # Compute sessions per day for display
+        if is_multi_session and session_length:
+            try:
+                start_str = class_details.get('time_1_start', '08:00') or '08:00'
+                end_str = class_details.get('time_1_end', '16:00') or '16:00'
+                _start = datetime.strptime(start_str, '%H:%M')
+                _end = datetime.strptime(end_str, '%H:%M')
+                _delta = timedelta(minutes=int(session_length))
+                sessions_per_day = 0
+                _cur = _start
+                while _cur + _delta <= _end:
+                    sessions_per_day += 1
+                    _cur += _delta
+            except Exception:
+                sessions_per_day = class_details.get('classes_per_day', 1)
+        else:
+            sessions_per_day = class_details.get('classes_per_day', 1)
+
         # Display basic class information
         col1, col2 = st.columns(2)
-        
+
         with col1:
             st.write(f"**📚 Class:** {class_details.get('class_name', 'Unknown')}")
             st.write(f"**👥 Max Students:** {class_details.get('students_per_class', '21')}")
-            st.write(f"**📅 Sessions per Day:** {class_details.get('classes_per_day', '1')}")
+            st.write(f"**📅 Sessions per Day:** {sessions_per_day}")
         
         with col2:
             if class_details.get('nurses_medic_separate', 'No').lower() == 'yes':
@@ -38,6 +58,8 @@ class ClassDisplayComponents:
                 st.write("• **🔴 Two-day class format**")
             if class_details.get('is_staff_meeting', False):
                 st.write("• **Staff Meeting (LIVE/Virtual options)**")
+            if is_multi_session and session_length:
+                st.write(f"• **⏱ Multi-session ({session_length}-min slots)**")
         
         # Display available dates with two-day expansion
         st.write("**📅 Available Dates:**")
@@ -100,22 +122,39 @@ class ClassDisplayComponents:
     def get_detailed_times(class_details):
         """Get detailed time information"""
         times = []
-        classes_per_day = int(class_details.get('classes_per_day', 1))
-        
-        for i in range(1, min(classes_per_day + 1, 5)):  # Max 4 time slots
-            start_key = f'time_{i}_start'
-            end_key = f'time_{i}_end'
-            
-            if start_key in class_details and end_key in class_details:
-                start_time = class_details[start_key]
-                end_time = class_details[end_key]
-                
-                if start_time and end_time:
-                    if classes_per_day > 1:
-                        times.append(f"Session {i}: {start_time} - {end_time}")
-                    else:
-                        times.append(f"{start_time} - {end_time}")
-        
+        is_multi_session = class_details.get('is_multi_session', 'No').lower() == 'yes'
+        session_length = class_details.get('session_length')
+
+        if is_multi_session and session_length:
+            # Generate slots dynamically from time_1_start to time_1_end
+            start_str = class_details.get('time_1_start', '08:00') or '08:00'
+            end_str = class_details.get('time_1_end', '16:00') or '16:00'
+            try:
+                current_start = datetime.strptime(start_str, '%H:%M')
+                end_limit = datetime.strptime(end_str, '%H:%M')
+                delta = timedelta(minutes=int(session_length))
+                session_num = 1
+                while current_start + delta <= end_limit:
+                    current_end = current_start + delta
+                    times.append(f"Session {session_num}: {current_start.strftime('%H:%M')} - {current_end.strftime('%H:%M')}")
+                    current_start = current_end
+                    session_num += 1
+            except Exception:
+                times.append(f"{start_str} - {end_str}")
+        else:
+            classes_per_day = int(class_details.get('classes_per_day', 1))
+            for i in range(1, min(classes_per_day + 1, 5)):  # Max 4 time slots
+                start_key = f'time_{i}_start'
+                end_key = f'time_{i}_end'
+                if start_key in class_details and end_key in class_details:
+                    start_time = class_details[start_key]
+                    end_time = class_details[end_key]
+                    if start_time and end_time:
+                        if classes_per_day > 1:
+                            times.append(f"Session {i}: {start_time} - {end_time}")
+                        else:
+                            times.append(f"{start_time} - {end_time}")
+
         return times if times else ["Time not specified"]
 
     @staticmethod
