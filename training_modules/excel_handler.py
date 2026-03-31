@@ -13,7 +13,9 @@ DEFAULT_CLASS_DETAILS = {
     'is_two_day_class': 'No',
     'time_1_start': '08:00',
     'time_1_end': '16:00',
-    'instructors_per_day': 0  # Default to 0 instructors needed
+    'instructors_per_day': 0,  # Default to 0 instructors needed
+    'is_multi_session': 'No',
+    'session_length': None,
 }
 
 class ExcelHandler:
@@ -239,9 +241,19 @@ class ExcelHandler:
                 
             details = {}
             
-            #Extract CCEMT checkbox data
+            # Extract CCEMT checkbox data
             ccemt_checkbox = sheet.cell(row=2, column=6).value  # Column F, Row 2
             has_ccemt = self._parse_checkbox_value(ccemt_checkbox)
+
+            # Extract MULTI_SESSION and SESSION_LENGTH (Column G/H, Row 2)
+            multi_session_value = sheet.cell(row=2, column=7).value  # Column G, Row 2
+            is_multi_session = self._parse_checkbox_value(multi_session_value)
+
+            session_length_value = sheet.cell(row=2, column=8).value  # Column H, Row 2
+            try:
+                session_length = int(float(session_length_value)) if session_length_value is not None else None
+            except (ValueError, TypeError):
+                session_length = None
 
             # Extract dates from rows 1-14 (row 15 is blank)
             # Check columns B (date), C (LIVE option), D (Can work N prior), E (Location)
@@ -295,8 +307,12 @@ class ExcelHandler:
             nurses_medic_separate_value = sheet.cell(row=17, column=2).value
             details['nurses_medic_separate'] = 'Yes' if self._parse_checkbox_value(nurses_medic_separate_value) else 'No'
 
-            # NEW: Add CCEMT configuration
+            # Add CCEMT configuration
             details['has_ccemt'] = 'Yes' if has_ccemt else 'No'
+
+            # Add MULTI_SESSION and SESSION_LENGTH configuration
+            details['is_multi_session'] = 'Yes' if is_multi_session else 'No'
+            details['session_length'] = session_length
             
             details['classes_per_day'] = sheet.cell(row=18, column=2).value or 1  # Row 18
             

@@ -707,16 +707,102 @@ class EnrollmentManager:
         nurses_medic_separate = class_details.get('nurses_medic_separate', 'No').lower() == 'yes'
         is_staff_meeting = self.excel.is_staff_meeting(class_name)
         is_two_day = self._is_two_day_class(class_name)
-        
+        is_multi_session = class_details.get('is_multi_session', 'No').lower() == 'yes'
+        session_length = class_details.get('session_length')
+
         session_options = []
-        
+
         # Add two-day indicator to display if applicable
         date_display = class_date
         if is_two_day:
             both_days = self._get_two_day_dates(class_date)
             if len(both_days) == 2:
                 date_display = f"{both_days[0]} - {both_days[1]} (2-Day Class)"
-        if classes_per_day > 1:
+
+        if is_multi_session and session_length:
+            # Dynamically generate sessions based on SESSION_LENGTH interval
+            start_str = class_details.get('time_1_start', '08:00') or '08:00'
+            end_str = class_details.get('time_1_end', '16:00') or '16:00'
+            has_ccemt = class_details.get('has_ccemt', 'No').lower() == 'yes'
+
+            try:
+                slot_start = datetime.strptime(start_str, '%H:%M')
+                slot_end_limit = datetime.strptime(end_str, '%H:%M')
+                delta = timedelta(minutes=int(session_length))
+
+                session_num = 1
+                current_start = slot_start
+                while current_start + delta <= slot_end_limit:
+                    current_end = current_start + delta
+                    s_start = current_start.strftime('%H:%M')
+                    s_end = current_end.strftime('%H:%M')
+                    session_time = f"{s_start}-{s_end}"
+                    display_time = f"Session {session_num} ({s_start}-{s_end})"
+                    if is_two_day:
+                        display_time += " - 2-Day Class"
+
+                    if nurses_medic_separate:
+                        all_enrollments = self.get_session_enrollments(class_name, class_date, session_time)
+                        nurses = []
+                        medics = []
+                        ccemts = []
+                        for enrollment in all_enrollments:
+                            role = enrollment.get('role', 'General')
+                            s_name = enrollment['staff_name']
+                            if role == 'Nurse':
+                                nurses.append(s_name)
+                            elif role == 'Medic':
+                                medics.append(s_name)
+                            elif role == 'CCEMT':
+                                ccemts.append(s_name)
+
+                        if has_ccemt:
+                            max_per_role = 1
+                            nurse_available = len(nurses) < max_per_role
+                            medic_available = len(medics) < max_per_role
+                            ccemt_available = len(ccemts) < max_per_role
+                        else:
+                            max_per_role = max_students // 2
+                            nurse_available = len(nurses) < max_per_role
+                            medic_available = len(medics) < max_per_role
+                            ccemt_available = False
+
+                        session_options.append({
+                            'session_time': session_time,
+                            'display_time': display_time,
+                            'nurses': nurses,
+                            'medics': medics,
+                            'ccemts': ccemts,
+                            'nurse_available': nurse_available,
+                            'medic_available': medic_available,
+                            'ccemt_available': ccemt_available,
+                            'has_ccemt': has_ccemt,
+                            'type': 'nurse_medic_separate',
+                            'is_two_day': is_two_day,
+                            'date_display': date_display
+                        })
+                    else:
+                        all_enrollments = self.get_session_enrollments(class_name, class_date, session_time)
+                        enrolled_names = [e['staff_name'] for e in all_enrollments]
+                        available_slots = max_students - len(enrolled_names)
+
+                        session_options.append({
+                            'session_time': session_time,
+                            'display_time': display_time,
+                            'enrolled': enrolled_names,
+                            'available_slots': available_slots,
+                            'type': 'regular',
+                            'is_two_day': is_two_day,
+                            'date_display': date_display
+                        })
+
+                    current_start = current_end
+                    session_num += 1
+
+            except Exception as e:
+                print(f"Error generating multi-session slots for {class_name}: {e}")
+
+        elif classes_per_day > 1:
             # Multiple sessions per day
             for i in range(1, classes_per_day + 1):
                 start_key = f'time_{i}_start'
