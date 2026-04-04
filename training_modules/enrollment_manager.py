@@ -96,8 +96,12 @@ class EnrollmentManager:
     def _check_weekly_enrollment_limit(self, staff_name, class_date, class_name=None):
         """
         Check weekly enrollment limit for non-MGMT medics.
-        Normally limited to 1 class per week. If the new class or any existing
-        enrollment that week has COUNT_EXEMPT checked, the limit rises to 2.
+        Rules:
+        - Two-day classes are exclusive: no other class may be added to a week that
+          already contains a two-day class, and a two-day class cannot be added to a
+          week that already has any enrollment.
+        - Otherwise the limit is 1 non-two-day class per week, rising to 2 when the
+          new class or any existing enrollment that week has COUNT_EXEMPT checked.
         Returns (can_enroll, error_message, existing_class)
         """
         # Only apply to non-MGMT medics
@@ -131,12 +135,33 @@ class EnrollmentManager:
             if not week_class_names:
                 return True, None, None
 
-            # Determine weekly limit: 2 if any class (new or existing) is count_exempt, else 1
-            new_class_exempt = False
-            if class_name:
-                new_class_details = self.excel.get_class_details(class_name)
-                new_class_exempt = new_class_details.get('is_count_exempt', False)
+            # Look up details for the new class
+            new_class_details = self.excel.get_class_details(class_name) if class_name else {}
+            new_is_two_day = new_class_details.get('is_two_day_class', 'No').lower() == 'yes'
 
+            # Rule 1: if the new class is a two-day class, no other enrollment is allowed
+            # in the same week.
+            if new_is_two_day:
+                existing_class = week_class_names[0]
+                error_message = (
+                    f"Cannot enroll - you are already enrolled in {existing_class} this week. "
+                    f"Two-day classes require the entire week."
+                )
+                return False, error_message, existing_class
+
+            # Rule 2: if any existing enrollment is a two-day class, nothing else can be
+            # added to that week.
+            for existing_name in week_class_names:
+                existing_details = self.excel.get_class_details(existing_name)
+                if existing_details.get('is_two_day_class', 'No').lower() == 'yes':
+                    error_message = (
+                        f"Cannot enroll - you are already enrolled in {existing_name} this week. "
+                        f"Two-day classes require the entire week."
+                    )
+                    return False, error_message, existing_name
+
+            # Rule 3: standard weekly limit — 1 class, or 2 when COUNT_EXEMPT is involved.
+            new_class_exempt = new_class_details.get('is_count_exempt', False)
             any_count_exempt = new_class_exempt
             if not any_count_exempt:
                 for existing_name in week_class_names:
@@ -156,7 +181,6 @@ class EnrollmentManager:
                 )
                 return False, error_message, existing_class
 
-            # Under the limit
             return True, None, None
 
         except Exception as e:
