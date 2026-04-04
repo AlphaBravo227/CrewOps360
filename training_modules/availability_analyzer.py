@@ -268,7 +268,7 @@ class AvailabilityAnalyzer:
                     continue
             
             # Check weekly enrollment limit
-            weekly_limit_ok, weekly_limit_reason = self._check_weekly_enrollment_limit_for_availability(staff_name, date_str)
+            weekly_limit_ok, weekly_limit_reason = self._check_weekly_enrollment_limit_for_availability(staff_name, date_str, class_name)
             if not weekly_limit_ok:
                 # Add to staff details with weekly limit warning (shown in admin view)
                 staff_details.append({
@@ -362,45 +362,68 @@ class AvailabilityAnalyzer:
         except ValueError:
             return [base_date]
     
-    def _check_weekly_enrollment_limit_for_availability(self, staff_name, class_date):
+    def _check_weekly_enrollment_limit_for_availability(self, staff_name, class_date, class_name=None):
         """
-        Check weekly enrollment limit for non-MGMT medics (1 class per week)
+        Check weekly enrollment limit for non-MGMT medics.
+        Normally limited to 1 class per week. If the class being checked or any existing
+        enrollment that week has COUNT_EXEMPT checked, the limit rises to 2.
         Returns (can_enroll, error_message)
         """
         # Only apply to non-MGMT medics
         if not self._is_non_mgmt_medic(staff_name):
             return True, None
-        
+
         try:
             # Parse the target date
             target_date = datetime.strptime(class_date, '%m/%d/%Y')
-            
+
             # Calculate week boundaries (Sunday to Saturday)
             days_since_sunday = (target_date.weekday() + 1) % 7
             week_start = target_date - timedelta(days=days_since_sunday)
             week_end = week_start + timedelta(days=6)
-            
+
             # Get all enrollments for this staff member
             enrollments = self.enrollment.get_staff_enrollments(staff_name)
-            
-            # Check for existing enrollments in the same week
+
+            # Collect existing enrollments in the same week (deduplicated by class name)
+            week_class_names = []
             for enrollment in enrollments:
                 try:
                     enrollment_date = datetime.strptime(enrollment['class_date'], '%m/%d/%Y')
-                    
-                    # If enrollment is in the same week
                     if week_start <= enrollment_date <= week_end:
-                        # Found existing enrollment in this week
-                        existing_class = enrollment['class_name']
-                        error_message = f"Already enrolled in {existing_class} this week (1 class per week limit)"
-                        return False, error_message
-                        
+                        existing_name = enrollment['class_name']
+                        if existing_name not in week_class_names:
+                            week_class_names.append(existing_name)
                 except ValueError:
-                    continue  # Skip if date parsing fails
-            
-            # No existing enrollments found in this week
+                    continue
+
+            if not week_class_names:
+                return True, None
+
+            # Determine weekly limit: 2 if any class (new or existing) is count_exempt, else 1
+            new_class_exempt = False
+            if class_name:
+                new_class_details = self.excel.get_class_details(class_name)
+                new_class_exempt = new_class_details.get('is_count_exempt', False)
+
+            any_count_exempt = new_class_exempt
+            if not any_count_exempt:
+                for existing_name in week_class_names:
+                    existing_details = self.excel.get_class_details(existing_name)
+                    if existing_details.get('is_count_exempt', False):
+                        any_count_exempt = True
+                        break
+
+            weekly_limit = 2 if any_count_exempt else 1
+
+            if len(week_class_names) >= weekly_limit:
+                existing_class = week_class_names[0]
+                limit_word = "2 classes" if weekly_limit == 2 else "1 class"
+                error_message = f"Already enrolled in {existing_class} this week ({limit_word} per week limit)"
+                return False, error_message
+
             return True, None
-            
+
         except Exception as e:
             print(f"Error checking weekly limit for {staff_name}: {e}")
             return True, None  # Allow enrollment if error occurs

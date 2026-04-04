@@ -16,6 +16,7 @@ DEFAULT_CLASS_DETAILS = {
     'instructors_per_day': 0,  # Default to 0 instructors needed
     'is_multi_session': 'No',
     'session_length': None,
+    'is_count_exempt': False,
 }
 
 class ExcelHandler:
@@ -255,6 +256,10 @@ class ExcelHandler:
             except (ValueError, TypeError):
                 session_length = None
 
+            # Extract COUNT_EXEMPT checkbox (Column I, Row 2)
+            count_exempt_value = sheet.cell(row=2, column=9).value  # Column I, Row 2
+            is_count_exempt = self._parse_checkbox_value(count_exempt_value)
+
             # Extract dates from rows 1-14 (row 15 is blank)
             # Check columns B (date), C (LIVE option), D (Can work N prior), E (Location)
             has_any_dates = False
@@ -313,6 +318,9 @@ class ExcelHandler:
             # Add MULTI_SESSION and SESSION_LENGTH configuration
             details['is_multi_session'] = 'Yes' if is_multi_session else 'No'
             details['session_length'] = session_length
+
+            # Add COUNT_EXEMPT configuration
+            details['is_count_exempt'] = is_count_exempt
             
             details['classes_per_day'] = sheet.cell(row=18, column=2).value or 1  # Row 18
             
