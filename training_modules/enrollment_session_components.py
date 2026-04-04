@@ -139,7 +139,7 @@ class EnrollmentSessionComponents:
         
         if not user_enrolled_in_session:
             # Only check weekly limits if they're not already enrolled in this session
-            can_enroll, limit_error, existing_class = enrollment_manager._check_weekly_enrollment_limit(selected_staff, date)
+            can_enroll, limit_error, existing_class = enrollment_manager._check_weekly_enrollment_limit(selected_staff, date, class_name)
             if not can_enroll:
                 weekly_limit_blocked = True
                 weekly_limit_message = limit_error
