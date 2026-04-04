@@ -93,45 +93,96 @@ class EnrollmentManager:
             print(f"Error checking non-MGMT medic status for {staff_name}: {e}")
             return False
 
-    def _check_weekly_enrollment_limit(self, staff_name, class_date):
+    def _check_weekly_enrollment_limit(self, staff_name, class_date, class_name=None):
         """
-        Check weekly enrollment limit for non-MGMT medics (1 class per week)
+        Check weekly enrollment limit for non-MGMT medics.
+        Rules:
+        - Two-day classes are exclusive: no other class may be added to a week that
+          already contains a two-day class, and a two-day class cannot be added to a
+          week that already has any enrollment.
+        - Otherwise the limit is 1 non-two-day class per week, rising to 2 when the
+          new class or any existing enrollment that week has COUNT_EXEMPT checked.
         Returns (can_enroll, error_message, existing_class)
         """
         # Only apply to non-MGMT medics
         if not self._is_non_mgmt_medic(staff_name):
             return True, None, None
-        
+
         try:
             # Parse the target date
             target_date = datetime.strptime(class_date, '%m/%d/%Y')
-            
+
             # Calculate week boundaries (Sunday to Saturday)
             days_since_sunday = (target_date.weekday() + 1) % 7
             week_start = target_date - timedelta(days=days_since_sunday)
             week_end = week_start + timedelta(days=6)
-            
+
             # Get all enrollments for this staff member
             enrollments = self.get_staff_enrollments(staff_name)
-            
-            # Check for existing enrollments in the same week
+
+            # Collect existing enrollments in the same week (deduplicated by class name)
+            week_class_names = []
             for enrollment in enrollments:
                 try:
                     enrollment_date = datetime.strptime(enrollment['class_date'], '%m/%d/%Y')
-                    
-                    # If enrollment is in the same week
                     if week_start <= enrollment_date <= week_end:
-                        # Found existing enrollment in this week
-                        existing_class = enrollment['class_name']
-                        error_message = f"Cannot enroll - you are already enrolled in {existing_class} this week and are limited to one class per week."
-                        return False, error_message, existing_class
-                        
+                        existing_name = enrollment['class_name']
+                        if existing_name not in week_class_names:
+                            week_class_names.append(existing_name)
                 except ValueError:
-                    continue  # Skip if date parsing fails
-            
-            # No existing enrollments found in this week
+                    continue
+
+            if not week_class_names:
+                return True, None, None
+
+            # Look up details for the new class
+            new_class_details = self.excel.get_class_details(class_name) if class_name else {}
+            new_is_two_day = new_class_details.get('is_two_day_class', 'No').lower() == 'yes'
+
+            # Rule 1: if the new class is a two-day class, no other enrollment is allowed
+            # in the same week.
+            if new_is_two_day:
+                existing_class = week_class_names[0]
+                error_message = (
+                    f"Cannot enroll - you are already enrolled in {existing_class} this week. "
+                    f"Two-day classes require the entire week."
+                )
+                return False, error_message, existing_class
+
+            # Rule 2: if any existing enrollment is a two-day class, nothing else can be
+            # added to that week.
+            for existing_name in week_class_names:
+                existing_details = self.excel.get_class_details(existing_name)
+                if existing_details.get('is_two_day_class', 'No').lower() == 'yes':
+                    error_message = (
+                        f"Cannot enroll - you are already enrolled in {existing_name} this week. "
+                        f"Two-day classes require the entire week."
+                    )
+                    return False, error_message, existing_name
+
+            # Rule 3: standard weekly limit — 1 class, or 2 when COUNT_EXEMPT is involved.
+            new_class_exempt = new_class_details.get('is_count_exempt', False)
+            any_count_exempt = new_class_exempt
+            if not any_count_exempt:
+                for existing_name in week_class_names:
+                    existing_details = self.excel.get_class_details(existing_name)
+                    if existing_details.get('is_count_exempt', False):
+                        any_count_exempt = True
+                        break
+
+            weekly_limit = 2 if any_count_exempt else 1
+
+            if len(week_class_names) >= weekly_limit:
+                existing_class = week_class_names[0]
+                limit_word = "two classes" if weekly_limit == 2 else "one class"
+                error_message = (
+                    f"Cannot enroll - you are already enrolled in {existing_class} this week "
+                    f"and are limited to {limit_word} per week."
+                )
+                return False, error_message, existing_class
+
             return True, None, None
-            
+
         except Exception as e:
             print(f"Error checking weekly limit for {staff_name}: {e}")
             return True, None, None  # Allow enrollment if error occurs
@@ -160,7 +211,7 @@ class EnrollmentManager:
         # NEW: Check weekly enrollment limit for non-MGMT medics
         # Check each enrollment date for weekly limits
         for date in enrollment_dates:
-            can_enroll, limit_error, existing_class = self._check_weekly_enrollment_limit(staff_name, date)
+            can_enroll, limit_error, existing_class = self._check_weekly_enrollment_limit(staff_name, date, class_name)
             if not can_enroll:
                 return False, limit_error
         
