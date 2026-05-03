@@ -523,7 +523,7 @@ def display_role_tracks_compact(selected_role, selected_staff_filter='All Staff'
             
             # Apply styling to shift columns only
             shift_columns = [col for col in df.columns if col not in ['Staff Name', 'Role']]
-            styled_df = df.style.applymap(style_shifts, subset=shift_columns)
+            styled_df = df.style.map(style_shifts, subset=shift_columns)
             
             st.dataframe(styled_df, use_container_width=True, hide_index=True, height=400)
             
@@ -584,7 +584,7 @@ def display_role_tracks_fullscreen(selected_role, selected_staff_filter='All Sta
             
             # Apply styling to shift columns only
             shift_columns = [col for col in df.columns if col not in ['Staff Name', 'Role']]
-            styled_df = df.style.applymap(style_shifts, subset=shift_columns)
+            styled_df = df.style.map(style_shifts, subset=shift_columns)
             
             st.dataframe(
                 styled_df, 
