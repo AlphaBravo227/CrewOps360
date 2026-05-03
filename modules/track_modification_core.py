@@ -43,7 +43,19 @@ def get_all_staff_updated_preferences(preferences_df, staff_col_prefs):
             # Update this staff member's preferences
             for shift_name, preference_score in enhanced_preferences.items():
                 if shift_name in updated_preferences_df.columns:
-                    # Use at[] for single value assignment to ensure correct column
+                    # Coerce value to match the column dtype before assignment.
+                    # Boolean preferences (e.g. 'Reduced Rest OK') are stored as
+                    # TEXT in SQLite, so preference_score arrives as a string like
+                    # '1', while the Excel column is int64.  Pandas 2.2+ rejects
+                    # that mismatch with "Invalid value '1' for dtype 'int64'".
+                    try:
+                        col_dtype = updated_preferences_df[shift_name].dtype
+                        if pd.api.types.is_integer_dtype(col_dtype):
+                            preference_score = int(float(preference_score))
+                        elif pd.api.types.is_float_dtype(col_dtype):
+                            preference_score = float(preference_score)
+                    except (ValueError, TypeError):
+                        continue
                     updated_preferences_df.at[idx, shift_name] = preference_score
     
     return updated_preferences_df

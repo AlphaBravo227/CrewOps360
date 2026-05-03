@@ -153,6 +153,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+@st.cache_data
+def _load_excel_file(path: str, mtime: float) -> pd.DataFrame:
+    return pd.read_excel(path)
+
+def load_excel_file(path: str) -> pd.DataFrame:
+    """Load an Excel file with automatic cache-busting on file modification."""
+    mtime = os.path.getmtime(path) if os.path.exists(path) else 0.0
+    return _load_excel_file(path, mtime)
+
 # Initialize session state for navigation
 if 'selected_module' not in st.session_state:
     st.session_state.selected_module = None
@@ -347,7 +356,7 @@ def display_shift_location_preferences_module():
 
         if tracks_file:
             try:
-                tracks_df = pd.read_excel(tracks_file)
+                tracks_df = load_excel_file(tracks_file)
 
                 # Auto-detect staff column
                 staff_col = None
@@ -1301,7 +1310,7 @@ def run_clinical_track_hub():
     # Load preassignments
     if excel_files["preassignments"]:
         try:
-            preassignment_df = pd.read_excel(excel_files["preassignments"])
+            preassignment_df = load_excel_file(excel_files["preassignments"])
             
             staff_col = None
             for col in preassignment_df.columns:
@@ -1399,9 +1408,9 @@ def run_clinical_track_hub():
             # Display staff name mismatches if both files loaded
             if excel_files["preferences"] and excel_files["current_tracks"]:
                 try:
-                    preferences_df = pd.read_excel(excel_files["preferences"])
-                    current_tracks_df = pd.read_excel(excel_files["current_tracks"])
-                    
+                    preferences_df = load_excel_file(excel_files["preferences"])
+                    current_tracks_df = load_excel_file(excel_files["current_tracks"])
+
                     column_detection_result = auto_detect_columns(preferences_df, current_tracks_df)
                     column_mappings = column_detection_result["column_mappings"]
                     
@@ -1877,12 +1886,12 @@ def run_clinical_track_hub():
     if excel_files["preferences"] and excel_files["current_tracks"]:
         try:
             # Load the data from files
-            preferences_df = pd.read_excel(excel_files["preferences"])
-            current_tracks_df = pd.read_excel(excel_files["current_tracks"])
-            
+            preferences_df = load_excel_file(excel_files["preferences"])
+            current_tracks_df = load_excel_file(excel_files["current_tracks"])
+
             # Load requirements file
             if excel_files["requirements"]:
-                requirements_df = pd.read_excel(excel_files["requirements"])
+                requirements_df = load_excel_file(excel_files["requirements"])
                 
                 if len(requirements_df.columns) >= 5:
                     st.session_state.requirements_df = requirements_df

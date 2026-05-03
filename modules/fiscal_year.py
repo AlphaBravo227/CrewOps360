@@ -554,7 +554,7 @@ class FiscalYearDisplay:
                     return 'background-color: #f9fafb; color: #6b7280;'
                 return ''
             
-            styled_df = df.style.applymap(style_shifts, subset=columns[2:])
+            styled_df = df.style.map(style_shifts, subset=columns[2:])
             
             # Use larger height in fullscreen mode
             height = 600 if st.session_state.get('fy_show_fullscreen', False) else 400

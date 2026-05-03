@@ -156,7 +156,7 @@ class AdminExportManager:
 
         shift_prefs = {}
         for shift in shift_columns:
-            if shift in excel_row.index:
+            if shift in excel_row:
                 value = excel_row[shift]
                 # Only include if it's a valid numeric preference score
                 if pd.notna(value) and isinstance(value, (int, float)) and value >= 0:
@@ -278,9 +278,9 @@ class AdminExportManager:
                 }
 
                 # Add preference scores for each shift
-                for _, row in group.iterrows():
-                    shift_name = row['shift_name'].lower()
-                    staff_prefs[shift_name] = row['preference_score']
+                staff_prefs.update(
+                    zip(group['shift_name'].str.lower(), group['preference_score'])
+                )
 
                 app_prefs_list.append(staff_prefs)
 
@@ -319,11 +319,13 @@ class AdminExportManager:
         # Create lookup for app preferences (shift preferences only)
         app_prefs_dict = {}
         if not app_prefs_df.empty:
-            for _, row in app_prefs_df.iterrows():
-                app_prefs_dict[row['staff_name'].lower()] = row.to_dict()
+            app_prefs_dict = {
+                row.staff_name.lower(): row._asdict()
+                for row in app_prefs_df.itertuples(index=False)
+            }
         
-        # Process original preferences
-        for _, original_row in original_prefs_df.iterrows():
+        # Process original preferences; to_dict('records') avoids Series overhead per row
+        for original_row in original_prefs_df.to_dict('records'):
             staff_name = original_row['STAFF NAME']
             staff_name_lower = staff_name.lower()
             
@@ -568,13 +570,15 @@ class AdminExportManager:
         # Create a dict of staff who have new location preferences
         location_prefs_dict = {}
         if not location_prefs_df.empty:
-            for _, row in location_prefs_df.iterrows():
-                location_prefs_dict[row['staff_name'].lower()] = row.to_dict()
+            location_prefs_dict = {
+                row.staff_name.lower(): row._asdict()
+                for row in location_prefs_df.itertuples(index=False)
+            }
 
         # Create export data for all staff
         export_data = []
 
-        for _, orig_row in original_prefs_df.iterrows():
+        for orig_row in original_prefs_df.to_dict('records'):
             staff_name = orig_row['STAFF NAME']
             staff_name_lower = staff_name.lower()
 

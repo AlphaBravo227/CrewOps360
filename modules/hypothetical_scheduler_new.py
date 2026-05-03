@@ -63,18 +63,15 @@ def get_staff_role_based_ranking(staff_name, preferences_df, staff_col_prefs, ro
         staff_seniority = int(staff_info.iloc[0][seniority_col])
         effective_role = "nurse" if staff_role == "dual" else staff_role
         
-        # Get all staff with the same effective role
-        same_role_staff = []
-        for _, row in preferences_df.iterrows():
-            row_role = row[role_col]
-            row_effective_role = "nurse" if row_role == "dual" else row_role
-            
-            if row_effective_role == effective_role:
-                same_role_staff.append({
-                    'name': row[staff_col_prefs],
-                    'seniority': int(row[seniority_col]),
-                    'role': row_role
-                })
+        # Fully vectorized: compute effective roles for all staff at once, then filter
+        _eff_roles = preferences_df[role_col].apply(lambda r: "nurse" if r == "dual" else r)
+        _filtered = preferences_df[_eff_roles == effective_role]
+        same_role_staff = (
+            _filtered[[staff_col_prefs, seniority_col, role_col]]
+            .rename(columns={staff_col_prefs: 'name', seniority_col: 'seniority', role_col: 'role'})
+            .assign(seniority=lambda df: df['seniority'].astype(int))
+            .to_dict('records')
+        )
         
         # Sort by seniority (1 = most senior)
         same_role_staff.sort(key=lambda x: x['seniority'])
