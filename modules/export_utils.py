@@ -50,50 +50,39 @@ def export_tracks_to_excel():
             st.warning("No tracks found in database.")
             return None
             
-        # Process track data with role information
+        # Vectorize simple column transformations before the JSON-parsing loop
+        tracks_df = tracks_df.assign(
+            approved_str=tracks_df['is_approved'].map({1: 'Yes', 0: 'No'}).fillna('No'),
+            approved_by=tracks_df['approved_by'].fillna('N/A'),
+            approval_date=tracks_df['approval_date'].fillna('N/A'),
+            original_role=tracks_df['original_role'].fillna('Unknown'),
+            effective_role=tracks_df['effective_role'].fillna('Unknown'),
+            track_source=tracks_df['track_source'].fillna('Unknown'),
+            has_preassignments_str=tracks_df['has_preassignments'].map({1: 'Yes', 0: 'No'}).fillna('No'),
+            preassignment_count=tracks_df['preassignment_count'].fillna(0),
+        )
+
+        # JSON parsing still requires per-row work; itertuples avoids Series copy overhead
         processed_rows = []
-        
-        for _, row in tracks_df.iterrows():
-            staff_name = row['staff_name']
-            submission_date = row['submission_date']
-            is_approved = "Yes" if row['is_approved'] == 1 else "No"
-            approved_by = row['approved_by'] if row['approved_by'] else "N/A"
-            approval_date = row['approval_date'] if row['approval_date'] else "N/A"
-            version = row['version']
-            original_role = row['original_role'] if row['original_role'] else "Unknown"
-            effective_role = row['effective_role'] if row['effective_role'] else "Unknown"
-            track_source = row['track_source'] if row['track_source'] else "Unknown"
-            has_preassignments = "Yes" if row['has_preassignments'] == 1 else "No"
-            preassignment_count = row['preassignment_count'] if row['preassignment_count'] else 0
-            
-            # Parse the JSON track data
+        for row in tracks_df.itertuples(index=False):
             try:
-                track_data = json.loads(row['track_data'])
-                
-                # Create a new row with basic info and role metadata
-                new_row = {
-                    'Staff Name': staff_name,
-                    'Original Role': original_role,
-                    'Effective Role': effective_role,
-                    'Track Source': track_source,
-                    'Submission Date': submission_date,
-                    'Version': version,
-                    'Approved': is_approved,
-                    'Approved By': approved_by,
-                    'Approval Date': approval_date,
-                    'Has Preassignments': has_preassignments,
-                    'Preassignment Count': preassignment_count
-                }
-                
-                # Add each day's assignment
-                for day, assignment in track_data.items():
-                    new_row[day] = assignment
-                    
-                processed_rows.append(new_row)
-                
+                track_data = json.loads(row.track_data)
+                processed_rows.append({
+                    'Staff Name': row.staff_name,
+                    'Original Role': row.original_role,
+                    'Effective Role': row.effective_role,
+                    'Track Source': row.track_source,
+                    'Submission Date': row.submission_date,
+                    'Version': row.version,
+                    'Approved': row.approved_str,
+                    'Approved By': row.approved_by,
+                    'Approval Date': row.approval_date,
+                    'Has Preassignments': row.has_preassignments_str,
+                    'Preassignment Count': row.preassignment_count,
+                    **track_data
+                })
             except json.JSONDecodeError:
-                # Handle corrupted track data
-                st.error(f"Error parsing track data for {staff_name}")
+                st.error(f"Error parsing track data for {row.staff_name}")
                 continue
         
         if not processed_rows:
@@ -156,13 +145,14 @@ def create_role_summary(tracks_df):
         })
         
         # Add original role data
-        for _, row in original_role_counts.iterrows():
-            summary_data.append({
-                'Category': '',
-                'Role': row['Original Role'],
-                'Count': row['Count'],
-                'Percentage': f"{row['Percentage']}%"
-            })
+        summary_data.extend([
+            {'Category': '', 'Role': role, 'Count': count, 'Percentage': f"{pct}%"}
+            for role, count, pct in zip(
+                original_role_counts['Original Role'],
+                original_role_counts['Count'],
+                original_role_counts['Percentage'],
+            )
+        ])
         
         # Add spacer
         summary_data.append({
@@ -181,13 +171,14 @@ def create_role_summary(tracks_df):
         })
         
         # Add effective role data
-        for _, row in effective_role_counts.iterrows():
-            summary_data.append({
-                'Category': '',
-                'Role': row['Effective Role'],
-                'Count': row['Count'],
-                'Percentage': f"{row['Percentage']}%"
-            })
+        summary_data.extend([
+            {'Category': '', 'Role': role, 'Count': count, 'Percentage': f"{pct}%"}
+            for role, count, pct in zip(
+                effective_role_counts['Effective Role'],
+                effective_role_counts['Count'],
+                effective_role_counts['Percentage'],
+            )
+        ])
         
         # Count role conversions (dual -> nurse)
         conversions = tracks_df[tracks_df['Original Role'] != tracks_df['Effective Role']]
@@ -206,13 +197,10 @@ def create_role_summary(tracks_df):
                 'Percentage': ''
             })
             
-            for _, row in conversions.iterrows():
-                summary_data.append({
-                    'Category': '',
-                    'Role': f"{row['Original Role']} → {row['Effective Role']}",
-                    'Count': 1,
-                    'Percentage': ''
-                })
+            summary_data.extend([
+                {'Category': '', 'Role': f"{orig} → {eff}", 'Count': 1, 'Percentage': ''}
+                for orig, eff in zip(conversions['Original Role'], conversions['Effective Role'])
+            ])
         
         return pd.DataFrame(summary_data)
         
@@ -253,13 +241,14 @@ def create_track_source_summary(tracks_df):
         })
         
         # Add track source data
-        for _, row in source_counts.iterrows():
-            summary_data.append({
-                'Category': '',
-                'Value': row['Track Source'],
-                'Count': row['Count'],
-                'Percentage': f"{row['Percentage']}%"
-            })
+        summary_data.extend([
+            {'Category': '', 'Value': src, 'Count': count, 'Percentage': f"{pct}%"}
+            for src, count, pct in zip(
+                source_counts['Track Source'],
+                source_counts['Count'],
+                source_counts['Percentage'],
+            )
+        ])
         
         # Add spacer
         summary_data.append({
@@ -278,13 +267,14 @@ def create_track_source_summary(tracks_df):
         })
         
         # Add preassignment data
-        for _, row in preassignment_counts.iterrows():
-            summary_data.append({
-                'Category': '',
-                'Value': row['Has Preassignments'],
-                'Count': row['Count'],
-                'Percentage': f"{row['Percentage']}%"
-            })
+        summary_data.extend([
+            {'Category': '', 'Value': has_pre, 'Count': count, 'Percentage': f"{pct}%"}
+            for has_pre, count, pct in zip(
+                preassignment_counts['Has Preassignments'],
+                preassignment_counts['Count'],
+                preassignment_counts['Percentage'],
+            )
+        ])
         
         # Add preassignment statistics
         if 'Preassignment Count' in tracks_df.columns:
@@ -363,46 +353,33 @@ def export_track_history_to_excel():
             st.warning("No track history found in database.")
             return None
             
-        # Process track data with role information
+        # Vectorize simple column transformations before the JSON-parsing loop
+        history_df = history_df.assign(
+            original_role=history_df['original_role'].fillna('Unknown'),
+            effective_role=history_df['effective_role'].fillna('Unknown'),
+            track_source=history_df['track_source'].fillna('Unknown'),
+            has_preassignments_str=history_df['has_preassignments'].map({1: 'Yes', 0: 'No'}).fillna('No'),
+            preassignment_count=history_df['preassignment_count'].fillna(0),
+        )
+
         processed_rows = []
-        
-        for _, row in history_df.iterrows():
-            staff_name = row['staff_name']
-            submission_date = row['submission_date']
-            status = row['status']
-            track_id = row['track_id']
-            original_role = row['original_role'] if row['original_role'] else "Unknown"
-            effective_role = row['effective_role'] if row['effective_role'] else "Unknown"
-            track_source = row['track_source'] if row['track_source'] else "Unknown"
-            has_preassignments = "Yes" if row['has_preassignments'] == 1 else "No"
-            preassignment_count = row['preassignment_count'] if row['preassignment_count'] else 0
-            
-            # Parse the JSON track data
+        for row in history_df.itertuples(index=False):
             try:
-                track_data = json.loads(row['track_data'])
-                
-                # Create a new row with basic info and role metadata
-                new_row = {
-                    'Staff Name': staff_name,
-                    'Track ID': track_id,
-                    'Submission Date': submission_date,
-                    'Status': status,
-                    'Original Role': original_role,
-                    'Effective Role': effective_role,
-                    'Track Source': track_source,
-                    'Has Preassignments': has_preassignments,
-                    'Preassignment Count': preassignment_count
-                }
-                
-                # Add each day's assignment
-                for day, assignment in track_data.items():
-                    new_row[day] = assignment
-                    
-                processed_rows.append(new_row)
-                
+                track_data = json.loads(row.track_data)
+                processed_rows.append({
+                    'Staff Name': row.staff_name,
+                    'Track ID': row.track_id,
+                    'Submission Date': row.submission_date,
+                    'Status': row.status,
+                    'Original Role': row.original_role,
+                    'Effective Role': row.effective_role,
+                    'Track Source': row.track_source,
+                    'Has Preassignments': row.has_preassignments_str,
+                    'Preassignment Count': row.preassignment_count,
+                    **track_data
+                })
             except json.JSONDecodeError:
-                # Handle corrupted track data
-                st.error(f"Error parsing track history for {staff_name}")
+                st.error(f"Error parsing track history for {row.staff_name}")
                 continue
         
         if not processed_rows:
@@ -475,26 +452,25 @@ def export_role_analytics_to_excel():
         # Process shifts data to count by role
         role_shift_summary = []
         
-        for _, row in shifts_df.iterrows():
+        for row in shifts_df.itertuples(index=False):
             try:
-                track_data = json.loads(row['track_data'])
-                day_shifts = sum(1 for assignment in track_data.values() if assignment == 'D')
-                night_shifts = sum(1 for assignment in track_data.values() if assignment == 'N')
-                at_shifts = sum(1 for assignment in track_data.values() if assignment == 'AT')
-                total_shifts = day_shifts + night_shifts + at_shifts
-                
+                track_data = json.loads(row.track_data)
+                values = list(track_data.values())
+                day_count = values.count('D')
+                night_count = values.count('N')
+                at_count = values.count('AT')
+                total = day_count + night_count + at_count
                 role_shift_summary.append({
-                    'Staff Name': row['staff_name'],
-                    'Original Role': row['original_role'],
-                    'Effective Role': row['effective_role'],
-                    'Total Shifts': total_shifts,
-                    'Day Shifts': day_shifts,
-                    'Night Shifts': night_shifts,
-                    'AT Shifts': at_shifts,
-                    'Day Percentage': f"{(day_shifts/total_shifts*100):.1f}%" if total_shifts > 0 else "0%",
-                    'Night Percentage': f"{(night_shifts/total_shifts*100):.1f}%" if total_shifts > 0 else "0%"
+                    'Staff Name': row.staff_name,
+                    'Original Role': row.original_role,
+                    'Effective Role': row.effective_role,
+                    'Total Shifts': total,
+                    'Day Shifts': day_count,
+                    'Night Shifts': night_count,
+                    'AT Shifts': at_count,
+                    'Day Percentage': f"{(day_count / total * 100):.1f}%" if total > 0 else "0%",
+                    'Night Percentage': f"{(night_count / total * 100):.1f}%" if total > 0 else "0%",
                 })
-                
             except json.JSONDecodeError:
                 continue
         
