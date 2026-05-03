@@ -27,7 +27,7 @@ from ..hypothetical_scheduler_new import (
     display_hypothetical_results_new as display_hypothetical_results
 )
 # Import the new location-based preference editor (v2) and keep old for history
-from ..preference_editor import display_location_preference_editor, display_preference_history
+from ..preference_editor import display_location_preference_editor
 
 def display_staff_track_interface(
     selected_staff,
@@ -272,12 +272,6 @@ def display_staff_track_interface(
     
     with tabs[2]:  # NEW: Edit Preferences (Location-Based)
         display_location_preference_editor(selected_staff)
-
-        # Also show preference history (old shift-based system kept for reference)
-        st.markdown("---")
-        st.markdown("### 📊 Legacy Shift Preference History")
-        st.info("ℹ️ This section shows historical shift-type preferences (old system). The new system uses location-based preferences above.")
-        display_preference_history(selected_staff)
     
     with tabs[3]:  # Track Modification - UPDATED: Removed validation dashboard from here
         is_new_track = st.session_state.get('is_new_track', use_database_logic and not has_db_track)
