@@ -357,14 +357,15 @@ def calculate_hypothetical_assignment(
     )
 
     # Step 5: Max slots and available shifts
+    # Only include shifts that have a base mapping — FW and any future unmapped shifts are excluded
     if shift_type == "day":
-        max_shifts = 10
-        available_shifts = list(day_shifts.keys())
+        available_shifts = [s for s in day_shifts.keys() if s in _SHIFT_TO_BASE]
+        max_shifts = len(available_shifts)  # 9 base-mapped day shifts
         location_key = 'day_locations'
         max_rank = 5
     else:
-        max_shifts = 6 if selected_staff_role == "nurse" else 5
-        available_shifts = list(night_shifts.keys())
+        available_shifts = [s for s in night_shifts.keys() if s in _SHIFT_TO_BASE]
+        max_shifts = len(available_shifts)  # 5 base-mapped night shifts
         location_key = 'night_locations'
         max_rank = 3
 
