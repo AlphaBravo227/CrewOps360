@@ -468,14 +468,14 @@ def display_staff_track_interface(
             st.markdown(f"""
             ### 📋 How to Read This Schedule
             
-            - **Day Shift Assignment**: Shows specific shift assignment (if any) and your preference score for that shift
-            - **Night Shift Assignment**: Shows specific shift assignment (if any) and your preference score for that shift  
+            - **Day Base Assignment**: Shows base assignment (if any) and your preference score for that base
+            - **Night Base Assignment**: Shows base assignment (if any) and your preference score for that base
             - **Current**: Your current track assignment for comparison
-            - **Preference Scores**: Higher numbers = higher preference (0-9 for Days, 0-4 for Nights)
-            - **"*requires a swap, fully staffed"**: Shift at capacity for {effective_role}; a swap with another {effective_role} is needed for this shift
-            - **"No assignment: all shifts filled by more senior staff"**: At capacity for your role; seniority too low to assign
+            - **Preference Scores**: Lower numbers = higher preference
+            - **"*requires a swap, fully staffed"**: Base at capacity for {effective_role}; a swap with another {effective_role} is needed
+            - **"No assignment: all slots filled by more senior staff"**: At capacity for your role; seniority too low to assign
             
-            **Note**: This schedule represents what shifts you would hypothetically be assigned based on seniority and preferences. The "*requires a swap, fully staffed" notation indicates shifts where all positions for your role are filled.
+            **Note**: This schedule represents what base you would hypothetically be assigned based on seniority and preferences. The "*requires a swap, fully staffed" notation indicates shifts where all positions for your role are filled or cannot be computed
             """)
             
             # Display additional details
