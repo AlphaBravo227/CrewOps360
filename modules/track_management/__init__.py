@@ -342,13 +342,13 @@ def display_staff_track_interface(
             effective_role = "nurse" if staff_role == "dual" else staff_role
             
             # Display preference source info
-            from ..preference_editor import get_current_preferences
-            enhanced_prefs, source = get_current_preferences(selected_staff)
-            
-            if source == 'database':
-                st.success("🎯 **Using Your Custom Preferences** - Results based on preferences you edited in the system")
+            from ..db_utils import get_location_preferences_from_db
+            has_base_prefs, _ = get_location_preferences_from_db(selected_staff)
+
+            if has_base_prefs:
+                st.success("🎯 **Using Your Base Preferences** - Results based on your base preferences set in the system")
             else:
-                st.info("📁 **Using File Preferences** - Results based on uploaded file preferences (you can edit them in the 'Edit Preferences' tab)")
+                st.warning("⚠️ **No Base Preferences Found** - Competition runs on seniority only. Set your base preferences in the 'Edit Preferences' tab to influence your hypothetical assignment.")
             
             # Display the schedule with enhanced formatting including "*requires a swap, fully staffed"
             st.markdown("### 📅 Your Hypothetical Schedule")
@@ -422,10 +422,13 @@ def display_staff_track_interface(
                         day_info = "No assignment: all shifts filled by more senior staff"
                         if day_assignment:
                             pref = day_details.get('preference_score')
+                            no_pref = day_details.get('no_preference_data', False)
                             if pref:
-                                day_info = f"{day_assignment} (pref {pref})"
+                                day_info = f"{day_assignment} (Rank {pref})"
+                            elif no_pref:
+                                day_info = f"{day_assignment} (Rank *)"
                             else:
-                                day_info = f"{day_assignment} (No pref)"
+                                day_info = f"{day_assignment} (unranked)"
                             
                             # Add fully staffed notation if at max capacity
                             # BUT only if the staff member is NOT currently assigned to day shift
@@ -436,10 +439,13 @@ def display_staff_track_interface(
                         night_info = "No assignment: all shifts filled by more senior staff"
                         if night_assignment:
                             pref = night_details.get('preference_score')
+                            no_pref = night_details.get('no_preference_data', False)
                             if pref:
-                                night_info = f"{night_assignment} (pref {pref})"
+                                night_info = f"{night_assignment} (Rank {pref})"
+                            elif no_pref:
+                                night_info = f"{night_assignment} (Rank *)"
                             else:
-                                night_info = f"{night_assignment} (No pref)"
+                                night_info = f"{night_assignment} (unranked)"
                             
                             # Add fully staffed notation if at max capacity
                             # BUT only if the staff member is NOT currently assigned to night shift

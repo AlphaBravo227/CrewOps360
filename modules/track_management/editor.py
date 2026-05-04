@@ -490,7 +490,7 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                     weekend_indicator = ''
                                 
                                 # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
-                                pref_display = f'<br>Preference: {day_pref}' if day_pref else ''
+                                pref_display = f'<br>Rank: {day_pref}' if day_pref else ''
                                 shift_display = f'<br>Hypothetical: {day_shift_name}' if day_shift_name else ''
                                 weekend_display = f'🟡 {weekend_indicator}' if weekend_indicator else ''
                                 
@@ -530,7 +530,7 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                     weekend_indicator = ''
                                 
                                 # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
-                                pref_display = f'<br>Preference: {night_pref}' if night_pref else ''
+                                pref_display = f'<br>Rank: {night_pref}' if night_pref else ''
                                 shift_display = f'<br>Hypothetical: {night_shift_name}' if night_shift_name else ''
                                 weekend_display = f'🟡 {weekend_indicator}' if weekend_indicator else ''
                                 

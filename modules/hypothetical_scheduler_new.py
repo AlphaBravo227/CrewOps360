@@ -12,6 +12,27 @@ import os
 from .shift_definitions import day_shifts, night_shifts
 from .db_utils import get_db_connection
 
+# Maps each individual shift to its base short name (matches user_location_preferences keys)
+_SHIFT_TO_BASE = {
+    "D11H": "KMHT", "D11B": "KMHT",
+    "D9L":  "KLWM", "LG":   "KLWM",
+    "D7B":  "KBED", "GR":   "KBED",
+    "D11M": "1B9",  "MG":   "1B9",
+    "D7P":  "KPYM", "PG":   "KPYM",
+    "N9L":  "KLWM",
+    "N7B":  "KBED", "NG":   "KBED",
+    "N7P":  "KPYM", "NP":   "KPYM",
+}
+
+
+def _load_all_base_preferences():
+    """Return {staff_name: row_dict} for every staff member with base preferences."""
+    from .db_utils import get_all_location_preferences
+    success, results = get_all_location_preferences()
+    if not success or not isinstance(results, list):
+        return {}
+    return {row['staff_name']: row for row in results}
+
 def get_staff_seniority_rank(staff_name, preferences_df, staff_col_prefs, seniority_col):
     """
     Get the seniority rank for a staff member
@@ -286,221 +307,196 @@ def get_staff_role_for_counting(staff_name, preferences_df, staff_col_prefs, rol
     except:
         return "nurse"
 
-# Debug enhancement for calculate_hypothetical_assignment function
-# Add this debugging code to track shift assignments
-
 def calculate_hypothetical_assignment(
     selected_staff, day, shift_type, preferences_df, current_tracks_df,
-    staff_col_prefs, staff_col_tracks, role_col, seniority_col, use_database_logic
+    staff_col_prefs, staff_col_tracks, role_col, seniority_col, use_database_logic,
+    all_base_prefs=None
 ):
     """
-    Enhanced version with debugging to track shift assignments
+    Simulate seniority-based shift assignment using base preferences.
+    all_base_prefs: {staff_name: row_dict} pre-loaded from user_location_preferences.
+    Returns assignment as base short name (e.g. "KBED"), preference_score as rank int.
     """
-    # Import the shift definitions
     from .shift_definitions import day_shifts, night_shifts
-    
-    # Step 1: Get staff currently assigned to this SPECIFIC shift type
+
+    # Step 1: Get staff currently assigned to this shift type
     if use_database_logic:
         staff_on_shift = get_staff_on_shift_from_database(
-            day, "D" if shift_type == "day" else "N", 
+            day, "D" if shift_type == "day" else "N",
             preferences_df, staff_col_prefs, role_col
         )
     else:
         staff_on_shift = get_staff_on_shift_from_excel(
-            day, "D" if shift_type == "day" else "N", 
+            day, "D" if shift_type == "day" else "N",
             current_tracks_df, staff_col_tracks
         )
-    
-    # Add selected staff to the list if not already there
+
     if selected_staff not in staff_on_shift:
         staff_on_shift.append(selected_staff)
-    
-    # Step 2: Filter by role if needed (nurses vs medics)
+
+    # Step 2: Filter to same effective role
     selected_staff_role = get_staff_role_for_counting(selected_staff, preferences_df, staff_col_prefs, role_col)
-    
-    # Only include staff of the same effective role for competition
-    staff_same_role = []
-    for staff in staff_on_shift:
-        staff_role = get_staff_role_for_counting(staff, preferences_df, staff_col_prefs, role_col)
-        if staff_role == selected_staff_role:
-            staff_same_role.append(staff)
-    
-    # Step 3: Rank staff by seniority (1 = most senior)
-    staff_with_seniority = []
-    for staff in staff_same_role:
-        seniority = get_staff_seniority_rank(staff, preferences_df, staff_col_prefs, seniority_col)
-        staff_with_seniority.append((staff, seniority))
-    
-    # Sort by seniority (ascending - 1 is most senior)
-    staff_with_seniority.sort(key=lambda x: x[1])
-    
-    # DEBUG: Print competition details
-    if selected_staff in ["Kilduff", "Young"]:
-        print(f"\n=== DEBUG: {day} {shift_type} shift competition ===")
-        print(f"Selected staff: {selected_staff}")
-        print(f"Staff competing: {[s[0] for s in staff_with_seniority]}")
-        print(f"Seniority order: {staff_with_seniority}")
-    
-    # Step 4: Calculate role-based ranking for selected staff
+    staff_same_role = [
+        s for s in staff_on_shift
+        if get_staff_role_for_counting(s, preferences_df, staff_col_prefs, role_col) == selected_staff_role
+    ]
+
+    # Step 3: Sort by seniority
+    staff_with_seniority = sorted(
+        [(s, get_staff_seniority_rank(s, preferences_df, staff_col_prefs, seniority_col)) for s in staff_same_role],
+        key=lambda x: x[1]
+    )
+
+    # Step 4: Role-based ranking for display
     role_ranking_info = get_staff_role_based_ranking(
         selected_staff, preferences_df, staff_col_prefs, role_col, seniority_col
     )
-    
-    # Find position of selected staff in this specific competition
-    selected_position = None
-    for i, (staff, _) in enumerate(staff_with_seniority):
-        if staff == selected_staff:
-            selected_position = i
-            break
-    
-    # Step 5: Determine max shifts available for this role
+
+    selected_position = next(
+        (i for i, (s, _) in enumerate(staff_with_seniority) if s == selected_staff), None
+    )
+
+    # Step 5: Max slots and available shifts
     if shift_type == "day":
-        if selected_staff_role == "nurse":
-            max_shifts = 10  # Max day shift nurses
-        else:  # medic
-            max_shifts = 10  # Max day shift medics
+        max_shifts = 10
         available_shifts = list(day_shifts.keys())
-    else:  # night
-        if selected_staff_role == "nurse":
-            max_shifts = 6   # Max night shift nurses  
-        else:  # medic
-            max_shifts = 5   # Max night shift medics
+        location_key = 'day_locations'
+        max_rank = 5
+    else:
+        max_shifts = 6 if selected_staff_role == "nurse" else 5
         available_shifts = list(night_shifts.keys())
-    
-    # Check if we exceed max shifts for this role
+        location_key = 'night_locations'
+        max_rank = 3
+
     if len(staff_with_seniority) > max_shifts:
         if selected_position is not None and selected_position >= max_shifts:
+            staff_base_data = (all_base_prefs or {}).get(selected_staff)
             return {
                 'assignment': None,
-                'reason': f"No shift available - {len(staff_with_seniority)} {selected_staff_role}s compete for {max_shifts} {shift_type} shifts, you rank #{selected_position + 1} in this competition",
+                'reason': (
+                    f"No shift available — {len(staff_with_seniority)} {selected_staff_role}s "
+                    f"compete for {max_shifts} {shift_type} shifts, you rank #{selected_position + 1}"
+                ),
                 'preference_score': None,
+                'no_preference_data': staff_base_data is None,
                 'role_ranking_info': role_ranking_info,
                 'competition_rank': selected_position + 1,
                 'total_competitors': len(staff_with_seniority)
             }
-    
-    # Step 6: Complete full simulation - assign shifts to ALL staff based on seniority
+
+    # Step 6: Simulate full competition using base preferences
     assigned_shifts = {}
     selected_staff_result = None
-    
-    # DEBUG: Track assignments
     assignment_log = []
-    
+
     for staff, seniority in staff_with_seniority:
-        if not available_shifts:  # No more shifts available
-            # If this is our selected staff and no shifts remain
+        if not available_shifts:
             if staff == selected_staff:
                 selected_staff_result = {
                     'assignment': None,
-                    'reason': f"No shifts remaining - all {max_shifts} {shift_type} shifts assigned to more senior {selected_staff_role}s",
+                    'reason': (
+                        f"No shifts remaining — all {max_shifts} {shift_type} shifts "
+                        f"assigned to more senior {selected_staff_role}s"
+                    ),
                     'preference_score': None,
+                    'no_preference_data': False,
                     'role_ranking_info': role_ranking_info,
                     'competition_rank': selected_position + 1 if selected_position is not None else 999,
                     'total_competitors': len(staff_with_seniority)
                 }
             continue
-        
-        # Get staff preferences for this shift type
-        staff_preferences = get_staff_shift_preferences(
-            staff, preferences_df, staff_col_prefs, shift_type
-        )
-        
-        # DEBUG: Show preferences for key staff
-        if staff in ["Kilduff", "Young"]:
-            print(f"\n{staff}'s preferences: {staff_preferences}")
-            print(f"Available shifts before assignment: {available_shifts}")
-        
-        if staff_preferences:
-            # Find highest preference shift that's still available
-            available_prefs = {shift: pref for shift, pref in staff_preferences.items() 
-                             if shift in available_shifts}
-            
-            if available_prefs:
-                # Assign to highest preference available shift
-                best_shift = max(available_prefs.items(), key=lambda x: x[1])
+
+        # Look up base preferences for this staff member
+        staff_base_data = (all_base_prefs or {}).get(staff)
+        has_base_prefs = staff_base_data is not None
+
+        if has_base_prefs:
+            locations = staff_base_data.get(location_key, {})
+            # Score = max_rank + 1 - rank  (rank 1 → highest score, competing for most-preferred base first)
+            shift_scores = {
+                shift: (max_rank + 1 - locations[_SHIFT_TO_BASE[shift]])
+                for shift in available_shifts
+                if _SHIFT_TO_BASE.get(shift) in locations and locations.get(_SHIFT_TO_BASE.get(shift)) is not None
+            }
+
+            if shift_scores:
+                best_shift = max(shift_scores.items(), key=lambda x: x[1])
                 shift_name = best_shift[0]
-                preference_score = best_shift[1]
-                
-                assigned_shifts[staff] = {
-                    'shift': shift_name,
-                    'preference': preference_score
-                }
+                base_short = _SHIFT_TO_BASE.get(shift_name, shift_name)
+                preference_rank = locations.get(base_short)
+
+                assigned_shifts[staff] = {'shift': shift_name, 'preference': preference_rank}
                 available_shifts.remove(shift_name)
-                
-                # DEBUG: Log assignment
-                assignment_log.append(f"{staff} assigned to {shift_name} (pref: {preference_score})")
-                if staff in ["Kilduff", "Young"]:
-                    print(f"ASSIGNED: {staff} -> {shift_name} (preference: {preference_score})")
-                    print(f"Remaining shifts: {available_shifts}")
-                
-                # Store result for selected staff (DON'T return yet - continue simulation)
+                assignment_log.append(f"{staff} → {base_short} ({shift_name}, Rank {preference_rank})")
+
                 if staff == selected_staff:
                     selected_staff_result = {
-                        'assignment': shift_name,
-                        'reason': f"Assigned to {shift_name} (preference: {preference_score}, role rank: {role_ranking_info['role_rank']}/{role_ranking_info['total_in_role']})",
-                        'preference_score': preference_score,
+                        'assignment': base_short,
+                        'reason': (
+                            f"Assigned to {base_short} ({shift_name}, Rank {preference_rank}, "
+                            f"role rank: {role_ranking_info['role_rank']}/{role_ranking_info['total_in_role']})"
+                        ),
+                        'preference_score': preference_rank,
+                        'no_preference_data': False,
                         'role_ranking_info': role_ranking_info,
                         'competition_rank': selected_position + 1 if selected_position is not None else 999,
                         'total_competitors': len(staff_with_seniority),
-                        'debug_assignments': assignment_log  # Add debug info
+                        'debug_assignments': assignment_log
                     }
             else:
-                # No preferences for available shifts, assign first available
+                # Base prefs exist but none match remaining shifts — take first available
                 shift_name = available_shifts[0]
-                assigned_shifts[staff] = {
-                    'shift': shift_name,
-                    'preference': None
-                }
+                base_short = _SHIFT_TO_BASE.get(shift_name, shift_name)
+                assigned_shifts[staff] = {'shift': shift_name, 'preference': None}
                 available_shifts.remove(shift_name)
-                
-                # Store result for selected staff (DON'T return yet - continue simulation)
+                assignment_log.append(f"{staff} → {base_short} ({shift_name}, no preferred base available)")
+
                 if staff == selected_staff:
                     selected_staff_result = {
-                        'assignment': shift_name,
-                        'reason': f"Assigned to {shift_name} (no preference for available shifts, role rank: {role_ranking_info['role_rank']}/{role_ranking_info['total_in_role']})",
+                        'assignment': base_short,
+                        'reason': (
+                            f"Assigned to {base_short} ({shift_name}, preferred bases unavailable, "
+                            f"role rank: {role_ranking_info['role_rank']}/{role_ranking_info['total_in_role']})"
+                        ),
                         'preference_score': None,
+                        'no_preference_data': False,
                         'role_ranking_info': role_ranking_info,
                         'competition_rank': selected_position + 1 if selected_position is not None else 999,
                         'total_competitors': len(staff_with_seniority),
-                        'debug_assignments': assignment_log  # Add debug info
+                        'debug_assignments': assignment_log
                     }
         else:
-            # No preferences at all, assign first available
+            # No base preferences — take first available shift
             shift_name = available_shifts[0]
-            assigned_shifts[staff] = {
-                'shift': shift_name,
-                'preference': None
-            }
+            base_short = _SHIFT_TO_BASE.get(shift_name, shift_name)
+            assigned_shifts[staff] = {'shift': shift_name, 'preference': None}
             available_shifts.remove(shift_name)
-            
-            # Store result for selected staff (DON'T return yet - continue simulation)
+            assignment_log.append(f"{staff} → {base_short} ({shift_name}, no base prefs)")
+
             if staff == selected_staff:
                 selected_staff_result = {
-                    'assignment': shift_name,
-                    'reason': f"Assigned to {shift_name} (no preferences data, role rank: {role_ranking_info['role_rank']}/{role_ranking_info['total_in_role']})",
+                    'assignment': base_short,
+                    'reason': (
+                        f"Assigned to {base_short} ({shift_name}, no base preferences set, "
+                        f"role rank: {role_ranking_info['role_rank']}/{role_ranking_info['total_in_role']})"
+                    ),
                     'preference_score': None,
+                    'no_preference_data': True,
                     'role_ranking_info': role_ranking_info,
                     'competition_rank': selected_position + 1 if selected_position is not None else 999,
                     'total_competitors': len(staff_with_seniority),
-                    'debug_assignments': assignment_log  # Add debug info
+                    'debug_assignments': assignment_log
                 }
-    
-    # DEBUG: Print final assignments
-    if selected_staff in ["Kilduff", "Young"]:
-        print(f"\n=== FINAL ASSIGNMENTS for {day} {shift_type} ===")
-        for s, details in assigned_shifts.items():
-            print(f"{s}: {details['shift']} (pref: {details['preference']})")
-        print("=" * 50)
-    
-    # Step 7: Return result AFTER completing full simulation
+
+    # Step 7: Return result after full simulation
     if selected_staff_result:
         return selected_staff_result
-    
-    # If we get here, something went wrong
+
     return {
         'assignment': None,
         'reason': "Assignment calculation error",
         'preference_score': None,
+        'no_preference_data': False,
         'role_ranking_info': role_ranking_info,
         'competition_rank': selected_position + 1 if selected_position is not None else 999,
         'total_competitors': len(staff_with_seniority)
@@ -511,45 +507,44 @@ def generate_hypothetical_schedule_new(
     staff_col_prefs, staff_col_tracks, role_col, seniority_col
 ):
     """
-    Generate a hypothetical schedule for a staff member using the new simplified logic
-    UPDATED: Now includes role-based ranking information
+    Generate a hypothetical schedule using base preferences (user_location_preferences).
+    Base prefs are loaded once and passed into each per-day competition.
     """
-    # Check track source
     use_database_logic = st.session_state.get('track_source', "Annual Rebid") == "Annual Rebid"
-    
-    # Initialize results
+
+    # Load all staff base preferences once to avoid per-staff DB queries in the loop
+    all_base_prefs = _load_all_base_preferences()
+
     day_assignments = {}
     night_assignments = {}
     assignment_details = {}
-    
-    # Get role-based ranking information for the staff member
+
     role_ranking_info = get_staff_role_based_ranking(
         selected_staff, preferences_df, staff_col_prefs, role_col, seniority_col
     )
-    
-    # Process each day
+
     for day in days:
-        # Calculate day shift assignment
         day_result = calculate_hypothetical_assignment(
             selected_staff, day, "day", preferences_df, current_tracks_df,
-            staff_col_prefs, staff_col_tracks, role_col, seniority_col, use_database_logic
+            staff_col_prefs, staff_col_tracks, role_col, seniority_col,
+            use_database_logic, all_base_prefs
         )
-        
-        # Calculate night shift assignment
+
         night_result = calculate_hypothetical_assignment(
             selected_staff, day, "night", preferences_df, current_tracks_df,
-            staff_col_prefs, staff_col_tracks, role_col, seniority_col, use_database_logic
+            staff_col_prefs, staff_col_tracks, role_col, seniority_col,
+            use_database_logic, all_base_prefs
         )
-        
-        # Store results
+
         day_assignments[day] = day_result['assignment']
         night_assignments[day] = night_result['assignment']
-        
+
         assignment_details[day] = {
             'day': {
                 'assignment': day_result['assignment'],
                 'reason': day_result['reason'],
                 'preference_score': day_result['preference_score'],
+                'no_preference_data': day_result.get('no_preference_data', False),
                 'role_ranking_info': day_result['role_ranking_info'],
                 'competition_rank': day_result.get('competition_rank'),
                 'total_competitors': day_result.get('total_competitors')
@@ -558,12 +553,13 @@ def generate_hypothetical_schedule_new(
                 'assignment': night_result['assignment'],
                 'reason': night_result['reason'],
                 'preference_score': night_result['preference_score'],
+                'no_preference_data': night_result.get('no_preference_data', False),
                 'role_ranking_info': night_result['role_ranking_info'],
                 'competition_rank': night_result.get('competition_rank'),
                 'total_competitors': night_result.get('total_competitors')
             }
         }
-    
+
     return {
         'day_assignments': day_assignments,
         'night_assignments': night_assignments,
@@ -653,10 +649,13 @@ def display_hypothetical_results_new(results, selected_staff, days):
                 day_info = "None"
                 if day_assignment:
                     pref = day_details.get('preference_score')
+                    no_pref = day_details.get('no_preference_data', False)
                     if pref:
-                        day_info = f"{day_assignment} (pref {pref})"
+                        day_info = f"{day_assignment} (Rank {pref})"
+                    elif no_pref:
+                        day_info = f"{day_assignment} (Rank *)"
                     else:
-                        day_info = f"{day_assignment} (No pref)"
+                        day_info = f"{day_assignment} (unranked)"
                     
                     # Add fully staffed notation if at max capacity
                     if day_at_max:
@@ -666,10 +665,13 @@ def display_hypothetical_results_new(results, selected_staff, days):
                 night_info = "None"
                 if night_assignment:
                     pref = night_details.get('preference_score')
+                    no_pref = night_details.get('no_preference_data', False)
                     if pref:
-                        night_info = f"{night_assignment} (pref {pref})"
+                        night_info = f"{night_assignment} (Rank {pref})"
+                    elif no_pref:
+                        night_info = f"{night_assignment} (Rank *)"
                     else:
-                        night_info = f"{night_assignment} (No pref)"
+                        night_info = f"{night_assignment} (unranked)"
                     
                     # Add fully staffed notation if at max capacity
                     if night_at_max:
@@ -697,11 +699,11 @@ def display_hypothetical_results_new(results, selected_staff, days):
     
     2. **Your Role Ranking**: Among {role_ranking_info['total_in_role']} {role_ranking_info['effective_role']}s, you rank **#{role_ranking_info['role_rank']}** by seniority
     
-    3. **Assignment Process**: Starting with the most senior {role_ranking_info['effective_role']}, each person gets their highest preference shift from those remaining
-    
-    4. **Preference Scores**: Higher numbers = higher preference (1-10 scale, where 10 is highest)
-    
-    5. **Your Turn**: When it's your turn (position #{role_ranking_info['role_rank']}), you get your highest preference from the remaining shifts
+    3. **Assignment Process**: Starting with the most senior {role_ranking_info['effective_role']}, each person picks their highest-ranked available base
+
+    4. **Base Rank**: Rank 1 = most preferred base, higher numbers = less preferred. "*" means no base preferences are on file.
+
+    5. **Your Turn**: When it's your turn (position #{role_ranking_info['role_rank']}), you get your highest-ranked base still available
     
     6. **Fully Staffed Notation**: "*requires a swap, fully staffed" indicates that the shift is at maximum capacity for your role ({effective_role}s) and would require a swap with another {effective_role} to obtain
     

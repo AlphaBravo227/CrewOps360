@@ -74,9 +74,10 @@ def enhance_hypothetical_scheduler_with_staffing_analysis(
     # FIXED: Get most recent preferences for ALL staff, not just selected staff
     updated_preferences_df = get_all_staff_updated_preferences(preferences_df, staff_col_prefs)
     
-    # Check what preference source the selected staff is using
-    from modules.preference_editor import get_current_preferences
-    _, preference_source = get_current_preferences(selected_staff)
+    # Check whether the selected staff has base preferences on file
+    from modules.db_utils import get_location_preferences_from_db
+    has_base_prefs, _ = get_location_preferences_from_db(selected_staff)
+    preference_source = 'database' if has_base_prefs else 'no_base_preferences'
     
     # Generate schedule with updated preferences for ALL staff
     base_results = generate_hypothetical_schedule(
@@ -408,46 +409,34 @@ def calculate_all_modification_options(
 
 def validate_preference_usage(selected_staff, preferences_df, staff_col_prefs):
     """
-    Validate that the most recent preferences are being used
-    Returns information about preference source and completeness
-    
-    Args:
-        selected_staff (str): Name of the selected staff member
-        preferences_df (DataFrame): Original preferences DataFrame
-        staff_col_prefs (str): Column name for staff in preferences
-        
-    Returns:
-        dict: Information about preference usage
+    Validate that the selected staff member has base preferences on file.
+    Returns summary info used for preference completeness indicators.
     """
-    from modules.preference_editor import get_current_preferences
-    
-    # Get current preferences
-    current_prefs, source = get_current_preferences(selected_staff)
-    
-    # Check if staff exists in original file
+    from modules.db_utils import get_location_preferences_from_db
+
+    has_base_prefs, prefs = get_location_preferences_from_db(selected_staff)
     staff_in_file = selected_staff in preferences_df[staff_col_prefs].values
-    
-    # Count complete preferences
+
     day_prefs_count = 0
     night_prefs_count = 0
-    
-    if current_prefs:
-        from modules.shift_definitions import day_shifts, night_shifts
-        day_prefs_count = sum(1 for shift in day_shifts.keys() if shift in current_prefs)
-        night_prefs_count = sum(1 for shift in night_shifts.keys() if shift in current_prefs)
-    
+
+    if has_base_prefs and prefs:
+        day_prefs_count = sum(
+            1 for v in prefs.get('day_locations', {}).values() if v is not None
+        )
+        night_prefs_count = sum(
+            1 for v in prefs.get('night_locations', {}).values() if v is not None
+        )
+
     return {
-        'source': source,
-        'has_preferences': bool(current_prefs),
+        'source': 'database' if has_base_prefs else 'no_base_preferences',
+        'has_preferences': has_base_prefs,
         'staff_in_file': staff_in_file,
         'day_preferences_count': day_prefs_count,
         'night_preferences_count': night_prefs_count,
-        'total_day_shifts': len(day_shifts),
-        'total_night_shifts': len(night_shifts),
-        'preferences_complete': (
-            day_prefs_count == len(day_shifts) and 
-            night_prefs_count == len(night_shifts)
-        )
+        'total_day_shifts': 5,   # 5 day bases
+        'total_night_shifts': 3,  # 3 night bases
+        'preferences_complete': day_prefs_count == 5 and night_prefs_count == 3
     }
 
 # Legacy functions kept for compatibility but marked as deprecated
