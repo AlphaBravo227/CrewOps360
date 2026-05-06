@@ -471,11 +471,14 @@ def display_staff_track_interface(
             - **Day Base Assignment**: Shows base assignment (if any) and your preference ranking score for that base
             - **Night Base Assignment**: Shows base assignment (if any) and your preference rankingscore for that base
             - **Current**: Your current track assignment for comparison
+                        
             - **Preference Ranking**: Lower ranking = higher personal preference
+                        
+            - **"No assignment possible"**: all assets have been staffed by more senior staff but overstaffing still a possibility
+                        
             - **"*requires a swap, fully staffed"**: At staffing capacity for {effective_role}; a swap with another {effective_role} is needed
-            - **"No assignment: all available actual slots filled by more senior staff"**: No actual assignments can be made as physical slots are not available but below the overstaffing metric.
             
-            **Note**: This schedule represents what base you would hypothetically be assigned based on seniority and preferences.
+            **Note**: This schedule represents what base you would hypothetically be assigned based on seniority, preferences and availability.
             """)
             
             # Display additional details
