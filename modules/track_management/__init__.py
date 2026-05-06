@@ -467,17 +467,19 @@ def display_staff_track_interface(
             st.markdown("---")
             st.markdown(f"""
             ### 📋 How to Read This Schedule
-            
-            - **Day Base Assignment**: Shows base assignment (if any) and your preference ranking score for that base
-            - **Night Base Assignment**: Shows base assignment (if any) and your preference rankingscore for that base
-            - **Current**: Your current track assignment for comparison
-                        
-            - **Preference Ranking**: Lower ranking = higher personal preference
-                        
-            - **"No assignment possible"**: all assets have been staffed by more senior staff but overstaffing still a possibility
-                        
-            - **"*requires a swap, fully staffed"**: At staffing capacity for {effective_role}; a swap with another {effective_role} is needed
-            
+
+            - **Day Shift**: The base you would be assigned to for a day shift (if any), and your preference rank for that base
+            - **Night Shift**: The base you would be assigned to for a night shift (if any), and your preference rank for that base
+            - **Current**: Your current track assignment (D = day, N = night) for comparison
+
+            - **Preference Rank**: The number shown in parentheses, e.g. "(Rank 1)". Rank 1 = your most-preferred base, Rank 2 = second choice, etc. Lower number = higher preference.
+            - **(Rank \*)**: You have no base preferences set — the system assigned a base by seniority order only
+            - **(unranked)**: You were assigned a base, but it did not appear in your saved preferences
+
+            - **"No assignment: all shifts filled by more senior staff"**: Every shift slot for your role was taken by a more senior {effective_role} before your turn
+
+            - **"*requires a swap, fully staffed"**: All {effective_role} slots are at capacity; you could still work this shift but only by swapping with another {effective_role}
+
             **Note**: This schedule represents what base you would hypothetically be assigned based on seniority, preferences and availability.
             """)
             
