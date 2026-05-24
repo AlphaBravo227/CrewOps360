@@ -62,24 +62,52 @@ class FiscalYearDisplay:
         }
     
     def load_tracks_from_db(self):
-        """Load tracks from the existing medflight_tracks.db with proper role support"""
+        """Load tracks from the existing medflight_tracks.db with proper role support.
+
+        Shows current operational tracks.  The query first tries the active bidding year
+        (read from system_config), then falls back to the prior year, and finally returns
+        all active tracks so the display is never empty during a year transition.
+        """
         tracks_data = {}
         staff_roles = {}
-        
+
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
-            # Get the latest active FY26 tracks for each staff member with role information.
-            # Falls back to any active track if no FY26 tracks exist yet (e.g. early in bidding).
+
+            # ── Determine the active bidding year from system_config ──────────
+            active_fy = 'FY26'  # fallback default
+            try:
+                cursor.execute(
+                    "SELECT value FROM system_config WHERE key = 'active_bidding_year'"
+                )
+                _row = cursor.fetchone()
+                if _row and _row[0]:
+                    active_fy = _row[0]
+            except Exception:
+                pass
+
+            # ── Attempt 1: tracks for the active bidding year ─────────────────
             cursor.execute("""
                 SELECT staff_name, track_data, effective_role, submission_date
                 FROM tracks
-                WHERE is_active = 1 AND (fiscal_year = 'FY26' OR fiscal_year IS NULL)
+                WHERE is_active = 1 AND fiscal_year = ?
                 ORDER BY staff_name, submission_date DESC
-            """)
-            
+            """, (active_fy,))
             results = cursor.fetchall()
+
+            # ── Attempt 2: if no results, fall back to ALL active tracks ──────
+            # (covers the common case where existing tracks pre-date the fiscal_year
+            #  column and may be labeled with a different year or the prior year)
+            if not results:
+                cursor.execute("""
+                    SELECT staff_name, track_data, effective_role, submission_date
+                    FROM tracks
+                    WHERE is_active = 1
+                    ORDER BY staff_name, submission_date DESC
+                """)
+                results = cursor.fetchall()
+
             processed_staff = set()
             
             for staff_name, track_data_str, effective_role, submission_date in results:

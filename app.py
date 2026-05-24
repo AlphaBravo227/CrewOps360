@@ -48,6 +48,8 @@ from modules.db_utils import (
     import_prior_tracks_from_dataframe,
     get_bidding_progress,
     start_new_bidding_year,
+    is_bidding_open,
+    set_bidding_open,
 )
 # Import existing modules that actually work
 from modules.security import display_user_login, display_session_info, check_admin_access
@@ -1424,6 +1426,48 @@ def run_clinical_track_hub():
             _prior_yr  = get_prior_year()
             st.header(f"🗓️ Track Bidding — {_active_yr}")
 
+            # ── Bidding Open / Close Toggle ───────────────────────────────────
+            _bidding_currently_open = is_bidding_open()
+            if _bidding_currently_open:
+                st.success("🟢 **Bidding is OPEN** — staff can make track selections.")
+            else:
+                st.error("🔴 **Bidding is CLOSED** — staff cannot make or change selections.")
+
+            _tog_col1, _tog_col2 = st.columns(2)
+            with _tog_col1:
+                if _bidding_currently_open:
+                    if st.button(
+                        "🔒 Close Bidding",
+                        key="close_bidding_btn",
+                        use_container_width=True,
+                        type="primary"
+                    ):
+                        _tog_result = set_bidding_open(False)
+                        if _tog_result['success']:
+                            st.warning("🔴 Bidding closed. Staff cannot submit or change tracks.")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {_tog_result['message']}")
+                else:
+                    if st.button(
+                        "🔓 Open Bidding",
+                        key="open_bidding_btn",
+                        use_container_width=True,
+                        type="primary"
+                    ):
+                        _tog_result = set_bidding_open(True)
+                        if _tog_result['success']:
+                            st.success("🟢 Bidding opened. Staff can now submit and modify tracks.")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {_tog_result['message']}")
+            with _tog_col2:
+                st.caption(
+                    "Use this to open or close the bidding window. "
+                    "When closed, staff cannot submit new tracks or modify existing ones."
+                )
+
+            st.markdown("---")
             # ── Bidding Progress ──────────────────────────────────────────────
             progress = get_bidding_progress()
             prog_cols = st.columns(3)

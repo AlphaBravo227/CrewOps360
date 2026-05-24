@@ -12,7 +12,7 @@ import pytz
 _eastern_tz = pytz.timezone('America/New_York')
 from ..track_validator import validate_track
 from ..shift_counter import count_shifts, count_shifts_by_pay_period, count_weekend_shifts_updated
-from ..db_utils import save_track_to_db, get_track_from_db, get_active_bidding_year, ACTIVE_BIDDING_YEAR
+from ..db_utils import save_track_to_db, get_track_from_db, get_active_bidding_year, ACTIVE_BIDDING_YEAR, is_bidding_open
 from ..pdf_generator import generate_schedule_pdf
 from ..backup_utils import handle_track_submission
 from ..email_notifications import send_track_submission_notification
@@ -582,7 +582,17 @@ def submit_track(selected_staff, staff_track, days, shifts_per_pay_period, night
     FIXED: Now properly retrieves staff role from preferences DataFrame
     """
     st.subheader(f"Submit Track for {selected_staff}")
-    
+
+    # ── Bidding-open gate ─────────────────────────────────────────────────────
+    if not is_bidding_open():
+        st.error(
+            "🔴 **Bidding is currently closed.**\n\n"
+            "Track submissions and modifications are not permitted while bidding is closed. "
+            "Please contact your administrator to re-open the bidding window."
+        )
+        return  # stop rendering the rest of the submission form
+    # ─────────────────────────────────────────────────────────────────────────
+
     # Check track source with consistent terminology
     use_database_logic = st.session_state.get('track_source', "Annual Rebid") == "Annual Rebid"
     

@@ -141,6 +141,61 @@ def start_new_bidding_year(new_active_year: str, outgoing_year: str) -> dict:
         }
 
 
+def is_bidding_open() -> bool:
+    """
+    Return True if staff bidding is currently open, False if it has been closed by admin.
+    Defaults to True (open) when no config entry exists.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT value FROM system_config WHERE key = 'bidding_open'"
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return True  # default: open
+        return row[0] == '1'
+    except Exception:
+        return True  # fail-safe: treat as open
+
+
+def set_bidding_open(open_state: bool) -> dict:
+    """
+    Open or close staff bidding.
+
+    Args:
+        open_state (bool): True = open bidding, False = close bidding.
+
+    Returns:
+        dict with keys: success, bidding_open, message
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+        val = '1' if open_state else '0'
+        cursor.execute(
+            "INSERT INTO system_config (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            ('bidding_open', val, now)
+        )
+        conn.commit()
+        state_str = "open" if open_state else "closed"
+        return {
+            'success': True,
+            'bidding_open': open_state,
+            'message': f"Bidding is now {state_str}."
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'bidding_open': open_state,
+            'message': f"Error updating bidding state: {e}"
+        }
+
+
 # ── END System Config ──────────────────────────────────────────────────────────
 
 def get_db_connection():
@@ -397,6 +452,10 @@ def initialize_database():
         cursor.execute(
             "INSERT OR IGNORE INTO system_config (key, value, updated_at) VALUES (?, ?, ?)",
             ('prior_year', _DEFAULT_PRIOR_YEAR, _now)
+        )
+        cursor.execute(
+            "INSERT OR IGNORE INTO system_config (key, value, updated_at) VALUES (?, ?, ?)",
+            ('bidding_open', '1', _now)  # default: bidding is open
         )
 
         # NEW: Create summer_leave_requests table for vacation time selections
@@ -772,18 +831,15 @@ def get_track_from_db(staff_name, fiscal_year=None):
 def get_all_active_tracks(fiscal_year=None):
     """
     Get all active tracks from the database for staffing analysis.
-    Defaults to ACTIVE_BIDDING_YEAR so the hypothetical scheduler uses
-    only the current bid-year tracks.
 
     Args:
-        fiscal_year (str): Fiscal year to filter by.  Defaults to active bidding year from config.
+        fiscal_year (str): Fiscal year to filter by.
+                           Pass None (default) to return ALL active tracks regardless of year.
+                           Pass a specific year string (e.g. 'FY26') to filter to that year only.
 
     Returns:
         tuple: (success, tracks_data_with_metadata or error_message)
     """
-    if fiscal_year is None:
-        fiscal_year = get_active_bidding_year()
-
     try:
         # Initialize database if needed
         initialize_database()
@@ -793,13 +849,22 @@ def get_all_active_tracks(fiscal_year=None):
         cursor = conn.cursor()
 
         # Query for all active tracks with metadata
-        cursor.execute("""
-            SELECT staff_name, track_data, submission_date, version,
-                   original_role, effective_role, track_source, has_preassignments, preassignment_count
-            FROM tracks
-            WHERE is_active = 1 AND fiscal_year = ?
-            ORDER BY staff_name
-        """, (fiscal_year,))
+        if fiscal_year is not None:
+            cursor.execute("""
+                SELECT staff_name, track_data, submission_date, version,
+                       original_role, effective_role, track_source, has_preassignments, preassignment_count
+                FROM tracks
+                WHERE is_active = 1 AND fiscal_year = ?
+                ORDER BY staff_name
+            """, (fiscal_year,))
+        else:
+            cursor.execute("""
+                SELECT staff_name, track_data, submission_date, version,
+                       original_role, effective_role, track_source, has_preassignments, preassignment_count
+                FROM tracks
+                WHERE is_active = 1
+                ORDER BY staff_name
+            """)
         results = cursor.fetchall()
         
         if results:

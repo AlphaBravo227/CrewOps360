@@ -25,6 +25,7 @@ from ..db_utils import (
     get_track_from_db, get_prior_track_from_db,
     get_active_bidding_year, get_prior_year,
     ACTIVE_BIDDING_YEAR, PRIOR_YEAR,  # kept for fallback/legacy
+    is_bidding_open,
 )
 from ..hypothetical_scheduler_new import (
     generate_hypothetical_schedule_new as generate_hypothetical_schedule,
@@ -55,6 +56,16 @@ def display_staff_track_interface(
     _PRIOR_YR  = get_prior_year()
 
     st.header(f"Staff Track Management — {_ACTIVE_YR} Bidding")
+
+    # ── Bidding status banner (visible to all staff) ──────────────────────────
+    _bidding_open = is_bidding_open()
+    if not _bidding_open:
+        st.error(
+            "🔴 **Bidding is currently CLOSED.**  "
+            "You can view your current track but cannot make or submit any changes. "
+            "Contact your administrator to re-open the bidding window."
+        )
+    # ─────────────────────────────────────────────────────────────────────────
 
     # Check if creating a new track
     create_new = st.session_state.get('create_new_track', False)
@@ -216,7 +227,8 @@ def display_staff_track_interface(
     st.session_state.weekend_group = weekend_group  # NEW: Store weekend group
     
     # ── Show "Copy from prior year" button if no active-year bid exists yet ────
-    if use_database_logic and not has_db_track and has_prior_track:
+    # (only when bidding is open)
+    if _bidding_open and use_database_logic and not has_db_track and has_prior_track:
         prior_track_data = prior_result[1]['track_data']
         prior_submission = prior_result[1].get('submission_date', 'unknown date')
         st.info(
@@ -242,38 +254,39 @@ def display_staff_track_interface(
                 st.success(f"✅ Loaded your {_PRIOR_YR} track as a starting point. Modify and submit below.")
                 st.rerun()
 
-    # Reset and clear buttons
-    reset_col, clear_col = st.columns(2)
+    # Reset and clear buttons — only shown when bidding is open
+    if _bidding_open:
+        reset_col, clear_col = st.columns(2)
 
-    with reset_col:
-        if st.button("Reset to Current Track", key=f"reset_{selected_staff}", use_container_width=True):
-            is_new = use_database_logic and not has_db_track
-            reset_track_session_state(selected_staff, current_track_data, staff_preassignments)
-            st.session_state['is_new_track'] = is_new
-            st.success("Track reset to current assignments")
-            st.rerun()
+        with reset_col:
+            if st.button("Reset to Current Track", key=f"reset_{selected_staff}", use_container_width=True):
+                is_new = use_database_logic and not has_db_track
+                reset_track_session_state(selected_staff, current_track_data, staff_preassignments)
+                st.session_state['is_new_track'] = is_new
+                st.success("Track reset to current assignments")
+                st.rerun()
 
-    with clear_col:
-        if st.button("Clear All Shifts", key=f"clear_{selected_staff}", use_container_width=True):
-            blank_track = {day: "" for day in days}
-            if staff_preassignments:
-                for day, preassignment in staff_preassignments.items():
-                    blank_track[day] = preassignment
-            
-            if 'track_changes' not in st.session_state:
-                st.session_state.track_changes = {}
-            st.session_state.track_changes[selected_staff] = blank_track
-            
-            st.session_state.modified_track = {
-                'staff': selected_staff,
-                'track': blank_track.copy(),
-                'valid': False,
-                'is_new': True
-            }
-            st.session_state['is_new_track'] = True
-            
-            st.success("All shifts cleared")
-            st.rerun()
+        with clear_col:
+            if st.button("Clear All Shifts", key=f"clear_{selected_staff}", use_container_width=True):
+                blank_track = {day: "" for day in days}
+                if staff_preassignments:
+                    for day, preassignment in staff_preassignments.items():
+                        blank_track[day] = preassignment
+
+                if 'track_changes' not in st.session_state:
+                    st.session_state.track_changes = {}
+                st.session_state.track_changes[selected_staff] = blank_track
+
+                st.session_state.modified_track = {
+                    'staff': selected_staff,
+                    'track': blank_track.copy(),
+                    'valid': False,
+                    'is_new': True
+                }
+                st.session_state['is_new_track'] = True
+
+                st.success("All shifts cleared")
+                st.rerun()
     
     # Initialize session state if needed
     if ('modified_track' not in st.session_state or 
