@@ -22,7 +22,8 @@ class TrainingEmailNotifier:
         self.smtp_server = "smtp.gmail.com"
         self.smtp_port = 587
         self.sender_email = "aaron.e.bell@gmail.com"
-        
+        self.display_email = "notifications@crewops360.com"   # Domain address shown to recipients
+
         # Load email configuration from environment or secrets
         self.load_email_config()
     
@@ -232,7 +233,9 @@ To review enrollments, please access the Training & Events admin interface.
         try:
             # Create message
             message = MIMEMultipart()
-            message["From"] = self.sender_email
+            # Display domain address — recipients see "CrewOps360 Notifications <notifications@crewops360.com>"
+            message["From"] = f"CrewOps360 Notifications <{self.display_email}>"
+            message["Reply-To"] = self.display_email
             message["To"] = ", ".join(recipients)
             message["Subject"] = subject
             
