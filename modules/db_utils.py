@@ -975,8 +975,15 @@ def generate_tracks_dataframe_from_db(fiscal_year=None, staff_col='STAFF NAME'):
 
     Columns: staff_col, then TRACK_DAY_LABELS (42 columns).
 
+    Strategy — "best available" per staff member:
+      1. Prefer the specified fiscal_year (default: prior year from config).
+      2. For any staff member who has no active track in that year, fall back to
+         their most-recently-submitted active track regardless of year.
+    This ensures the DataFrame is never sparse: staff who worked a different
+    label year still appear with their latest track data.
+
     Args:
-        fiscal_year (str): Which year's tracks to pull.  Defaults to prior year from config.
+        fiscal_year (str): Preferred year to pull.  Defaults to prior year from config.
         staff_col (str): Name to use for the staff-name column.
 
     Returns:
@@ -987,16 +994,34 @@ def generate_tracks_dataframe_from_db(fiscal_year=None, staff_col='STAFF NAME'):
         initialize_database()
         conn = get_db_connection()
         cursor = conn.cursor()
+
+        # Step 1 — preferred year
         cursor.execute(
-            "SELECT staff_name, track_data FROM tracks WHERE is_active = 1 AND fiscal_year = ? ORDER BY staff_name",
+            "SELECT staff_name, track_data FROM tracks "
+            "WHERE is_active = 1 AND fiscal_year = ? ORDER BY staff_name",
             (fy,)
         )
-        rows = cursor.fetchall()
-        if not rows:
+        preferred_rows = {staff: data for staff, data in cursor.fetchall()}
+
+        # Step 2 — fallback: latest active track per staff member (any year),
+        # ordered newest-first so the first occurrence is the latest.
+        cursor.execute(
+            "SELECT staff_name, track_data FROM tracks "
+            "WHERE is_active = 1 ORDER BY staff_name, submission_date DESC"
+        )
+        fallback_rows: dict = {}
+        for staff, data in cursor.fetchall():
+            if staff not in fallback_rows:   # keep only the latest per staff
+                fallback_rows[staff] = data
+
+        # Merge: preferred_year wins; fallback fills in the gaps
+        merged_rows = {**fallback_rows, **preferred_rows}
+
+        if not merged_rows:
             return None
 
         records = []
-        for staff_name, track_json in rows:
+        for staff_name, track_json in sorted(merged_rows.items()):
             try:
                 track_data = json.loads(track_json)
             except json.JSONDecodeError:
