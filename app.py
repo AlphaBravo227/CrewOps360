@@ -42,9 +42,12 @@ from modules.db_utils import (
     initialize_database,
     ACTIVE_BIDDING_YEAR,
     PRIOR_YEAR,
+    get_active_bidding_year,
+    get_prior_year,
     generate_tracks_dataframe_from_db,
     import_prior_tracks_from_dataframe,
     get_bidding_progress,
+    start_new_bidding_year,
 )
 # Import existing modules that actually work
 from modules.security import display_user_login, display_session_info, check_admin_access
@@ -1373,22 +1376,24 @@ def run_clinical_track_hub():
             else:
                 st.error("❌ Preferences file not found")
 
+            _active_yr = get_active_bidding_year()
+            _prior_yr  = get_prior_year()
             if excel_files["current_tracks"] and excel_files["current_tracks"] != "__db__":
                 st.success(f"✅ Prior tracks file loaded: {os.path.basename(excel_files['current_tracks'])}")
             elif excel_files["current_tracks"] == "__db__":
-                st.success(f"✅ {PRIOR_YEAR} prior tracks loaded from database")
+                st.success(f"✅ {_prior_yr} prior tracks loaded from database")
             else:
                 # No Excel tracks file — check DB fallback
-                _check_df = generate_tracks_dataframe_from_db(fiscal_year=PRIOR_YEAR)
+                _check_df = generate_tracks_dataframe_from_db(fiscal_year=_prior_yr)
                 if _check_df is not None:
                     st.success(
-                        f"✅ {PRIOR_YEAR} prior tracks available in database "
+                        f"✅ {_prior_yr} prior tracks available in database "
                         f"({len(_check_df)} staff) — Tracks.xlsx not required"
                     )
                 else:
-                    st.warning(
-                        f"⚠️ No {PRIOR_YEAR} tracks found (neither Tracks.xlsx nor database). "
-                        f"Use the '{ACTIVE_BIDDING_YEAR} Bidding Setup' section below to import them."
+                    st.info(
+                        f"ℹ️ No {_prior_yr} prior tracks in database yet. "
+                        f"Staff will start {_active_yr} bids from scratch."
                     )
 
             if excel_files["requirements"]:
@@ -1413,97 +1418,135 @@ def run_clinical_track_hub():
             st.markdown("---")
             add_fiscal_year_export_to_admin(admin_authenticated)
 
-            # ── FY26 Bidding Setup ────────────────────────────────────────────
+            # ── Annual Track Bidding ──────────────────────────────────────────
             st.markdown("---")
-            st.header(f"🗓️ {ACTIVE_BIDDING_YEAR} Bidding Setup")
+            _active_yr = get_active_bidding_year()
+            _prior_yr  = get_prior_year()
+            st.header(f"🗓️ Track Bidding — {_active_yr}")
 
-            with st.expander(f"{ACTIVE_BIDDING_YEAR} Bidding Progress & Setup", expanded=True):
-                # Show current bidding progress
-                progress = get_bidding_progress()
-                prog_cols = st.columns(2)
-                with prog_cols[0]:
-                    st.metric(
-                        f"{PRIOR_YEAR} Reference Tracks",
-                        progress['fy25_count'],
-                        help=f"Staff with {PRIOR_YEAR} tracks stored as reference"
-                    )
-                with prog_cols[1]:
-                    st.metric(
-                        f"{ACTIVE_BIDDING_YEAR} Bids Submitted",
-                        progress['fy26_count'],
-                        help=f"Staff who have submitted their {ACTIVE_BIDDING_YEAR} bid track"
-                    )
-
-                st.markdown("---")
-                st.subheader(f"📥 Import {PRIOR_YEAR} Reference Tracks")
-                st.markdown(
-                    f"Load **{PRIOR_YEAR}** tracks into the database so staff can see their prior "
-                    f"year schedule as a reference when building their **{ACTIVE_BIDDING_YEAR}** bid.\n\n"
-                    f"Source: **Tracks.xlsx** in the _upload files_ folder (the FY25 track spreadsheet)."
+            # ── Bidding Progress ──────────────────────────────────────────────
+            progress = get_bidding_progress()
+            prog_cols = st.columns(3)
+            with prog_cols[0]:
+                st.metric(
+                    f"{_prior_yr} Reference Tracks",
+                    progress['prior_count'],
+                    help=f"Staff whose {_prior_yr} track is stored as prior-year reference"
+                )
+            with prog_cols[1]:
+                st.metric(
+                    f"{_active_yr} Bids Submitted",
+                    progress['active_count'],
+                    help=f"Staff who have submitted their {_active_yr} bid track"
+                )
+            with prog_cols[2]:
+                _remaining = max(0, progress['prior_count'] - progress['active_count'])
+                st.metric(
+                    "Still Need to Bid",
+                    _remaining,
+                    help=f"Staff with a {_prior_yr} reference track who haven't submitted {_active_yr} yet"
                 )
 
-                tracks_xlsx_path = os.path.join("upload files", "Tracks.xlsx")
-                tracks_xlsx_exists = os.path.exists(tracks_xlsx_path)
+            # Staff lists
+            _detail_cols = st.columns(2)
+            with _detail_cols[0]:
+                if progress['prior_count'] > 0:
+                    with st.expander(
+                        f"{_prior_yr} reference tracks ({progress['prior_count']})",
+                        expanded=False
+                    ):
+                        st.write(", ".join(sorted(progress['prior_staff'])))
 
-                if tracks_xlsx_exists:
-                    st.success(f"✅ Found: `{tracks_xlsx_path}`")
+            with _detail_cols[1]:
+                _not_yet = sorted(set(progress['prior_staff']) - set(progress['active_staff']))
+                if _not_yet:
+                    with st.expander(f"⏳ Haven't bid yet ({len(_not_yet)})", expanded=False):
+                        st.write(", ".join(_not_yet))
+                elif progress['active_count'] > 0 and progress['prior_count'] > 0:
+                    st.success(f"🎉 All {_prior_yr} staff have submitted {_active_yr} bids!")
 
-                    overwrite_existing = st.checkbox(
-                        f"Overwrite existing {PRIOR_YEAR} records (if already imported)",
-                        value=False,
-                        key="fy_import_overwrite"
+            if progress['active_count'] > 0:
+                with st.expander(
+                    f"{_active_yr} bids submitted ({progress['active_count']})",
+                    expanded=False
+                ):
+                    st.write(", ".join(sorted(progress['active_staff'])))
+
+            # ── Start New Bidding Year ────────────────────────────────────────
+            st.markdown("---")
+            st.subheader("🔄 Start New Bidding Year")
+            st.markdown(
+                "Use this when you are ready to open bidding for the **next** fiscal year. "
+                "Current active tracks will be preserved as the prior-year reference — "
+                "nothing is deleted. Staff will start building fresh bids for the new year."
+            )
+
+            with st.expander("⚙️ New Bidding Year Setup", expanded=False):
+                _suggested_new = ""
+                # Try to auto-increment: FY25 → FY26, FY26 → FY27, etc.
+                import re as _re
+                _fy_match = _re.match(r'^(FY)(\d+)$', _active_yr)
+                if _fy_match:
+                    _suggested_new = f"FY{int(_fy_match.group(2)) + 1}"
+
+                _col_a, _col_b = st.columns(2)
+                with _col_a:
+                    _new_year_input = st.text_input(
+                        "New bidding year label",
+                        value=_suggested_new,
+                        placeholder="e.g. FY27",
+                        key="new_bid_year_input",
+                        help="This is what new track submissions will be saved under."
                     )
+                with _col_b:
+                    _outgoing_input = st.text_input(
+                        "Current year label (becomes prior-year reference)",
+                        value=_active_yr,
+                        key="outgoing_year_input",
+                        help="Existing active tracks will be labeled with this name as the reference year."
+                    )
+
+                if _new_year_input and _outgoing_input:
+                    st.info(
+                        f"**What will happen:**\n\n"
+                        f"- All current active tracks ({progress['prior_count'] + progress['active_count']} total) "
+                        f"without a year label will be labeled **{_outgoing_input}**\n"
+                        f"- The active bidding year will switch to **{_new_year_input}**\n"
+                        f"- Staff will start building **{_new_year_input}** bids from scratch "
+                        f"(with **{_outgoing_input}** visible as reference)\n"
+                        f"- No tracks are deleted"
+                    )
+
+                    # Require typing the new year to confirm
+                    _confirm_val = st.text_input(
+                        f"Type **{_new_year_input}** to confirm",
+                        key="new_bid_year_confirm",
+                        placeholder=_new_year_input
+                    )
+
+                    _btn_disabled = (_confirm_val.strip() != _new_year_input.strip()) or not _new_year_input.strip()
 
                     if st.button(
-                        f"📥 Import {PRIOR_YEAR} Tracks from Tracks.xlsx",
+                        f"🚀 Start {_new_year_input} Bidding",
                         use_container_width=True,
-                        key="fy_import_btn"
+                        key="start_new_year_btn",
+                        disabled=_btn_disabled,
+                        type="primary"
                     ):
-                        try:
-                            import pandas as _pd
-                            import_df = _pd.read_excel(tracks_xlsx_path)
-                            # Find staff column
-                            staff_col_import = import_df.columns[0]
-                            imported, skipped, errs = import_prior_tracks_from_dataframe(
-                                import_df,
-                                staff_col=staff_col_import,
-                                fiscal_year=PRIOR_YEAR,
-                                overwrite=overwrite_existing
-                            )
-                            if errs:
-                                st.error(f"Errors during import: {errs}")
+                        _result = start_new_bidding_year(
+                            new_active_year=_new_year_input.strip(),
+                            outgoing_year=_outgoing_input.strip()
+                        )
+                        if _result['success']:
                             st.success(
-                                f"✅ Import complete — **{imported}** tracks imported, "
-                                f"**{skipped}** skipped (already exist)."
+                                f"✅ **{_new_year_input} bidding is now open!** "
+                                f"{_result['labeled_count']} track(s) labeled as {_outgoing_input}."
                             )
                             st.rerun()
-                        except Exception as _e:
-                            st.error(f"Import failed: {_e}")
+                        else:
+                            st.error(f"❌ {_result['message']}")
                 else:
-                    st.warning(
-                        f"⚠️ `Tracks.xlsx` not found in the _upload files_ folder.\n\n"
-                        f"Place the {PRIOR_YEAR} tracks spreadsheet there and refresh."
-                    )
-
-                # Show which staff have FY25 reference tracks
-                if progress['fy25_count'] > 0:
-                    with st.expander(f"Staff with {PRIOR_YEAR} reference tracks ({progress['fy25_count']})", expanded=False):
-                        st.write(", ".join(sorted(progress['fy25_staff'])))
-
-                # Show who has submitted FY26 bids
-                if progress['fy26_count'] > 0:
-                    with st.expander(f"Staff with {ACTIVE_BIDDING_YEAR} bids submitted ({progress['fy26_count']})", expanded=False):
-                        st.write(", ".join(sorted(progress['fy26_staff'])))
-
-                    # Who still needs to bid?
-                    fy25_set = set(progress['fy25_staff'])
-                    fy26_set = set(progress['fy26_staff'])
-                    not_yet = sorted(fy25_set - fy26_set)
-                    if not_yet:
-                        with st.expander(f"⏳ Still need to bid ({len(not_yet)})", expanded=False):
-                            st.write(", ".join(not_yet))
-                    else:
-                        st.success(f"🎉 All staff with {PRIOR_YEAR} tracks have submitted {ACTIVE_BIDDING_YEAR} bids!")
+                    st.warning("Enter both year labels above to proceed.")
 
             st.header("Enhanced Validation Rules")
             st.markdown("""
@@ -1995,23 +2038,26 @@ def run_clinical_track_hub():
                         st.error(f"Error testing email configuration: {str(e)}")
 
     # MAIN PROCESSING
-    # For FY26 bidding: if no Tracks Excel is present, try to build current_tracks_df
-    # from the FY25 prior-year tracks stored in the database.
+    # If no Tracks Excel is present, build current_tracks_df from prior-year DB tracks.
+    # This is the normal path for annual rebidding (no Excel file needed).
     _db_tracks_df = None
     if excel_files["preferences"] and not excel_files["current_tracks"]:
-        _db_tracks_df = generate_tracks_dataframe_from_db(fiscal_year=PRIOR_YEAR)
+        _prior_yr_main = get_prior_year()
+        _db_tracks_df = generate_tracks_dataframe_from_db(fiscal_year=_prior_yr_main)
         if _db_tracks_df is not None:
             excel_files["current_tracks"] = "__db__"  # sentinel value
 
     if excel_files["preferences"] and excel_files["current_tracks"]:
         try:
+            _active_yr_main = get_active_bidding_year()
+            _prior_yr_main  = get_prior_year()
             # Load the data from files (or DB-generated DataFrame)
             preferences_df = load_excel_file(excel_files["preferences"])
             if excel_files["current_tracks"] == "__db__":
                 current_tracks_df = _db_tracks_df
                 st.info(
-                    f"📂 **{PRIOR_YEAR} prior tracks loaded from database** — "
-                    f"no Tracks.xlsx required for {ACTIVE_BIDDING_YEAR} bidding."
+                    f"📂 **{_prior_yr_main} prior tracks loaded from database** — "
+                    f"no Tracks.xlsx required for {_active_yr_main} bidding."
                 )
             else:
                 current_tracks_df = load_excel_file(excel_files["current_tracks"])

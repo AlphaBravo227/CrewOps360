@@ -12,7 +12,7 @@ import pytz
 _eastern_tz = pytz.timezone('America/New_York')
 from ..track_validator import validate_track
 from ..shift_counter import count_shifts, count_shifts_by_pay_period, count_weekend_shifts_updated
-from ..db_utils import save_track_to_db, get_track_from_db, ACTIVE_BIDDING_YEAR
+from ..db_utils import save_track_to_db, get_track_from_db, get_active_bidding_year, ACTIVE_BIDDING_YEAR
 from ..pdf_generator import generate_schedule_pdf
 from ..backup_utils import handle_track_submission
 from ..email_notifications import send_track_submission_notification
@@ -400,7 +400,7 @@ def save_track_to_db_enhanced(staff_name, enhanced_track_data, is_new=False):
         # Check if staff member already has a track for the active bidding year
         cursor.execute(
             "SELECT id, version FROM tracks WHERE staff_name = ? AND is_active = 1 AND fiscal_year = ?",
-            (staff_name, ACTIVE_BIDDING_YEAR)
+            (staff_name, get_active_bidding_year())
         )
         existing_track = cursor.fetchone()
 
@@ -470,7 +470,7 @@ def save_track_to_db_enhanced(staff_name, enhanced_track_data, is_new=False):
                 metadata.get('track_source', ''),
                 1 if metadata.get('has_preassignments', False) else 0,
                 metadata.get('preassignment_count', 0),
-                ACTIVE_BIDDING_YEAR
+                get_active_bidding_year()
             ))
             
             track_id = cursor.lastrowid
@@ -639,7 +639,7 @@ def submit_track(selected_staff, staff_track, days, shifts_per_pay_period, night
             # Extract track data based on Annual Rebid or Current Track Changes source
             if use_database_logic and has_db_track:
                 # Get the active bidding year track
-                db_result = get_track_from_db(selected_staff, fiscal_year=ACTIVE_BIDDING_YEAR)
+                db_result = get_track_from_db(selected_staff, fiscal_year=get_active_bidding_year())
                 if db_result[0]:  # Success
                     track_data = db_result[1]['track_data']
                 else:
@@ -720,7 +720,7 @@ def submit_track(selected_staff, staff_track, days, shifts_per_pay_period, night
     # Show comparison with original track if not a new track
     if not is_new_track and has_db_track:
         # Get the active bidding year track for comparison
-        db_result = get_track_from_db(selected_staff, fiscal_year=ACTIVE_BIDDING_YEAR)
+        db_result = get_track_from_db(selected_staff, fiscal_year=get_active_bidding_year())
         if db_result[0]:  # Success
             original_track = db_result[1]['track_data']
             

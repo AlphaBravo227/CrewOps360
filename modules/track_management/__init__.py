@@ -21,7 +21,11 @@ from .editor import modify_track_enhanced  # Updated editor
 from .submission import submit_track
 from .preassignment import get_staff_preassignments
 from .utils import reset_track_session_state
-from ..db_utils import get_track_from_db, get_prior_track_from_db, ACTIVE_BIDDING_YEAR, PRIOR_YEAR
+from ..db_utils import (
+    get_track_from_db, get_prior_track_from_db,
+    get_active_bidding_year, get_prior_year,
+    ACTIVE_BIDDING_YEAR, PRIOR_YEAR,  # kept for fallback/legacy
+)
 from ..hypothetical_scheduler_new import (
     generate_hypothetical_schedule_new as generate_hypothetical_schedule,
     display_hypothetical_results_new as display_hypothetical_results
@@ -46,14 +50,18 @@ def display_staff_track_interface(
     """
     Main interface function for staff track management with enhanced validation including weekend groups and preference editing
     """
-    st.header("Staff Track Management")
-    
+    # Resolve bidding year from DB config at render time (admin may have changed it)
+    _ACTIVE_YR = get_active_bidding_year()
+    _PRIOR_YR  = get_prior_year()
+
+    st.header(f"Staff Track Management — {_ACTIVE_YR} Bidding")
+
     # Check if creating a new track
     create_new = st.session_state.get('create_new_track', False)
     if create_new:
         st.session_state['create_new_track'] = False
         st.session_state['is_new_track'] = True
-    
+
     # Check track source setting
     use_database_logic = st.session_state.get('track_source', "Annual Rebid") == "Annual Rebid"
     st.session_state['using_database_logic'] = use_database_logic
@@ -132,7 +140,7 @@ def display_staff_track_interface(
     staff_info = preferences_df[preferences_df[staff_col_prefs] == selected_staff].iloc[0]
 
     # ── FY26 Bidding: check for existing bid (FY26) and prior year reference (FY25) ──
-    db_result = get_track_from_db(selected_staff, fiscal_year=ACTIVE_BIDDING_YEAR)
+    db_result = get_track_from_db(selected_staff, fiscal_year=_ACTIVE_YR)
     has_db_track = db_result[0]          # True = staff has a FY26 bid already
     st.session_state['has_db_track'] = has_db_track
 
@@ -152,7 +160,7 @@ def display_staff_track_interface(
 
         track_source = "Database"
         st.info(
-            f"📊 **{ACTIVE_BIDDING_YEAR} bid track loaded** (version {version}, "
+            f"📊 **{_ACTIVE_YR} bid track loaded** (version {version}, "
             f"submitted {submission_date})."
         )
     else:
@@ -162,7 +170,7 @@ def display_staff_track_interface(
         if staff_track_df.empty:
             st.warning(
                 f"No prior track found for **{selected_staff}** — "
-                f"building {ACTIVE_BIDDING_YEAR} bid from scratch."
+                f"building {_ACTIVE_YR} bid from scratch."
             )
             # Create an empty placeholder row so downstream code doesn't break
             staff_track_df = pd.DataFrame([{day: "" for day in days}])
@@ -171,7 +179,7 @@ def display_staff_track_interface(
         track_source = "Prior Year Reference"
         if use_database_logic and not has_db_track:
             st.info(
-                f"🆕 No **{ACTIVE_BIDDING_YEAR}** bid submitted yet. "
+                f"🆕 No **{_ACTIVE_YR}** bid submitted yet. "
                 f"Build your track below, then submit."
             )
         else:
@@ -207,19 +215,19 @@ def display_staff_track_interface(
     st.session_state.weekend_minimum = weekend_minimum
     st.session_state.weekend_group = weekend_group  # NEW: Store weekend group
     
-    # ── FY26 bidding: show "Copy from FY25" button if no FY26 bid yet ──────────
+    # ── Show "Copy from prior year" button if no active-year bid exists yet ────
     if use_database_logic and not has_db_track and has_prior_track:
         prior_track_data = prior_result[1]['track_data']
         prior_submission = prior_result[1].get('submission_date', 'unknown date')
         st.info(
-            f"📋 **You have a {PRIOR_YEAR} reference track** (submitted {prior_submission}). "
-            f"You can start your {ACTIVE_BIDDING_YEAR} bid from scratch or use your {PRIOR_YEAR} "
+            f"📋 **You have a {_PRIOR_YR} reference track** (submitted {prior_submission}). "
+            f"You can start your {_ACTIVE_YR} bid from scratch or use your {_PRIOR_YR} "
             f"track as a starting point."
         )
         copy_col, _ = st.columns([1, 2])
         with copy_col:
             if st.button(
-                f"📋 Start from {PRIOR_YEAR} track",
+                f"📋 Start from {_PRIOR_YR} track",
                 key=f"copy_prior_{selected_staff}",
                 use_container_width=True
             ):
@@ -231,7 +239,7 @@ def display_staff_track_interface(
                         current_track_data[day] = pa
                 reset_track_session_state(selected_staff, current_track_data, staff_preassignments)
                 st.session_state['is_new_track'] = True
-                st.success(f"✅ Loaded your {PRIOR_YEAR} track as a starting point. Modify and submit below.")
+                st.success(f"✅ Loaded your {_PRIOR_YR} track as a starting point. Modify and submit below.")
                 st.rerun()
 
     # Reset and clear buttons
@@ -307,12 +315,12 @@ def display_staff_track_interface(
     if active_tab == "Submission":
         st.info("🎯 **Navigated to Submission Tab** - You can now submit your track changes.")
        
-    with tabs[0]:  # Current Track (FY26 bid — or blank if not yet submitted)
+    with tabs[0]:  # Current Track (active-year bid — or blank if not yet submitted)
         if use_database_logic and has_db_track:
-            st.success(f"✅ Your **{ACTIVE_BIDDING_YEAR} bid** is on file.")
+            st.success(f"✅ Your **{_ACTIVE_YR} bid** is on file.")
         elif use_database_logic and not has_db_track:
             st.warning(
-                f"⏳ You have not yet submitted a **{ACTIVE_BIDDING_YEAR} bid**. "
+                f"⏳ You have not yet submitted a **{_ACTIVE_YR} bid**. "
                 f"Go to the **Track Modification** tab to build your track."
             )
 
@@ -324,12 +332,12 @@ def display_staff_track_interface(
             prior_track_data_ref = prior_result[1]['track_data']
             prior_sub_date = prior_result[1].get('submission_date', '')
             with st.expander(
-                f"📅 Your {PRIOR_YEAR} Reference Track (submitted {prior_sub_date})",
+                f"📅 Your {_PRIOR_YR} Reference Track (submitted {prior_sub_date})",
                 expanded=False
             ):
                 st.caption(
-                    f"This is the track you worked in **{PRIOR_YEAR}**. "
-                    f"Use it as a reference when building your {ACTIVE_BIDDING_YEAR} bid."
+                    f"This is the track you worked in **{_PRIOR_YR}**. "
+                    f"Use it as a reference when building your {_ACTIVE_YR} bid."
                 )
                 # Build a display-friendly DataFrame
                 prior_df = pd.DataFrame([{day: prior_track_data_ref.get(day, "") for day in days}])
@@ -337,7 +345,7 @@ def display_staff_track_interface(
                 display_track(
                     selected_staff, prior_df, days,
                     shifts_per_pay_period, night_minimum,
-                    preassignments={}, track_source=f"{PRIOR_YEAR} Reference",
+                    preassignments={}, track_source=f"{_PRIOR_YR} Reference",
                     weekend_minimum=weekend_minimum
                 )
     
