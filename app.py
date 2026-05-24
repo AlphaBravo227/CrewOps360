@@ -38,7 +38,14 @@ except ImportError:
     def add_fiscal_year_export_to_admin():
         pass
 
-from modules.db_utils import initialize_database
+from modules.db_utils import (
+    initialize_database,
+    ACTIVE_BIDDING_YEAR,
+    PRIOR_YEAR,
+    generate_tracks_dataframe_from_db,
+    import_prior_tracks_from_dataframe,
+    get_bidding_progress,
+)
 # Import existing modules that actually work
 from modules.security import display_user_login, display_session_info, check_admin_access
 from modules.summer_leave import display_summer_leave_app
@@ -1366,10 +1373,23 @@ def run_clinical_track_hub():
             else:
                 st.error("❌ Preferences file not found")
 
-            if excel_files["current_tracks"]:
-                st.success(f"✅ Current tracks file loaded: {os.path.basename(excel_files['current_tracks'])}")
+            if excel_files["current_tracks"] and excel_files["current_tracks"] != "__db__":
+                st.success(f"✅ Prior tracks file loaded: {os.path.basename(excel_files['current_tracks'])}")
+            elif excel_files["current_tracks"] == "__db__":
+                st.success(f"✅ {PRIOR_YEAR} prior tracks loaded from database")
             else:
-                st.error("❌ Current tracks file not found")
+                # No Excel tracks file — check DB fallback
+                _check_df = generate_tracks_dataframe_from_db(fiscal_year=PRIOR_YEAR)
+                if _check_df is not None:
+                    st.success(
+                        f"✅ {PRIOR_YEAR} prior tracks available in database "
+                        f"({len(_check_df)} staff) — Tracks.xlsx not required"
+                    )
+                else:
+                    st.warning(
+                        f"⚠️ No {PRIOR_YEAR} tracks found (neither Tracks.xlsx nor database). "
+                        f"Use the '{ACTIVE_BIDDING_YEAR} Bidding Setup' section below to import them."
+                    )
 
             if excel_files["requirements"]:
                 st.success(f"✅ Requirements file loaded: {os.path.basename(excel_files['requirements'])}")
@@ -1389,9 +1409,101 @@ def run_clinical_track_hub():
                 st.header("📤 Staff Preferences Export Center")
                 st.info("📊 Export functionality will appear here once preferences file is processed.")
             
-            # ADD THIS NEW SECTION HERE:
+            # Fiscal year export
             st.markdown("---")
             add_fiscal_year_export_to_admin(admin_authenticated)
+
+            # ── FY26 Bidding Setup ────────────────────────────────────────────
+            st.markdown("---")
+            st.header(f"🗓️ {ACTIVE_BIDDING_YEAR} Bidding Setup")
+
+            with st.expander(f"{ACTIVE_BIDDING_YEAR} Bidding Progress & Setup", expanded=True):
+                # Show current bidding progress
+                progress = get_bidding_progress()
+                prog_cols = st.columns(2)
+                with prog_cols[0]:
+                    st.metric(
+                        f"{PRIOR_YEAR} Reference Tracks",
+                        progress['fy25_count'],
+                        help=f"Staff with {PRIOR_YEAR} tracks stored as reference"
+                    )
+                with prog_cols[1]:
+                    st.metric(
+                        f"{ACTIVE_BIDDING_YEAR} Bids Submitted",
+                        progress['fy26_count'],
+                        help=f"Staff who have submitted their {ACTIVE_BIDDING_YEAR} bid track"
+                    )
+
+                st.markdown("---")
+                st.subheader(f"📥 Import {PRIOR_YEAR} Reference Tracks")
+                st.markdown(
+                    f"Load **{PRIOR_YEAR}** tracks into the database so staff can see their prior "
+                    f"year schedule as a reference when building their **{ACTIVE_BIDDING_YEAR}** bid.\n\n"
+                    f"Source: **Tracks.xlsx** in the _upload files_ folder (the FY25 track spreadsheet)."
+                )
+
+                tracks_xlsx_path = os.path.join("upload files", "Tracks.xlsx")
+                tracks_xlsx_exists = os.path.exists(tracks_xlsx_path)
+
+                if tracks_xlsx_exists:
+                    st.success(f"✅ Found: `{tracks_xlsx_path}`")
+
+                    overwrite_existing = st.checkbox(
+                        f"Overwrite existing {PRIOR_YEAR} records (if already imported)",
+                        value=False,
+                        key="fy_import_overwrite"
+                    )
+
+                    if st.button(
+                        f"📥 Import {PRIOR_YEAR} Tracks from Tracks.xlsx",
+                        use_container_width=True,
+                        key="fy_import_btn"
+                    ):
+                        try:
+                            import pandas as _pd
+                            import_df = _pd.read_excel(tracks_xlsx_path)
+                            # Find staff column
+                            staff_col_import = import_df.columns[0]
+                            imported, skipped, errs = import_prior_tracks_from_dataframe(
+                                import_df,
+                                staff_col=staff_col_import,
+                                fiscal_year=PRIOR_YEAR,
+                                overwrite=overwrite_existing
+                            )
+                            if errs:
+                                st.error(f"Errors during import: {errs}")
+                            st.success(
+                                f"✅ Import complete — **{imported}** tracks imported, "
+                                f"**{skipped}** skipped (already exist)."
+                            )
+                            st.rerun()
+                        except Exception as _e:
+                            st.error(f"Import failed: {_e}")
+                else:
+                    st.warning(
+                        f"⚠️ `Tracks.xlsx` not found in the _upload files_ folder.\n\n"
+                        f"Place the {PRIOR_YEAR} tracks spreadsheet there and refresh."
+                    )
+
+                # Show which staff have FY25 reference tracks
+                if progress['fy25_count'] > 0:
+                    with st.expander(f"Staff with {PRIOR_YEAR} reference tracks ({progress['fy25_count']})", expanded=False):
+                        st.write(", ".join(sorted(progress['fy25_staff'])))
+
+                # Show who has submitted FY26 bids
+                if progress['fy26_count'] > 0:
+                    with st.expander(f"Staff with {ACTIVE_BIDDING_YEAR} bids submitted ({progress['fy26_count']})", expanded=False):
+                        st.write(", ".join(sorted(progress['fy26_staff'])))
+
+                    # Who still needs to bid?
+                    fy25_set = set(progress['fy25_staff'])
+                    fy26_set = set(progress['fy26_staff'])
+                    not_yet = sorted(fy25_set - fy26_set)
+                    if not_yet:
+                        with st.expander(f"⏳ Still need to bid ({len(not_yet)})", expanded=False):
+                            st.write(", ".join(not_yet))
+                    else:
+                        st.success(f"🎉 All staff with {PRIOR_YEAR} tracks have submitted {ACTIVE_BIDDING_YEAR} bids!")
 
             st.header("Enhanced Validation Rules")
             st.markdown("""
@@ -1883,11 +1995,26 @@ def run_clinical_track_hub():
                         st.error(f"Error testing email configuration: {str(e)}")
 
     # MAIN PROCESSING
+    # For FY26 bidding: if no Tracks Excel is present, try to build current_tracks_df
+    # from the FY25 prior-year tracks stored in the database.
+    _db_tracks_df = None
+    if excel_files["preferences"] and not excel_files["current_tracks"]:
+        _db_tracks_df = generate_tracks_dataframe_from_db(fiscal_year=PRIOR_YEAR)
+        if _db_tracks_df is not None:
+            excel_files["current_tracks"] = "__db__"  # sentinel value
+
     if excel_files["preferences"] and excel_files["current_tracks"]:
         try:
-            # Load the data from files
+            # Load the data from files (or DB-generated DataFrame)
             preferences_df = load_excel_file(excel_files["preferences"])
-            current_tracks_df = load_excel_file(excel_files["current_tracks"])
+            if excel_files["current_tracks"] == "__db__":
+                current_tracks_df = _db_tracks_df
+                st.info(
+                    f"📂 **{PRIOR_YEAR} prior tracks loaded from database** — "
+                    f"no Tracks.xlsx required for {ACTIVE_BIDDING_YEAR} bidding."
+                )
+            else:
+                current_tracks_df = load_excel_file(excel_files["current_tracks"])
 
             # Load requirements file
             if excel_files["requirements"]:

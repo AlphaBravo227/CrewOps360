@@ -70,11 +70,12 @@ class FiscalYearDisplay:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            # Get the latest active tracks for each staff member with role information
+            # Get the latest active FY26 tracks for each staff member with role information.
+            # Falls back to any active track if no FY26 tracks exist yet (e.g. early in bidding).
             cursor.execute("""
                 SELECT staff_name, track_data, effective_role, submission_date
                 FROM tracks
-                WHERE is_active = 1
+                WHERE is_active = 1 AND (fiscal_year = 'FY26' OR fiscal_year IS NULL)
                 ORDER BY staff_name, submission_date DESC
             """)
             
