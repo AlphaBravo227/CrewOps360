@@ -370,8 +370,8 @@ def display_staff_track_interface(
     
     with tabs[3]:  # Track Modification - UPDATED: Removed validation dashboard from here
         is_new_track = st.session_state.get('is_new_track', use_database_logic and not has_db_track)
-        
-        # UPDATED: Pass weekend group and requirements_df to modification function, but without validation dashboard
+
+        # UPDATED: Pass weekend group, requirements_df, and bidding_open to modification function
         modify_track_enhanced_without_validation(
             selected_staff,
             staff_track_df,
@@ -389,7 +389,8 @@ def display_staff_track_interface(
             preassignments=staff_preassignments,
             is_new_track=is_new_track,
             weekend_minimum=weekend_minimum,
-            requirements_df=requirements_df  # Pass requirements_df for weekend group lookup
+            requirements_df=requirements_df,
+            bidding_open=_bidding_open,  # lock the grid when bidding is closed
         )
     
     with tabs[4]:  # NEW: Validation Tab
@@ -704,10 +705,12 @@ def modify_track_enhanced_without_validation(
     preassignments=None,
     is_new_track=False,
     weekend_minimum=0,
-    requirements_df=None
+    requirements_df=None,
+    bidding_open=True,
 ):
     """
-    UPDATED: Track modification without the validation dashboard (moved to separate tab)
+    UPDATED: Track modification without the validation dashboard (moved to separate tab).
+    Pass bidding_open=False to render the grid in view-only mode.
     """
     from .editor import modify_track_enhanced
     
@@ -840,18 +843,27 @@ def modify_track_enhanced_without_validation(
             'is_new': is_new_track
         }
     
-    # User guidance
-    st.markdown("""
-    ### How to Modify Your Track
-    
-    1. Select days where you want to work by clicking on the radio buttons
-    2. Use **"Validate Block"** buttons to check and lock in individual 2-week blocks before proceeding to next block
-    3. Preassignments (if any) are shown as selected and locked radio buttons
-    4. Days where your role is needed are highlighted in green
-    5. **Weekend group days are highlighted in yellow** (if assigned to a weekend group)
-    6. Go to the **Validation tab** to check your complete track, then proceed to Submission when ready
-    """)
-    
+    # User guidance — adapts based on whether bidding is open or closed
+    if bidding_open:
+        st.markdown("""
+        ### How to Modify Your Track
+
+        1. Select days where you want to work by clicking on the radio buttons
+        2. Use **"Validate Block"** buttons to check and lock in individual 2-week blocks before proceeding to next block
+        3. Preassignments (if any) are shown as selected and locked radio buttons
+        4. Days where your role is needed are highlighted in green
+        5. **Weekend group days are highlighted in yellow** (if assigned to a weekend group)
+        6. Go to the **Validation tab** to check your complete track, then proceed to Submission when ready
+        """)
+    else:
+        st.markdown("""
+        ### 👁️ Track View — Read Only
+
+        Bidding is currently **closed**. You can see the full schedule grid and which shifts are
+        available for each day, but you cannot select or change any assignments.
+        Contact your administrator to re-open the bidding window.
+        """)
+
     # Show preassignments if any
     if preassignments:
         from .preassignment import display_preassignments
@@ -860,12 +872,16 @@ def modify_track_enhanced_without_validation(
     # Display track modification interface WITH enhanced hypothetical scheduler display
     from .editor import display_track_modification_interface_enhanced
     display_track_modification_interface_enhanced(
-        selected_staff, options_by_day, reference_track, days, 
+        selected_staff, options_by_day, reference_track, days,
         preassignments, use_database_logic, has_db_track, staff_role, weekend_group,
-        day_assignments, night_assignments, assignment_details
+        day_assignments, night_assignments, assignment_details,
+        bidding_open=bidding_open,
     )
-    
-    # Quick validation status (simplified)
+
+    # Quick validation status — hidden when bidding is closed (no point validating a locked track)
+    if not bidding_open:
+        return
+
     st.markdown("### 📊 Quick Validation Status")
     st.info("**Note:** For comprehensive validation results, go to the **Validation tab**.")
     
