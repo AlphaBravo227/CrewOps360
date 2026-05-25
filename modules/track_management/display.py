@@ -13,13 +13,16 @@ from .utils import highlight_cells, create_block_day_headers, display_validation
 
 def display_track(selected_staff, staff_track, days, shifts_per_pay_period, night_minimum,
                   preassignments=None, track_source="Excel File", weekend_minimum=0,
-                  submission_date=None, version=None, is_approved=None):
+                  submission_date=None, version=None, heading=None):
     """
     Display the current track for the selected staff member.
-    When submission metadata is provided (submission_date, version, is_approved) it is
-    shown as a compact caption beneath the subheader.
+
+    heading        – optional subheader override, e.g. "Active FY27 Schedule — Bell".
+                     Defaults to "Current Track for {selected_staff}".
+    submission_date – stored as "YYYY-MM-DD HH:MM:SS"; shown as a compact caption when set.
+    version        – bid version number; shown alongside submission_date.
     """
-    st.subheader(f"Current Track for {selected_staff}")
+    st.subheader(heading if heading else f"Current Track for {selected_staff}")
 
     # Check if using Annual Rebid mode
     use_database_logic = st.session_state.get('track_source', "Annual Rebid") == "Annual Rebid"
@@ -37,8 +40,7 @@ def display_track(selected_staff, staff_track, days, shifts_per_pay_period, nigh
                 _date_str = _dt_obj.strftime("%b %d, %Y %I:%M %p")
             except Exception:
                 _date_str = submission_date
-            _approval = "✅ Approved" if is_approved else "⏳ Pending approval"
-            st.caption(f"Version {version}  ·  Submitted {_date_str}  ·  {_approval}")
+            st.caption(f"Version {version}  ·  Submitted {_date_str}")
         display_schedule_by_blocks(track_data, days, preassignments)
         return
     

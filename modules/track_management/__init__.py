@@ -328,43 +328,60 @@ def display_staff_track_interface(
     if active_tab == "Submission":
         st.info("🎯 **Navigated to Submission Tab** - You can now submit your track changes.")
        
-    with tabs[0]:  # Current Track (active-year bid — or blank if not yet submitted)
-        if use_database_logic and not has_db_track:
-            st.warning(
-                f"⏳ You have not yet submitted a **{_ACTIVE_YR} bid**. "
-                f"Go to the **Track Modification** tab to build your track."
+    with tabs[0]:  # ── Current / Active Schedule ────────────────────────────────
+        if use_database_logic and has_db_track:
+            # ── User has submitted their active-year bid — that IS their working schedule ──
+            _sub_date = db_result[1]['submission_date']
+            _version  = db_result[1]['version']
+
+            display_track(
+                selected_staff, staff_track_df, days, shifts_per_pay_period, night_minimum,
+                preassignments=staff_preassignments, track_source=track_source,
+                weekend_minimum=weekend_minimum,
+                submission_date=_sub_date, version=_version,
+                heading=f"Active {_ACTIVE_YR} Schedule — {selected_staff}",
             )
 
-        # Pull bid metadata from db_result so display_track can show version / date / status
-        _sub_date  = db_result[1]['submission_date'] if has_db_track else None
-        _version   = db_result[1]['version']          if has_db_track else None
-        _approved  = db_result[1]['is_approved']      if has_db_track else None
+            # Prior year shown as a collapsible reference (not the active schedule)
+            if has_prior_track:
+                prior_track_data_ref = prior_result[1]['track_data']
+                prior_sub_date       = prior_result[1].get('submission_date', '')
+                with st.expander(
+                    f"📅 {_PRIOR_YR} Reference Schedule (submitted {prior_sub_date})",
+                    expanded=False,
+                ):
+                    st.caption(
+                        f"This is the schedule you worked in **{_PRIOR_YR}**. "
+                        f"Use it as a reference when building your {_ACTIVE_YR} bid."
+                    )
+                    prior_df = pd.DataFrame([{day: prior_track_data_ref.get(day, "") for day in days}])
+                    prior_df['STAFF NAME'] = selected_staff
+                    display_track(
+                        selected_staff, prior_df, days,
+                        shifts_per_pay_period, night_minimum,
+                        preassignments={}, track_source=f"{_PRIOR_YR} Reference",
+                        weekend_minimum=weekend_minimum,
+                        heading=f"{_PRIOR_YR} Schedule — {selected_staff}",
+                    )
 
-        display_track(selected_staff, staff_track_df, days, shifts_per_pay_period, night_minimum,
-                      preassignments=staff_preassignments, track_source=track_source,
-                      weekend_minimum=weekend_minimum,
-                      submission_date=_sub_date, version=_version, is_approved=_approved)
-
-        # ── Prior year reference (collapsible) ──────────────────────────────
-        if use_database_logic and has_prior_track:
-            prior_track_data_ref = prior_result[1]['track_data']
-            prior_sub_date = prior_result[1].get('submission_date', '')
-            with st.expander(
-                f"📅 Your {_PRIOR_YR} Reference Track (submitted {prior_sub_date})",
-                expanded=False
-            ):
-                st.caption(
-                    f"This is the track you worked in **{_PRIOR_YR}**. "
-                    f"Use it as a reference when building your {_ACTIVE_YR} bid."
-                )
-                # Build a display-friendly DataFrame
+        elif use_database_logic and not has_db_track:
+            # ── No active-year bid yet ────────────────────────────────────────────
+            st.warning(
+                f"⏳ No **{_ACTIVE_YR} bid** submitted yet. "
+                f"Go to the **Track Modification** tab to build your track."
+            )
+            if has_prior_track:
+                # Prior year IS their currently-worked schedule — show it prominently
+                prior_track_data_ref = prior_result[1]['track_data']
+                prior_sub_date       = prior_result[1].get('submission_date', '')
                 prior_df = pd.DataFrame([{day: prior_track_data_ref.get(day, "") for day in days}])
                 prior_df['STAFF NAME'] = selected_staff
                 display_track(
                     selected_staff, prior_df, days,
                     shifts_per_pay_period, night_minimum,
                     preassignments={}, track_source=f"{_PRIOR_YR} Reference",
-                    weekend_minimum=weekend_minimum
+                    weekend_minimum=weekend_minimum,
+                    heading=f"Active {_PRIOR_YR} Schedule — {selected_staff}",
                 )
     
     with tabs[1]:  # Preferences
