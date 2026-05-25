@@ -49,6 +49,7 @@ from modules.db_utils import (
     get_bidding_progress,
     start_new_bidding_year,
     relabel_tracks,
+    set_tracks_active,
     is_bidding_open,
     set_bidding_open,
 )
@@ -1585,8 +1586,7 @@ def run_clinical_track_hub():
                         if _result['success']:
                             st.success(
                                 f"✅ **{_new_year_input} bidding is now open!** "
-                                f"{_result['archived_count']} {_outgoing_input} track(s) archived — "
-                                f"all shifts are now available for {_new_year_input} bidding."
+                                f"{_result['labeled_count']} track(s) labeled as {_outgoing_input}."
                             )
                             st.rerun()
                         else:
@@ -1594,16 +1594,16 @@ def run_clinical_track_hub():
                 else:
                     st.warning("Enter both year labels above to proceed.")
 
-            # ── Relabel / Archive Tracks ──────────────────────────────────────
+            # ── Relabel / Fix Tracks ──────────────────────────────────────────
             st.markdown("---")
-            st.subheader("🏷️ Relabel Tracks")
-            st.markdown(
-                "Use this to correct tracks that were saved under the wrong fiscal year label. "
-                "For example, tracks labeled **FY25** that are actually the **FY26** working "
-                "schedules can be relabeled here so they appear as the correct prior-year "
-                "reference during FY27 bidding."
-            )
-            with st.expander("⚙️ Relabel Track Year", expanded=False):
+            st.subheader("🏷️ Track Data Tools")
+
+            with st.expander("🔄 Relabel Track Year", expanded=False):
+                st.markdown(
+                    "Correct tracks saved under the wrong fiscal year label. "
+                    "Example: tracks labeled **FY25** that are actually the **FY26** "
+                    "working schedules."
+                )
                 _rl_col1, _rl_col2 = st.columns(2)
                 with _rl_col1:
                     _rl_from = st.text_input(
@@ -1618,13 +1618,13 @@ def run_clinical_track_hub():
                         key="relabel_to_input",
                     )
                 _rl_archive = st.checkbox(
-                    "Also archive these tracks (set is_active=0)",
-                    value=True,
+                    "Also deactivate these tracks (set is_active=0)",
+                    value=False,
                     key="relabel_archive_check",
                     help=(
-                        "Recommended: archive the relabeled tracks so they don't count as "
-                        "active bids in the new cycle — they will still appear as prior-year "
-                        "reference schedules for each staff member."
+                        "Leave unchecked in most cases — tracks stay visible to staff as "
+                        "their current schedule. The hypothetical scheduler already filters "
+                        "by fiscal year so deactivation is not needed for shift availability."
                     ),
                 )
                 if _rl_from and _rl_to:
@@ -1649,6 +1649,32 @@ def run_clinical_track_hub():
                                 st.error(f"❌ {_rl_result['message']}")
                 else:
                     st.caption("Enter both labels above to enable the button.")
+
+            with st.expander("✅ Reactivate Tracks", expanded=False):
+                st.markdown(
+                    "Restore **is_active=1** for a year's tracks that were accidentally "
+                    "deactivated. Staff need their tracks active to see their current schedule."
+                )
+                _ra_year = st.text_input(
+                    "Fiscal year to reactivate",
+                    placeholder="e.g. FY26",
+                    key="reactivate_year_input",
+                )
+                if _ra_year:
+                    if st.button(
+                        f"Reactivate {_ra_year.strip()} tracks",
+                        key="reactivate_tracks_btn",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        _ra_result = set_tracks_active(_ra_year.strip(), active=True)
+                        if _ra_result['success']:
+                            st.success(f"✅ {_ra_result['message']}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {_ra_result['message']}")
+                else:
+                    st.caption("Enter a year label above to enable the button.")
 
             st.header("Enhanced Validation Rules")
             st.markdown("""

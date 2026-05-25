@@ -83,19 +83,20 @@ def start_new_bidding_year(new_active_year: str, outgoing_year: str) -> dict:
     Transition the system to a new bidding year.
 
     Steps:
-      1. Labels any active tracks with no fiscal_year as outgoing_year.
-      2. Deactivates (is_active=0) ALL outgoing-year tracks so the new cycle
-         starts with a clean slate — every shift is available in the scheduler.
-         Archived tracks remain in the DB and are retrievable as prior-year
-         references via get_prior_track_from_db().
-      3. Writes active_bidding_year, prior_year, bidding_started to system_config.
+      1. Labels any tracks with no fiscal_year (or NULL) as outgoing_year.
+      2. Writes active_bidding_year, prior_year, bidding_started to system_config.
+
+    NOTE: Tracks are NOT deactivated. is_active=1 continues to mean "valid track."
+    Shift availability for the new cycle is kept clean by the hypothetical scheduler
+    filtering on fiscal_year = active_bidding_year, not by deactivating old tracks.
+    Prior-year tracks therefore stay visible to staff as their current schedule.
 
     Args:
         new_active_year: Label for the incoming bid year (e.g. 'FY27').
         outgoing_year:   Label for the year just completed (e.g. 'FY26').
 
     Returns:
-        dict with keys: success, labeled_count, archived_count, new_year, prior_year, message
+        dict with keys: success, labeled_count, new_year, prior_year, message
     """
     try:
         initialize_database()
@@ -103,7 +104,7 @@ def start_new_bidding_year(new_active_year: str, outgoing_year: str) -> dict:
         cursor = conn.cursor()
         now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
 
-        # 1. Label any active tracks that are still NULL / empty as outgoing_year
+        # 1. Label any tracks that are still NULL / empty as outgoing_year
         cursor.execute(
             "UPDATE tracks SET fiscal_year = ? "
             "WHERE is_active = 1 AND (fiscal_year IS NULL OR fiscal_year = '')",
@@ -111,15 +112,7 @@ def start_new_bidding_year(new_active_year: str, outgoing_year: str) -> dict:
         )
         labeled_count = cursor.rowcount
 
-        # 2. Deactivate ALL outgoing-year tracks — new cycle starts with zero active
-        #    tracks so the hypothetical scheduler shows all shifts as available.
-        cursor.execute(
-            "UPDATE tracks SET is_active = 0 WHERE is_active = 1 AND fiscal_year = ?",
-            (outgoing_year,)
-        )
-        archived_count = cursor.rowcount
-
-        # 3. Upsert system_config
+        # 2. Upsert system_config
         for key, val in [('active_bidding_year', new_active_year),
                          ('prior_year', outgoing_year),
                          ('bidding_started', now)]:
@@ -134,13 +127,11 @@ def start_new_bidding_year(new_active_year: str, outgoing_year: str) -> dict:
         return {
             'success': True,
             'labeled_count': labeled_count,
-            'archived_count': archived_count,
             'new_year': new_active_year,
             'prior_year': outgoing_year,
             'message': (
                 f"Bidding year set to {new_active_year}. "
-                f"{labeled_count} track(s) labeled as {outgoing_year}; "
-                f"{archived_count} archived. All shifts now available for {new_active_year} bidding."
+                f"{labeled_count} track(s) labeled as {outgoing_year}."
             )
         }
 
@@ -148,7 +139,6 @@ def start_new_bidding_year(new_active_year: str, outgoing_year: str) -> dict:
         return {
             'success': False,
             'labeled_count': 0,
-            'archived_count': 0,
             'new_year': new_active_year,
             'prior_year': outgoing_year,
             'message': f"Error: {e}"
@@ -205,6 +195,50 @@ def relabel_tracks(from_year: str, to_year: str, archive: bool = True) -> dict:
             'updated': 0,
             'from_year': from_year,
             'to_year': to_year,
+            'message': f"Error: {e}",
+        }
+
+
+def set_tracks_active(fiscal_year: str, active: bool = True) -> dict:
+    """
+    Set is_active for all tracks belonging to a fiscal year.
+
+    Use active=True  to reactivate tracks that were accidentally deactivated.
+    Use active=False to deactivate a year's tracks (rarely needed — the
+    hypothetical scheduler's fiscal_year filter is the preferred mechanism
+    for keeping prior-year shifts out of new-cycle availability).
+
+    Args:
+        fiscal_year: The year label to target (e.g. 'FY26').
+        active:      True = is_active 1, False = is_active 0.
+
+    Returns:
+        dict with keys: success, updated, fiscal_year, active, message
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE tracks SET is_active = ? WHERE fiscal_year = ?",
+            (1 if active else 0, fiscal_year),
+        )
+        updated = cursor.rowcount
+        conn.commit()
+        state = "activated" if active else "deactivated"
+        return {
+            'success': True,
+            'updated': updated,
+            'fiscal_year': fiscal_year,
+            'active': active,
+            'message': f"{updated} {fiscal_year} track(s) {state}.",
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'updated': 0,
+            'fiscal_year': fiscal_year,
+            'active': active,
             'message': f"Error: {e}",
         }
 
