@@ -366,7 +366,7 @@ class FiscalYearDisplay:
         tracks_data, staff_roles = self.load_tracks_from_db()
         
         if not tracks_data:
-            st.warning("No track data found in database. Please ensure tracks have been submitted and approved.")
+            st.warning("No track data found in database. Tracks may still be in progress — check back once staff have submitted their bids.")
             return
         
         # Initialize session state for filters
