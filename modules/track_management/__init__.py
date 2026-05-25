@@ -329,16 +329,21 @@ def display_staff_track_interface(
         st.info("🎯 **Navigated to Submission Tab** - You can now submit your track changes.")
        
     with tabs[0]:  # Current Track (active-year bid — or blank if not yet submitted)
-        if use_database_logic and has_db_track:
-            st.success(f"✅ Your **{_ACTIVE_YR} bid** is on file.")
-        elif use_database_logic and not has_db_track:
+        if use_database_logic and not has_db_track:
             st.warning(
                 f"⏳ You have not yet submitted a **{_ACTIVE_YR} bid**. "
                 f"Go to the **Track Modification** tab to build your track."
             )
 
+        # Pull bid metadata from db_result so display_track can show version / date / status
+        _sub_date  = db_result[1]['submission_date'] if has_db_track else None
+        _version   = db_result[1]['version']          if has_db_track else None
+        _approved  = db_result[1]['is_approved']      if has_db_track else None
+
         display_track(selected_staff, staff_track_df, days, shifts_per_pay_period, night_minimum,
-                      preassignments=staff_preassignments, track_source=track_source, weekend_minimum=weekend_minimum)
+                      preassignments=staff_preassignments, track_source=track_source,
+                      weekend_minimum=weekend_minimum,
+                      submission_date=_sub_date, version=_version, is_approved=_approved)
 
         # ── Prior year reference (collapsible) ──────────────────────────────
         if use_database_logic and has_prior_track:

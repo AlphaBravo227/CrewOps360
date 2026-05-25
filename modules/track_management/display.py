@@ -11,25 +11,34 @@ from ..shift_counter import count_shifts, count_shifts_by_pay_period
 from ..track_validator import check_rest_requirements, count_weekend_shifts
 from .utils import highlight_cells, create_block_day_headers, display_validation_metrics
 
-def display_track(selected_staff, staff_track, days, shifts_per_pay_period, night_minimum, preassignments=None, track_source="Excel File", weekend_minimum=0):
+def display_track(selected_staff, staff_track, days, shifts_per_pay_period, night_minimum,
+                  preassignments=None, track_source="Excel File", weekend_minimum=0,
+                  submission_date=None, version=None, is_approved=None):
     """
-    Display the current track for the selected staff member
-    FIXED: Proper AT counting in all validation functions
+    Display the current track for the selected staff member.
+    When submission metadata is provided (submission_date, version, is_approved) it is
+    shown as a compact caption beneath the subheader.
     """
     st.subheader(f"Current Track for {selected_staff}")
-    
+
     # Check if using Annual Rebid mode
     use_database_logic = st.session_state.get('track_source', "Annual Rebid") == "Annual Rebid"
-      
-    from ..track_source_consistency import display_for_current_track_tab
-    display_for_current_track_tab(selected_staff)
-    
+
     # Extract track data
     track_data = {day: staff_track.iloc[0][day] for day in days}
-    
-    # In Annual Rebid mode, only show Schedule Details
+
+    # In Annual Rebid mode show bid metadata + schedule grid only (no noisy mode banners)
     if use_database_logic:
-        # Show the schedule in 2-week blocks (A, B, C) only
+        if submission_date:
+            # Format the stored "YYYY-MM-DD HH:MM:SS" timestamp for display
+            try:
+                from datetime import datetime as _dt
+                _dt_obj = _dt.strptime(submission_date, "%Y-%m-%d %H:%M:%S")
+                _date_str = _dt_obj.strftime("%b %d, %Y %I:%M %p")
+            except Exception:
+                _date_str = submission_date
+            _approval = "✅ Approved" if is_approved else "⏳ Pending approval"
+            st.caption(f"Version {version}  ·  Submitted {_date_str}  ·  {_approval}")
         display_schedule_by_blocks(track_data, days, preassignments)
         return
     
@@ -301,10 +310,8 @@ def display_pay_period_breakdown(shifts_by_pay_period, shifts_per_pay_period):
 
 def display_schedule_by_blocks(track_data, days, preassignments=None):
     """
-    Display the schedule broken down by blocks
+    Display the schedule broken down by 2-week pay-period blocks (A, B, C).
     """
-    st.subheader("Schedule Details")
-    
     # Define the blocks
     blocks = ["A", "B", "C"]
     
