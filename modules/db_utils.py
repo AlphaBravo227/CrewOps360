@@ -155,6 +155,60 @@ def start_new_bidding_year(new_active_year: str, outgoing_year: str) -> dict:
         }
 
 
+def relabel_tracks(from_year: str, to_year: str, archive: bool = True) -> dict:
+    """
+    Relabel all tracks from one fiscal year to another and optionally archive them.
+
+    Use this as a one-time data correction when tracks were saved under the wrong
+    year label (e.g. tracks saved as 'FY25' that should be the 'FY26' reference).
+
+    Args:
+        from_year: The fiscal_year value to change (e.g. 'FY25').
+        to_year:   The new fiscal_year value to apply (e.g. 'FY26').
+        archive:   If True (default) also sets is_active=0 on those tracks so
+                   they are archived and all shifts are free for the new cycle.
+
+    Returns:
+        dict with keys: success, updated, from_year, to_year, message
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if archive:
+            cursor.execute(
+                "UPDATE tracks SET fiscal_year = ?, is_active = 0 WHERE fiscal_year = ?",
+                (to_year, from_year),
+            )
+        else:
+            cursor.execute(
+                "UPDATE tracks SET fiscal_year = ? WHERE fiscal_year = ?",
+                (to_year, from_year),
+            )
+
+        updated = cursor.rowcount
+        conn.commit()
+
+        archive_note = " and archived (is_active=0)" if archive else ""
+        return {
+            'success': True,
+            'updated': updated,
+            'from_year': from_year,
+            'to_year': to_year,
+            'message': f"{updated} track(s) relabeled from {from_year} to {to_year}{archive_note}.",
+        }
+
+    except Exception as e:
+        return {
+            'success': False,
+            'updated': 0,
+            'from_year': from_year,
+            'to_year': to_year,
+            'message': f"Error: {e}",
+        }
+
+
 def is_bidding_open() -> bool:
     """
     Return True if staff bidding is currently open, False if it has been closed by admin.

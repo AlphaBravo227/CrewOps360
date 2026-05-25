@@ -48,6 +48,7 @@ from modules.db_utils import (
     import_prior_tracks_from_dataframe,
     get_bidding_progress,
     start_new_bidding_year,
+    relabel_tracks,
     is_bidding_open,
     set_bidding_open,
 )
@@ -1592,6 +1593,62 @@ def run_clinical_track_hub():
                             st.error(f"❌ {_result['message']}")
                 else:
                     st.warning("Enter both year labels above to proceed.")
+
+            # ── Relabel / Archive Tracks ──────────────────────────────────────
+            st.markdown("---")
+            st.subheader("🏷️ Relabel Tracks")
+            st.markdown(
+                "Use this to correct tracks that were saved under the wrong fiscal year label. "
+                "For example, tracks labeled **FY25** that are actually the **FY26** working "
+                "schedules can be relabeled here so they appear as the correct prior-year "
+                "reference during FY27 bidding."
+            )
+            with st.expander("⚙️ Relabel Track Year", expanded=False):
+                _rl_col1, _rl_col2 = st.columns(2)
+                with _rl_col1:
+                    _rl_from = st.text_input(
+                        "Current label (the wrong one)",
+                        placeholder="e.g. FY25",
+                        key="relabel_from_input",
+                    )
+                with _rl_col2:
+                    _rl_to = st.text_input(
+                        "New label (the correct one)",
+                        placeholder="e.g. FY26",
+                        key="relabel_to_input",
+                    )
+                _rl_archive = st.checkbox(
+                    "Also archive these tracks (set is_active=0)",
+                    value=True,
+                    key="relabel_archive_check",
+                    help=(
+                        "Recommended: archive the relabeled tracks so they don't count as "
+                        "active bids in the new cycle — they will still appear as prior-year "
+                        "reference schedules for each staff member."
+                    ),
+                )
+                if _rl_from and _rl_to:
+                    if _rl_from.strip().upper() == _rl_to.strip().upper():
+                        st.warning("Source and target labels are the same — nothing to do.")
+                    else:
+                        if st.button(
+                            f"Relabel {_rl_from.strip()} → {_rl_to.strip()}",
+                            key="relabel_tracks_btn",
+                            type="primary",
+                            use_container_width=True,
+                        ):
+                            _rl_result = relabel_tracks(
+                                from_year=_rl_from.strip(),
+                                to_year=_rl_to.strip(),
+                                archive=_rl_archive,
+                            )
+                            if _rl_result['success']:
+                                st.success(f"✅ {_rl_result['message']}")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ {_rl_result['message']}")
+                else:
+                    st.caption("Enter both labels above to enable the button.")
 
             st.header("Enhanced Validation Rules")
             st.markdown("""
