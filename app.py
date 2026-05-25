@@ -1584,7 +1584,8 @@ def run_clinical_track_hub():
                         if _result['success']:
                             st.success(
                                 f"✅ **{_new_year_input} bidding is now open!** "
-                                f"{_result['labeled_count']} track(s) labeled as {_outgoing_input}."
+                                f"{_result['archived_count']} {_outgoing_input} track(s) archived — "
+                                f"all shifts are now available for {_new_year_input} bidding."
                             )
                             st.rerun()
                         else:

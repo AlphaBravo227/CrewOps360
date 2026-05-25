@@ -175,11 +175,26 @@ def get_staff_on_shift_from_database(day, shift_type, preferences_df, staff_col_
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        cursor.execute("""
-            SELECT staff_name, track_data 
-            FROM tracks 
-            WHERE is_active = 1
-        """)
+        # Only load tracks for the active bidding year so archived prior-year
+        # tracks don't make every shift appear taken in a fresh bidding cycle.
+        cursor.execute(
+            "SELECT value FROM system_config WHERE key = 'active_bidding_year'"
+        )
+        yr_row = cursor.fetchone()
+        active_fy = yr_row[0] if yr_row else None
+
+        if active_fy:
+            cursor.execute("""
+                SELECT staff_name, track_data
+                FROM tracks
+                WHERE is_active = 1 AND fiscal_year = ?
+            """, (active_fy,))
+        else:
+            cursor.execute("""
+                SELECT staff_name, track_data
+                FROM tracks
+                WHERE is_active = 1
+            """)
         
         results = cursor.fetchall()
         conn.close()

@@ -83,16 +83,19 @@ def start_new_bidding_year(new_active_year: str, outgoing_year: str) -> dict:
     Transition the system to a new bidding year.
 
     Steps:
-      1. Labels any tracks that have no fiscal_year (or NULL) with outgoing_year.
-      2. Writes active_bidding_year and prior_year to system_config.
-      3. Returns a summary dict.
+      1. Labels any active tracks with no fiscal_year as outgoing_year.
+      2. Deactivates (is_active=0) ALL outgoing-year tracks so the new cycle
+         starts with a clean slate — every shift is available in the scheduler.
+         Archived tracks remain in the DB and are retrievable as prior-year
+         references via get_prior_track_from_db().
+      3. Writes active_bidding_year, prior_year, bidding_started to system_config.
 
     Args:
-        new_active_year: Label for the incoming bid year (e.g. 'FY26').
-        outgoing_year:   Label for the year just completed (e.g. 'FY25').
+        new_active_year: Label for the incoming bid year (e.g. 'FY27').
+        outgoing_year:   Label for the year just completed (e.g. 'FY26').
 
     Returns:
-        dict with keys: success, labeled_count, new_year, prior_year, message
+        dict with keys: success, labeled_count, archived_count, new_year, prior_year, message
     """
     try:
         initialize_database()
@@ -108,7 +111,15 @@ def start_new_bidding_year(new_active_year: str, outgoing_year: str) -> dict:
         )
         labeled_count = cursor.rowcount
 
-        # 2. Upsert system_config
+        # 2. Deactivate ALL outgoing-year tracks — new cycle starts with zero active
+        #    tracks so the hypothetical scheduler shows all shifts as available.
+        cursor.execute(
+            "UPDATE tracks SET is_active = 0 WHERE is_active = 1 AND fiscal_year = ?",
+            (outgoing_year,)
+        )
+        archived_count = cursor.rowcount
+
+        # 3. Upsert system_config
         for key, val in [('active_bidding_year', new_active_year),
                          ('prior_year', outgoing_year),
                          ('bidding_started', now)]:
@@ -123,11 +134,13 @@ def start_new_bidding_year(new_active_year: str, outgoing_year: str) -> dict:
         return {
             'success': True,
             'labeled_count': labeled_count,
+            'archived_count': archived_count,
             'new_year': new_active_year,
             'prior_year': outgoing_year,
             'message': (
                 f"Bidding year set to {new_active_year}. "
-                f"{labeled_count} existing track(s) labeled as {outgoing_year}."
+                f"{labeled_count} track(s) labeled as {outgoing_year}; "
+                f"{archived_count} archived. All shifts now available for {new_active_year} bidding."
             )
         }
 
@@ -135,6 +148,7 @@ def start_new_bidding_year(new_active_year: str, outgoing_year: str) -> dict:
         return {
             'success': False,
             'labeled_count': 0,
+            'archived_count': 0,
             'new_year': new_active_year,
             'prior_year': outgoing_year,
             'message': f"Error: {e}"
@@ -909,6 +923,10 @@ def get_prior_track_from_db(staff_name, fiscal_year=None):
     """
     Retrieve a staff member's prior-year (reference) track.
 
+    Unlike get_track_from_db(), this does NOT filter by is_active because
+    archived (prior-year) tracks are intentionally set to is_active=0 when
+    start_new_bidding_year() is called.  We look up by fiscal_year only.
+
     Args:
         staff_name (str): Staff member name.
         fiscal_year (str): Prior year label.  Defaults to prior year from config.
@@ -918,7 +936,51 @@ def get_prior_track_from_db(staff_name, fiscal_year=None):
                track_dict keys: track_id, track_data, submission_date, fiscal_year, metadata
     """
     fy = fiscal_year if fiscal_year is not None else get_prior_year()
-    return get_track_from_db(staff_name, fiscal_year=fy)
+
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT id, track_data, submission_date, is_approved, version,
+                   original_role, effective_role, track_source,
+                   has_preassignments, preassignment_count
+            FROM tracks
+            WHERE staff_name = ? AND fiscal_year = ?
+            ORDER BY version DESC
+            LIMIT 1
+        """, (staff_name, fy))
+        result = cursor.fetchone()
+
+        if result:
+            (track_id, track_json, submission_date, is_approved, version,
+             original_role, effective_role, track_source,
+             has_preassignments, preassignment_count) = result
+            try:
+                track_data = json.loads(track_json)
+                return (True, {
+                    'track_id': track_id,
+                    'track_data': track_data,
+                    'submission_date': submission_date,
+                    'is_approved': is_approved == 1,
+                    'version': version,
+                    'fiscal_year': fy,
+                    'metadata': {
+                        'original_role': original_role,
+                        'effective_role': effective_role,
+                        'track_source': track_source,
+                        'has_preassignments': has_preassignments == 1,
+                        'preassignment_count': preassignment_count,
+                    }
+                })
+            except json.JSONDecodeError:
+                return (False, f"Error decoding prior track data for {staff_name}")
+        else:
+            return (False, f"No {fy} track found for {staff_name}")
+
+    except Exception as e:
+        return (False, f"Error retrieving prior track: {str(e)}")
 
 
 def get_bidding_progress():
