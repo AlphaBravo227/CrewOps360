@@ -834,7 +834,6 @@ def get_track_from_db(staff_name, fiscal_year=None):
                 print(f"JSON decode error for {staff_name}: {str(e)}")
                 return (False, f"Error decoding track data for {staff_name}")
         else:
-            print(f"No active track found for {staff_name}")
             return (False, f"No active track found for {staff_name}")
     
     except Exception as e:
@@ -936,16 +935,18 @@ def get_prior_track_from_db(staff_name, fiscal_year=None):
                track_dict keys: track_id, track_data, submission_date, fiscal_year, metadata
     """
     fy = fiscal_year if fiscal_year is not None else get_prior_year()
+    active_fy = get_active_bidding_year()
 
     try:
         initialize_database()
         conn = get_db_connection()
         cursor = conn.cursor()
 
+        # ── Primary lookup: exact prior-year label ────────────────────────────
         cursor.execute("""
             SELECT id, track_data, submission_date, is_approved, version,
                    original_role, effective_role, track_source,
-                   has_preassignments, preassignment_count
+                   has_preassignments, preassignment_count, fiscal_year
             FROM tracks
             WHERE staff_name = ? AND fiscal_year = ?
             ORDER BY version DESC
@@ -953,10 +954,25 @@ def get_prior_track_from_db(staff_name, fiscal_year=None):
         """, (staff_name, fy))
         result = cursor.fetchone()
 
+        # ── Fallback: most recent track that isn't the current active year ────
+        # Handles the case where a staff member's track was saved under an older
+        # label (e.g. FY25) but prior_year in config is now FY26.
+        if not result:
+            cursor.execute("""
+                SELECT id, track_data, submission_date, is_approved, version,
+                       original_role, effective_role, track_source,
+                       has_preassignments, preassignment_count, fiscal_year
+                FROM tracks
+                WHERE staff_name = ? AND (fiscal_year != ? OR fiscal_year IS NULL)
+                ORDER BY submission_date DESC
+                LIMIT 1
+            """, (staff_name, active_fy))
+            result = cursor.fetchone()
+
         if result:
             (track_id, track_json, submission_date, is_approved, version,
              original_role, effective_role, track_source,
-             has_preassignments, preassignment_count) = result
+             has_preassignments, preassignment_count, actual_fy) = result
             try:
                 track_data = json.loads(track_json)
                 return (True, {
@@ -965,7 +981,7 @@ def get_prior_track_from_db(staff_name, fiscal_year=None):
                     'submission_date': submission_date,
                     'is_approved': is_approved == 1,
                     'version': version,
-                    'fiscal_year': fy,
+                    'fiscal_year': actual_fy or fy,   # use the real label from the record
                     'metadata': {
                         'original_role': original_role,
                         'effective_role': effective_role,
@@ -977,7 +993,7 @@ def get_prior_track_from_db(staff_name, fiscal_year=None):
             except json.JSONDecodeError:
                 return (False, f"Error decoding prior track data for {staff_name}")
         else:
-            return (False, f"No {fy} track found for {staff_name}")
+            return (False, f"No prior track found for {staff_name}")
 
     except Exception as e:
         return (False, f"Error retrieving prior track: {str(e)}")

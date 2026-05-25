@@ -346,12 +346,13 @@ def display_staff_track_interface(
             if has_prior_track:
                 prior_track_data_ref = prior_result[1]['track_data']
                 prior_sub_date       = prior_result[1].get('submission_date', '')
+                _prior_fy            = prior_result[1].get('fiscal_year', _PRIOR_YR)
                 with st.expander(
-                    f"📅 {_PRIOR_YR} Reference Schedule (submitted {prior_sub_date})",
+                    f"📅 {_prior_fy} Reference Schedule (submitted {prior_sub_date})",
                     expanded=False,
                 ):
                     st.caption(
-                        f"This is the schedule you worked in **{_PRIOR_YR}**. "
+                        f"This is the schedule you worked in **{_prior_fy}**. "
                         f"Use it as a reference when building your {_ACTIVE_YR} bid."
                     )
                     prior_df = pd.DataFrame([{day: prior_track_data_ref.get(day, "") for day in days}])
@@ -359,9 +360,9 @@ def display_staff_track_interface(
                     display_track(
                         selected_staff, prior_df, days,
                         shifts_per_pay_period, night_minimum,
-                        preassignments={}, track_source=f"{_PRIOR_YR} Reference",
+                        preassignments={}, track_source=f"{_prior_fy} Reference",
                         weekend_minimum=weekend_minimum,
-                        heading=f"{_PRIOR_YR} Schedule — {selected_staff}",
+                        heading=f"{_prior_fy} Schedule — {selected_staff}",
                     )
 
         elif use_database_logic and not has_db_track:
@@ -374,14 +375,15 @@ def display_staff_track_interface(
                 # Prior year IS their currently-worked schedule — show it prominently
                 prior_track_data_ref = prior_result[1]['track_data']
                 prior_sub_date       = prior_result[1].get('submission_date', '')
+                _prior_fy            = prior_result[1].get('fiscal_year', _PRIOR_YR)
                 prior_df = pd.DataFrame([{day: prior_track_data_ref.get(day, "") for day in days}])
                 prior_df['STAFF NAME'] = selected_staff
                 display_track(
                     selected_staff, prior_df, days,
                     shifts_per_pay_period, night_minimum,
-                    preassignments={}, track_source=f"{_PRIOR_YR} Reference",
+                    preassignments={}, track_source=f"{_prior_fy} Reference",
                     weekend_minimum=weekend_minimum,
-                    heading=f"Active {_PRIOR_YR} Schedule — {selected_staff}",
+                    heading=f"Active {_prior_fy} Schedule — {selected_staff}",
                 )
     
     with tabs[1]:  # Preferences
