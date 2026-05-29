@@ -62,53 +62,104 @@ class FiscalYearDisplay:
         }
     
     def load_tracks_from_db(self):
-        """Load tracks from the existing medflight_tracks.db with proper role support"""
+        """Load tracks from the existing medflight_tracks.db with proper role support.
+
+        Uses the same "best available" strategy as generate_tracks_dataframe_from_db()
+        so that the Excel export and the in-app Current Track display always show
+        identical data:
+
+          1. Prefer the prior year's tracks (read from system_config), which is
+             what current_tracks_df in app.py is built from.
+          2. For staff who have no active track in that year, fall back to their
+             most-recently-submitted active track (any year).
+
+        If the active bidding year already has submitted tracks (mid-cycle), those
+        are shown instead of the prior year tracks.
+        """
         tracks_data = {}
-        staff_roles = {}
-        
+        staff_roles  = {}
+
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
-            # Get the latest active tracks for each staff member with role information
+
+            # ── Read year config from system_config ───────────────────────────
+            active_fy = 'FY26'
+            prior_fy  = 'FY25'
+            try:
+                cursor.execute(
+                    "SELECT key, value FROM system_config "
+                    "WHERE key IN ('active_bidding_year', 'prior_year')"
+                )
+                for key, val in cursor.fetchall():
+                    if val:
+                        if key == 'active_bidding_year':
+                            active_fy = val
+                        elif key == 'prior_year':
+                            prior_fy = val
+            except Exception:
+                pass
+
+            # ── Step 1: preferred year — active bids first, then prior year ───
+            # Try the active bidding year (populated once staff start submitting FY bids).
+            cursor.execute("""
+                SELECT staff_name, track_data, effective_role, submission_date
+                FROM tracks
+                WHERE is_active = 1 AND fiscal_year = ?
+                ORDER BY staff_name, submission_date DESC
+            """, (active_fy,))
+            preferred: dict = {}   # {staff_name: (track_data_str, effective_role)}
+            for staff, tdata, role, _ in cursor.fetchall():
+                if staff not in preferred:
+                    preferred[staff] = (tdata, role)
+
+            # If no active-year bids yet, prefer the prior year instead.
+            if not preferred:
+                cursor.execute("""
+                    SELECT staff_name, track_data, effective_role, submission_date
+                    FROM tracks
+                    WHERE is_active = 1 AND fiscal_year = ?
+                    ORDER BY staff_name, submission_date DESC
+                """, (prior_fy,))
+                for staff, tdata, role, _ in cursor.fetchall():
+                    if staff not in preferred:
+                        preferred[staff] = (tdata, role)
+
+            # ── Step 2: fallback — latest active track (any year) ─────────────
+            # Fills in staff who don't appear in either preferred year.
             cursor.execute("""
                 SELECT staff_name, track_data, effective_role, submission_date
                 FROM tracks
                 WHERE is_active = 1
                 ORDER BY staff_name, submission_date DESC
             """)
-            
-            results = cursor.fetchall()
-            processed_staff = set()
-            
-            for staff_name, track_data_str, effective_role, submission_date in results:
-                # Only take the latest entry for each staff member
-                if staff_name not in processed_staff:
-                    try:
-                        # Parse the JSON track data
-                        track_data = json.loads(track_data_str)
-                        tracks_data[staff_name] = track_data
-                        
-                        # Use the effective_role from database, with fallback
-                        role = self.normalize_role(effective_role)
-                        staff_roles[staff_name] = role
-                        
-                        processed_staff.add(staff_name)
-                        
-                    except json.JSONDecodeError:
-                        st.warning(f"Error parsing track data for {staff_name}")
-                        continue
-            
+            fallback: dict = {}
+            for staff, tdata, role, _ in cursor.fetchall():
+                if staff not in fallback:
+                    fallback[staff] = (tdata, role)
+
+            # Merge: preferred wins; fallback fills gaps
+            merged = {**fallback, **preferred}
+
             conn.close()
-            
+
+            for staff_name, (track_data_str, effective_role) in sorted(merged.items()):
+                try:
+                    track_data = json.loads(track_data_str)
+                    tracks_data[staff_name] = track_data
+                    staff_roles[staff_name] = self.normalize_role(effective_role)
+                except json.JSONDecodeError:
+                    st.warning(f"Error parsing track data for {staff_name}")
+                    continue
+
             if not tracks_data:
                 st.info("No active track data found in database.")
-                
+
         except sqlite3.Error as e:
             st.error(f"Database error loading tracks: {str(e)}")
         except Exception as e:
             st.error(f"Error loading tracks from database: {str(e)}")
-        
+
         return tracks_data, staff_roles
     
     def normalize_role(self, role):
@@ -315,7 +366,7 @@ class FiscalYearDisplay:
         tracks_data, staff_roles = self.load_tracks_from_db()
         
         if not tracks_data:
-            st.warning("No track data found in database. Please ensure tracks have been submitted and approved.")
+            st.warning("No track data found in database. Tracks may still be in progress — check back once staff have submitted their bids.")
             return
         
         # Initialize session state for filters

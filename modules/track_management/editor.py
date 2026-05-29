@@ -29,7 +29,8 @@ def modify_track_enhanced(
     preassignments=None,
     is_new_track=False,
     weekend_minimum=0,
-    requirements_df=None
+    requirements_df=None,
+    bidding_open=True,
 ):
     """
     Streamlined track modification with continuous validation and enhanced hypothetical scheduler display
@@ -200,15 +201,19 @@ def modify_track_enhanced(
     
     # Display track modification interface WITH enhanced hypothetical scheduler display
     display_track_modification_interface_enhanced(
-        selected_staff, options_by_day, reference_track, days, 
+        selected_staff, options_by_day, reference_track, days,
         preassignments, use_database_logic, has_db_track, staff_role, weekend_group,
-        day_assignments, night_assignments, assignment_details
+        day_assignments, night_assignments, assignment_details,
+        bidding_open=bidding_open,
     )
-    
-    # Final validation with proper navigation and clear description
+
+    # Final validation — hidden when bidding is closed (no saving allowed)
+    if not bidding_open:
+        return  # read-only view — no validation / submission buttons shown
+
     st.markdown("### 📊 Final Track Validation")
     st.info("**Purpose:** This performs a comprehensive validation of your entire 6-week track against all requirements including pay periods, weekend groups, consecutive shifts, and rest requirements. Use this before going to the Submission tab.")
-    
+
     if st.button("Validate Complete Track", key="final_validation", use_container_width=True, type="primary"):
         complete_track = build_validation_track(selected_staff, days, preassignments)
         final_valid = display_comprehensive_validation(
@@ -224,9 +229,10 @@ def modify_track_enhanced(
         else:
             st.error("Your track does not meet all requirements. Please review the issues above and make adjustments.")
 
-def display_track_modification_interface_enhanced(selected_staff, options_by_day, reference_track, days, preassignments, use_database_logic, has_db_track, staff_role, weekend_group=None, day_assignments=None, night_assignments=None, assignment_details=None):
+def display_track_modification_interface_enhanced(selected_staff, options_by_day, reference_track, days, preassignments, use_database_logic, has_db_track, staff_role, weekend_group=None, day_assignments=None, night_assignments=None, assignment_details=None, bidding_open=True):
     """
-    UPDATED: Display the track modification interface with enhanced hypothetical scheduler display and fixed weekend group highlighting
+    UPDATED: Display the track modification interface with enhanced hypothetical scheduler display and fixed weekend group highlighting.
+    When bidding_open=False the grid renders read-only: radios are disabled and block-save buttons are hidden.
     """
     
     # Get weekend group highlighting information with FIXED mapping
@@ -454,12 +460,13 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                             # Default selection using enhanced logic
                             default_idx = get_default_selection_index(available_options, current_value)
                             
-                            # Create radio selector with unique key that causes automatic rerun when changed
+                            # Create radio selector — disabled when bidding is closed (view-only)
                             selection = st.radio(
                                 f"Select for {day}",
                                 options=available_options,
                                 index=default_idx,
                                 horizontal=True,
+                                disabled=not bidding_open,
                                 key=f"select_{selected_staff}_{day}".replace(" ", "_").replace("/", "_")
                             )
                             
@@ -566,18 +573,20 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                     """, unsafe_allow_html=True)
                 
                 # Add Validate Block button between Week 1 and Week 2 of each block
+                # Hidden when bidding is closed (read-only mode)
                 if week_idx == 0:  # After displaying Week 1, before Week 2
                     st.markdown("---")
-                    validate_col1, validate_col2, validate_col3 = st.columns([1, 2, 1])
-                    with validate_col2:
-                        if st.button(f"🔍 Validate and Save Block {blocks[block_idx]}", 
-                                   key=f"validate_block_{blocks[block_idx]}_{selected_staff}", 
-                                   use_container_width=True):
-                            # Validate just this block's portion of the track
-                            block_track = build_validation_track(selected_staff, block_days, preassignments)
-                            st.success(f"Block {blocks[block_idx]} validation complete! Check the dashboard above for results.")
-                            if st.session_state.get('track_valid', False):
-                                st.balloons()
+                    if bidding_open:
+                        validate_col1, validate_col2, validate_col3 = st.columns([1, 2, 1])
+                        with validate_col2:
+                            if st.button(f"🔍 Validate and Save Block {blocks[block_idx]}",
+                                       key=f"validate_block_{blocks[block_idx]}_{selected_staff}",
+                                       use_container_width=True):
+                                # Validate just this block's portion of the track
+                                block_track = build_validation_track(selected_staff, block_days, preassignments)
+                                st.success(f"Block {blocks[block_idx]} validation complete! Check the dashboard above for results.")
+                                if st.session_state.get('track_valid', False):
+                                    st.balloons()
                     st.markdown("---")
                     
                 st.markdown("---")  # Separator between weeks

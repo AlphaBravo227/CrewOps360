@@ -1,7 +1,8 @@
-# modules/db_utils.py - UPDATED WITH EFFECTIVE ROLE SUPPORT + verify_database_integrity
+# modules/db_utils.py - UPDATED WITH EFFECTIVE ROLE SUPPORT + verify_database_integrity + FY26 BIDDING
 """
 Enhanced database utilities with effective role tracking
 UPDATED to include staff role metadata in track submissions + missing verify_database_integrity function
+UPDATED: Annual bidding support - fiscal_year column, system_config table, dynamic year management
 """
 
 import sqlite3
@@ -16,8 +17,288 @@ import pytz
 # Eastern timezone for user-facing timestamps
 _eastern_tz = pytz.timezone('America/New_York')
 
+# ── Fiscal Year Fallback Constants ─────────────────────────────────────────────
+# These are only used when no system_config is present in the DB.
+# At runtime always call get_active_bidding_year() / get_prior_year() instead
+# of reading these constants directly — the DB config takes precedence.
+_DEFAULT_ACTIVE_BIDDING_YEAR = 'FY26'
+_DEFAULT_PRIOR_YEAR = 'FY25'
+
+# Keep module-level aliases so existing code that imported the old names still works.
+ACTIVE_BIDDING_YEAR = _DEFAULT_ACTIVE_BIDDING_YEAR
+PRIOR_YEAR = _DEFAULT_PRIOR_YEAR
+
+# The 42 day-labels that define one track cycle (order must match Excel columns)
+TRACK_DAY_LABELS = [
+    'Sun A 1', 'Mon A 1', 'Tue A 1', 'Wed A 1', 'Thu A 1', 'Fri A 1', 'Sat A 1',
+    'Sun A 2', 'Mon A 2', 'Tue A 2', 'Wed A 2', 'Thu A 2', 'Fri A 2', 'Sat A 2',
+    'Sun B 3', 'Mon B 3', 'Tue B 3', 'Wed B 3', 'Thu B 3', 'Fri B 3', 'Sat B 3',
+    'Sun B 4', 'Mon B 4', 'Tue B 4', 'Wed B 4', 'Thu B 4', 'Fri B 4', 'Sat B 4',
+    'Sun C 5', 'Mon C 5', 'Tue C 5', 'Wed C 5', 'Thu C 5', 'Fri C 5', 'Sat C 5',
+    'Sun C 6', 'Mon C 6', 'Tue C 6', 'Wed C 6', 'Thu C 6', 'Fri C 6', 'Sat C 6',
+]
+
 # Dictionary to store thread-local connections
 thread_local_connections = {}
+
+
+# ── System Config (dynamic bidding year) ───────────────────────────────────────
+
+def get_active_bidding_year() -> str:
+    """
+    Return the currently active bidding year label from DB config,
+    falling back to the hardcoded default if not set.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT value FROM system_config WHERE key = 'active_bidding_year'"
+        )
+        row = cursor.fetchone()
+        return row[0] if row and row[0] else _DEFAULT_ACTIVE_BIDDING_YEAR
+    except Exception:
+        return _DEFAULT_ACTIVE_BIDDING_YEAR
+
+
+def get_prior_year() -> str:
+    """
+    Return the prior (reference) year label from DB config,
+    falling back to the hardcoded default.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT value FROM system_config WHERE key = 'prior_year'"
+        )
+        row = cursor.fetchone()
+        return row[0] if row and row[0] else _DEFAULT_PRIOR_YEAR
+    except Exception:
+        return _DEFAULT_PRIOR_YEAR
+
+
+def start_new_bidding_year(new_active_year: str, outgoing_year: str) -> dict:
+    """
+    Transition the system to a new bidding year.
+
+    Steps:
+      1. Labels any tracks with no fiscal_year (or NULL) as outgoing_year.
+      2. Writes active_bidding_year, prior_year, bidding_started to system_config.
+
+    NOTE: Tracks are NOT deactivated. is_active=1 continues to mean "valid track."
+    Shift availability for the new cycle is kept clean by the hypothetical scheduler
+    filtering on fiscal_year = active_bidding_year, not by deactivating old tracks.
+    Prior-year tracks therefore stay visible to staff as their current schedule.
+
+    Args:
+        new_active_year: Label for the incoming bid year (e.g. 'FY27').
+        outgoing_year:   Label for the year just completed (e.g. 'FY26').
+
+    Returns:
+        dict with keys: success, labeled_count, new_year, prior_year, message
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+        # 1. Label any tracks that are still NULL / empty as outgoing_year
+        cursor.execute(
+            "UPDATE tracks SET fiscal_year = ? "
+            "WHERE is_active = 1 AND (fiscal_year IS NULL OR fiscal_year = '')",
+            (outgoing_year,)
+        )
+        labeled_count = cursor.rowcount
+
+        # 2. Upsert system_config
+        for key, val in [('active_bidding_year', new_active_year),
+                         ('prior_year', outgoing_year),
+                         ('bidding_started', now)]:
+            cursor.execute(
+                "INSERT INTO system_config (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (key, val, now)
+            )
+
+        conn.commit()
+
+        return {
+            'success': True,
+            'labeled_count': labeled_count,
+            'new_year': new_active_year,
+            'prior_year': outgoing_year,
+            'message': (
+                f"Bidding year set to {new_active_year}. "
+                f"{labeled_count} track(s) labeled as {outgoing_year}."
+            )
+        }
+
+    except Exception as e:
+        return {
+            'success': False,
+            'labeled_count': 0,
+            'new_year': new_active_year,
+            'prior_year': outgoing_year,
+            'message': f"Error: {e}"
+        }
+
+
+def relabel_tracks(from_year: str, to_year: str, archive: bool = True) -> dict:
+    """
+    Relabel all tracks from one fiscal year to another and optionally archive them.
+
+    Use this as a one-time data correction when tracks were saved under the wrong
+    year label (e.g. tracks saved as 'FY25' that should be the 'FY26' reference).
+
+    Args:
+        from_year: The fiscal_year value to change (e.g. 'FY25').
+        to_year:   The new fiscal_year value to apply (e.g. 'FY26').
+        archive:   If True (default) also sets is_active=0 on those tracks so
+                   they are archived and all shifts are free for the new cycle.
+
+    Returns:
+        dict with keys: success, updated, from_year, to_year, message
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if archive:
+            cursor.execute(
+                "UPDATE tracks SET fiscal_year = ?, is_active = 0 WHERE fiscal_year = ?",
+                (to_year, from_year),
+            )
+        else:
+            cursor.execute(
+                "UPDATE tracks SET fiscal_year = ? WHERE fiscal_year = ?",
+                (to_year, from_year),
+            )
+
+        updated = cursor.rowcount
+        conn.commit()
+
+        archive_note = " and archived (is_active=0)" if archive else ""
+        return {
+            'success': True,
+            'updated': updated,
+            'from_year': from_year,
+            'to_year': to_year,
+            'message': f"{updated} track(s) relabeled from {from_year} to {to_year}{archive_note}.",
+        }
+
+    except Exception as e:
+        return {
+            'success': False,
+            'updated': 0,
+            'from_year': from_year,
+            'to_year': to_year,
+            'message': f"Error: {e}",
+        }
+
+
+def set_tracks_active(fiscal_year: str, active: bool = True) -> dict:
+    """
+    Set is_active for all tracks belonging to a fiscal year.
+
+    Use active=True  to reactivate tracks that were accidentally deactivated.
+    Use active=False to deactivate a year's tracks (rarely needed — the
+    hypothetical scheduler's fiscal_year filter is the preferred mechanism
+    for keeping prior-year shifts out of new-cycle availability).
+
+    Args:
+        fiscal_year: The year label to target (e.g. 'FY26').
+        active:      True = is_active 1, False = is_active 0.
+
+    Returns:
+        dict with keys: success, updated, fiscal_year, active, message
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE tracks SET is_active = ? WHERE fiscal_year = ?",
+            (1 if active else 0, fiscal_year),
+        )
+        updated = cursor.rowcount
+        conn.commit()
+        state = "activated" if active else "deactivated"
+        return {
+            'success': True,
+            'updated': updated,
+            'fiscal_year': fiscal_year,
+            'active': active,
+            'message': f"{updated} {fiscal_year} track(s) {state}.",
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'updated': 0,
+            'fiscal_year': fiscal_year,
+            'active': active,
+            'message': f"Error: {e}",
+        }
+
+
+def is_bidding_open() -> bool:
+    """
+    Return True if staff bidding is currently open, False if it has been closed by admin.
+    Defaults to True (open) when no config entry exists.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT value FROM system_config WHERE key = 'bidding_open'"
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return True  # default: open
+        return row[0] == '1'
+    except Exception:
+        return True  # fail-safe: treat as open
+
+
+def set_bidding_open(open_state: bool) -> dict:
+    """
+    Open or close staff bidding.
+
+    Args:
+        open_state (bool): True = open bidding, False = close bidding.
+
+    Returns:
+        dict with keys: success, bidding_open, message
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+        val = '1' if open_state else '0'
+        cursor.execute(
+            "INSERT INTO system_config (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            ('bidding_open', val, now)
+        )
+        conn.commit()
+        state_str = "open" if open_state else "closed"
+        return {
+            'success': True,
+            'bidding_open': open_state,
+            'message': f"Bidding is now {state_str}."
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'bidding_open': open_state,
+            'message': f"Error updating bidding state: {e}"
+        }
+
+
+# ── END System Config ──────────────────────────────────────────────────────────
 
 def get_db_connection():
     """
@@ -143,7 +424,7 @@ def initialize_database():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Create enhanced tracks table with role tracking
+        # Create enhanced tracks table with role tracking and fiscal year
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS tracks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -159,7 +440,8 @@ def initialize_database():
             effective_role TEXT,
             track_source TEXT,
             has_preassignments INTEGER DEFAULT 0,
-            preassignment_count INTEGER DEFAULT 0
+            preassignment_count INTEGER DEFAULT 0,
+            fiscal_year TEXT DEFAULT 'FY25'
         )
         ''')
         
@@ -229,7 +511,7 @@ def initialize_database():
         # Check if we need to add the new columns to existing tracks table
         cursor.execute("PRAGMA table_info(tracks)")
         columns = [column[1] for column in cursor.fetchall()]
-        
+
         # Add new columns if they don't exist
         if 'original_role' not in columns:
             cursor.execute('ALTER TABLE tracks ADD COLUMN original_role TEXT')
@@ -241,6 +523,42 @@ def initialize_database():
             cursor.execute('ALTER TABLE tracks ADD COLUMN has_preassignments INTEGER DEFAULT 0')
         if 'preassignment_count' not in columns:
             cursor.execute('ALTER TABLE tracks ADD COLUMN preassignment_count INTEGER DEFAULT 0')
+        if 'fiscal_year' not in columns:
+            # Add fiscal_year column — back-fill with current prior_year from config (or default)
+            _fy_fill = _DEFAULT_PRIOR_YEAR
+            try:
+                cursor.execute("SELECT value FROM system_config WHERE key='prior_year'")
+                _r = cursor.fetchone()
+                if _r and _r[0]:
+                    _fy_fill = _r[0]
+            except Exception:
+                pass
+            cursor.execute(f"ALTER TABLE tracks ADD COLUMN fiscal_year TEXT DEFAULT '{_fy_fill}'")
+            cursor.execute("UPDATE tracks SET fiscal_year = ? WHERE fiscal_year IS NULL", (_fy_fill,))
+
+        # System configuration table (bidding year, etc.)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS system_config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        ''')
+
+        # Seed default config rows if they don't exist yet
+        _now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute(
+            "INSERT OR IGNORE INTO system_config (key, value, updated_at) VALUES (?, ?, ?)",
+            ('active_bidding_year', _DEFAULT_ACTIVE_BIDDING_YEAR, _now)
+        )
+        cursor.execute(
+            "INSERT OR IGNORE INTO system_config (key, value, updated_at) VALUES (?, ?, ?)",
+            ('prior_year', _DEFAULT_PRIOR_YEAR, _now)
+        )
+        cursor.execute(
+            "INSERT OR IGNORE INTO system_config (key, value, updated_at) VALUES (?, ?, ?)",
+            ('bidding_open', '1', _now)  # default: bidding is open
+        )
 
         # NEW: Create summer_leave_requests table for vacation time selections
         cursor.execute('''
@@ -377,19 +695,22 @@ def get_track_swaps_from_db(limit=50):
         print(error_message)
         return (False, error_message)
 
-def save_track_to_db(staff_name, track_data, is_new=False):
+def save_track_to_db(staff_name, track_data, is_new=False, fiscal_year=None):
     """
     Save track data to SQLite database
-    UPDATED: Enhanced to handle role metadata when available
-    
+    UPDATED: Enhanced to handle role metadata when available + fiscal year tagging
+
     Args:
         staff_name (str): Name of the staff member
         track_data (dict or enhanced_dict): Dictionary of day -> assignment or enhanced structure
         is_new (bool): Whether this is a new track or an update
-        
+        fiscal_year (str): Fiscal year label, e.g. 'FY26'. Defaults to active bidding year from config.
+
     Returns:
         tuple: (success, message, track_id)
     """
+    if fiscal_year is None:
+        fiscal_year = get_active_bidding_year()
     try:
         # Initialize database if needed
         initialize_database()
@@ -413,10 +734,10 @@ def save_track_to_db(staff_name, track_data, is_new=False):
         # Get current date and time
         submission_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
         
-        # Check if staff member already has a track
+        # Check if staff member already has an active track for this fiscal year
         cursor.execute(
-            "SELECT id, version FROM tracks WHERE staff_name = ? AND is_active = 1", 
-            (staff_name,)
+            "SELECT id, version FROM tracks WHERE staff_name = ? AND is_active = 1 AND fiscal_year = ?",
+            (staff_name, fiscal_year)
         )
         existing_track = cursor.fetchone()
         
@@ -490,25 +811,28 @@ def save_track_to_db(staff_name, track_data, is_new=False):
                 cursor.execute("""
                     INSERT INTO tracks (
                         staff_name, track_data, submission_date, version, is_active,
-                        original_role, effective_role, track_source, has_preassignments, preassignment_count
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        original_role, effective_role, track_source, has_preassignments, preassignment_count,
+                        fiscal_year
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    staff_name, 
-                    track_json, 
-                    submission_date, 
-                    1, 
+                    staff_name,
+                    track_json,
+                    submission_date,
+                    1,
                     1,
                     metadata.get('original_role'),
                     metadata.get('effective_role'),
                     metadata.get('track_source'),
                     1 if metadata.get('has_preassignments') else 0,
-                    metadata.get('preassignment_count', 0)
+                    metadata.get('preassignment_count', 0),
+                    fiscal_year
                 ))
             else:
                 # Legacy insert without metadata
                 cursor.execute(
-                    "INSERT INTO tracks (staff_name, track_data, submission_date, version, is_active) VALUES (?, ?, ?, ?, ?)",
-                    (staff_name, track_json, submission_date, 1, 1)
+                    "INSERT INTO tracks (staff_name, track_data, submission_date, version, is_active, fiscal_year)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (staff_name, track_json, submission_date, 1, 1, fiscal_year)
                 )
             
             # Get the new track ID
@@ -534,36 +858,41 @@ def save_track_to_db(staff_name, track_data, is_new=False):
         print(error_message)
         return (False, error_message, None)
 
-def get_track_from_db(staff_name):
+def get_track_from_db(staff_name, fiscal_year=None):
     """
-    Retrieve track data from SQLite database
-    UPDATED: Enhanced to return role metadata when available
-    
+    Retrieve the active bid track for a staff member.
+    Defaults to ACTIVE_BIDDING_YEAR (FY26).  Pass fiscal_year='FY25' to get
+    the prior-year reference track instead.
+
     Args:
         staff_name (str): Name of the staff member
-        
+        fiscal_year (str): Fiscal year to retrieve.  Defaults to active bidding year from config.
+
     Returns:
         tuple: (success, track_data_with_metadata or error_message)
     """
+    if fiscal_year is None:
+        fiscal_year = get_active_bidding_year()
+
     try:
         # Validate input
         if not staff_name:
             return (False, "Invalid staff name provided")
-        
+
         # Initialize database if needed
         initialize_database()
-        
+
         # Get database connection for this thread
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
         # Query database for staff member's active track with metadata
         cursor.execute("""
             SELECT id, track_data, submission_date, is_approved, version,
                    original_role, effective_role, track_source, has_preassignments, preassignment_count
-            FROM tracks 
-            WHERE staff_name = ? AND is_active = 1
-        """, (staff_name,))
+            FROM tracks
+            WHERE staff_name = ? AND is_active = 1 AND fiscal_year = ?
+        """, (staff_name, fiscal_year))
         result = cursor.fetchone()
         
         if result:
@@ -580,6 +909,7 @@ def get_track_from_db(staff_name):
                     'submission_date': submission_date,
                     'is_approved': is_approved == 1,
                     'version': version,
+                    'fiscal_year': fiscal_year,
                     'metadata': {
                         'original_role': original_role,
                         'effective_role': effective_role,
@@ -592,7 +922,6 @@ def get_track_from_db(staff_name):
                 print(f"JSON decode error for {staff_name}: {str(e)}")
                 return (False, f"Error decoding track data for {staff_name}")
         else:
-            print(f"No active track found for {staff_name}")
             return (False, f"No active track found for {staff_name}")
     
     except Exception as e:
@@ -600,30 +929,43 @@ def get_track_from_db(staff_name):
         print(error_message)
         return (False, error_message)
 
-def get_all_active_tracks():
+def get_all_active_tracks(fiscal_year=None):
     """
-    Get all active tracks from the database for staffing analysis
-    UPDATED: Enhanced to include role metadata for better analytics
-    
+    Get all active tracks from the database for staffing analysis.
+
+    Args:
+        fiscal_year (str): Fiscal year to filter by.
+                           Pass None (default) to return ALL active tracks regardless of year.
+                           Pass a specific year string (e.g. 'FY26') to filter to that year only.
+
     Returns:
         tuple: (success, tracks_data_with_metadata or error_message)
     """
     try:
         # Initialize database if needed
         initialize_database()
-        
+
         # Get database connection for this thread
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
         # Query for all active tracks with metadata
-        cursor.execute("""
-            SELECT staff_name, track_data, submission_date, version,
-                   original_role, effective_role, track_source, has_preassignments, preassignment_count
-            FROM tracks 
-            WHERE is_active = 1 
-            ORDER BY staff_name
-        """)
+        if fiscal_year is not None:
+            cursor.execute("""
+                SELECT staff_name, track_data, submission_date, version,
+                       original_role, effective_role, track_source, has_preassignments, preassignment_count
+                FROM tracks
+                WHERE is_active = 1 AND fiscal_year = ?
+                ORDER BY staff_name
+            """, (fiscal_year,))
+        else:
+            cursor.execute("""
+                SELECT staff_name, track_data, submission_date, version,
+                       original_role, effective_role, track_source, has_preassignments, preassignment_count
+                FROM tracks
+                WHERE is_active = 1
+                ORDER BY staff_name
+            """)
         results = cursor.fetchall()
         
         if results:
@@ -662,18 +1004,304 @@ def get_all_active_tracks():
         print(error_message)
         return (False, error_message)
 
+# ── FY26 Bidding Helpers ──────────────────────────────────────────────────────
+
+def get_prior_track_from_db(staff_name, fiscal_year=None):
+    """
+    Retrieve a staff member's prior-year (reference) track.
+
+    Unlike get_track_from_db(), this does NOT filter by is_active because
+    archived (prior-year) tracks are intentionally set to is_active=0 when
+    start_new_bidding_year() is called.  We look up by fiscal_year only.
+
+    Args:
+        staff_name (str): Staff member name.
+        fiscal_year (str): Prior year label.  Defaults to prior year from config.
+
+    Returns:
+        tuple: (success, track_dict or error_message)
+               track_dict keys: track_id, track_data, submission_date, fiscal_year, metadata
+    """
+    fy = fiscal_year if fiscal_year is not None else get_prior_year()
+    active_fy = get_active_bidding_year()
+
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # ── Primary lookup: exact prior-year label ────────────────────────────
+        cursor.execute("""
+            SELECT id, track_data, submission_date, is_approved, version,
+                   original_role, effective_role, track_source,
+                   has_preassignments, preassignment_count, fiscal_year
+            FROM tracks
+            WHERE staff_name = ? AND fiscal_year = ?
+            ORDER BY version DESC
+            LIMIT 1
+        """, (staff_name, fy))
+        result = cursor.fetchone()
+
+        # ── Fallback: most recent track that isn't the current active year ────
+        # Handles the case where a staff member's track was saved under an older
+        # label (e.g. FY25) but prior_year in config is now FY26.
+        if not result:
+            cursor.execute("""
+                SELECT id, track_data, submission_date, is_approved, version,
+                       original_role, effective_role, track_source,
+                       has_preassignments, preassignment_count, fiscal_year
+                FROM tracks
+                WHERE staff_name = ? AND (fiscal_year != ? OR fiscal_year IS NULL)
+                ORDER BY submission_date DESC
+                LIMIT 1
+            """, (staff_name, active_fy))
+            result = cursor.fetchone()
+
+        if result:
+            (track_id, track_json, submission_date, is_approved, version,
+             original_role, effective_role, track_source,
+             has_preassignments, preassignment_count, actual_fy) = result
+            try:
+                track_data = json.loads(track_json)
+                return (True, {
+                    'track_id': track_id,
+                    'track_data': track_data,
+                    'submission_date': submission_date,
+                    'is_approved': is_approved == 1,
+                    'version': version,
+                    'fiscal_year': actual_fy or fy,   # use the real label from the record
+                    'metadata': {
+                        'original_role': original_role,
+                        'effective_role': effective_role,
+                        'track_source': track_source,
+                        'has_preassignments': has_preassignments == 1,
+                        'preassignment_count': preassignment_count,
+                    }
+                })
+            except json.JSONDecodeError:
+                return (False, f"Error decoding prior track data for {staff_name}")
+        else:
+            return (False, f"No prior track found for {staff_name}")
+
+    except Exception as e:
+        return (False, f"Error retrieving prior track: {str(e)}")
+
+
+def get_bidding_progress():
+    """
+    Return a summary of how many staff have submitted bids for the active year
+    vs how many have prior-year reference tracks.
+
+    Returns:
+        dict with dynamic year keys based on current config, plus:
+            prior_year_label, active_year_label,
+            prior_count, active_count,
+            prior_staff, active_staff
+    """
+    active_yr = get_active_bidding_year()
+    prior_yr  = get_prior_year()
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT staff_name, fiscal_year FROM tracks WHERE is_active = 1 ORDER BY staff_name"
+        )
+        rows = cursor.fetchall()
+        prior_list  = [r[0] for r in rows if r[1] == prior_yr]
+        active_list = [r[0] for r in rows if r[1] == active_yr]
+        # Keep legacy keys so existing code that expects fy25/fy26 still works
+        return {
+            'prior_year_label':  prior_yr,
+            'active_year_label': active_yr,
+            'prior_count':  len(prior_list),
+            'active_count': len(active_list),
+            'prior_staff':  prior_list,
+            'active_staff': active_list,
+            # legacy aliases
+            'fy25_count': len(prior_list),
+            'fy26_count': len(active_list),
+            'fy25_staff': prior_list,
+            'fy26_staff': active_list,
+        }
+    except Exception as e:
+        print(f"Error getting bidding progress: {e}")
+        return {
+            'prior_year_label': prior_yr, 'active_year_label': active_yr,
+            'prior_count': 0, 'active_count': 0,
+            'prior_staff': [], 'active_staff': [],
+            'fy25_count': 0, 'fy26_count': 0, 'fy25_staff': [], 'fy26_staff': [],
+        }
+
+
+def generate_tracks_dataframe_from_db(fiscal_year=None, staff_col='STAFF NAME'):
+    """
+    Build a DataFrame compatible with current_tracks_df from DB tracks.
+    This replaces the need to upload a Tracks.xlsx for prior-year reference.
+
+    Columns: staff_col, then TRACK_DAY_LABELS (42 columns).
+
+    Strategy — "best available" per staff member:
+      1. Prefer the specified fiscal_year (default: prior year from config).
+      2. For any staff member who has no active track in that year, fall back to
+         their most-recently-submitted active track regardless of year.
+    This ensures the DataFrame is never sparse: staff who worked a different
+    label year still appear with their latest track data.
+
+    Args:
+        fiscal_year (str): Preferred year to pull.  Defaults to prior year from config.
+        staff_col (str): Name to use for the staff-name column.
+
+    Returns:
+        pandas.DataFrame or None
+    """
+    fy = fiscal_year if fiscal_year is not None else get_prior_year()
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Step 1 — preferred year
+        cursor.execute(
+            "SELECT staff_name, track_data FROM tracks "
+            "WHERE is_active = 1 AND fiscal_year = ? ORDER BY staff_name",
+            (fy,)
+        )
+        preferred_rows = {staff: data for staff, data in cursor.fetchall()}
+
+        # Step 2 — fallback: latest active track per staff member (any year),
+        # ordered newest-first so the first occurrence is the latest.
+        cursor.execute(
+            "SELECT staff_name, track_data FROM tracks "
+            "WHERE is_active = 1 ORDER BY staff_name, submission_date DESC"
+        )
+        fallback_rows: dict = {}
+        for staff, data in cursor.fetchall():
+            if staff not in fallback_rows:   # keep only the latest per staff
+                fallback_rows[staff] = data
+
+        # Merge: preferred_year wins; fallback fills in the gaps
+        merged_rows = {**fallback_rows, **preferred_rows}
+
+        if not merged_rows:
+            return None
+
+        records = []
+        for staff_name, track_json in sorted(merged_rows.items()):
+            try:
+                track_data = json.loads(track_json)
+            except json.JSONDecodeError:
+                continue
+            row = {staff_col: staff_name}
+            for day in TRACK_DAY_LABELS:
+                row[day] = track_data.get(day, '')
+            records.append(row)
+
+        if not records:
+            return None
+
+        return pd.DataFrame(records)
+
+    except Exception as e:
+        print(f"Error generating tracks DataFrame from DB: {e}")
+        return None
+
+
+def import_prior_tracks_from_dataframe(df, staff_col='STAFF NAME',
+                                       fiscal_year=None, overwrite=False):
+    """
+    Import tracks from a DataFrame (e.g. read from Tracks.xlsx) and store them
+    in the DB tagged as the prior year (FY25 by default).
+
+    Only inserts rows where fiscal_year track doesn't already exist unless
+    overwrite=True.
+
+    Args:
+        df (DataFrame): DataFrame with staff_col + 42 day columns.
+        staff_col (str): Column name containing staff names.
+        fiscal_year (str): FY label to tag these records.  Defaults to PRIOR_YEAR.
+        overwrite (bool): If True, replace existing rows for the same FY.
+
+    Returns:
+        tuple: (imported_count, skipped_count, error_list)
+    """
+    fy = fiscal_year if fiscal_year is not None else PRIOR_YEAR
+    imported = 0
+    skipped = 0
+    errors = []
+    submission_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        for _, row in df.iterrows():
+            staff_name = str(row[staff_col]).strip()
+            if not staff_name or staff_name.lower() == 'nan':
+                continue
+
+            # Build track_data dict from day columns
+            track_data = {}
+            for day in TRACK_DAY_LABELS:
+                val = row.get(day, '')
+                if pd.isna(val):
+                    val = ''
+                track_data[day] = str(val).strip()
+
+            track_json = json.dumps(track_data)
+
+            # Check for existing record
+            cursor.execute(
+                "SELECT id FROM tracks WHERE staff_name = ? AND is_active = 1 AND fiscal_year = ?",
+                (staff_name, fy)
+            )
+            existing = cursor.fetchone()
+
+            if existing and not overwrite:
+                skipped += 1
+                continue
+
+            if existing and overwrite:
+                # Archive old, insert new
+                old_id = existing[0]
+                cursor.execute(
+                    "INSERT INTO track_history (track_id, staff_name, track_data, submission_date, status)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (old_id, staff_name, track_json, submission_date, 'overwritten_by_import')
+                )
+                cursor.execute("DELETE FROM tracks WHERE id = ?", (old_id,))
+
+            cursor.execute(
+                "INSERT INTO tracks (staff_name, track_data, submission_date, version, is_active,"
+                " track_source, fiscal_year) VALUES (?, ?, ?, 1, 1, ?, ?)",
+                (staff_name, track_json, submission_date, f'Import-{fy}', fy)
+            )
+            imported += 1
+
+        conn.commit()
+        return (imported, skipped, errors)
+
+    except Exception as e:
+        errors.append(str(e))
+        print(f"Error importing prior tracks: {e}")
+        return (imported, skipped, errors)
+
+
+# ── END FY26 Bidding Helpers ──────────────────────────────────────────────────
+
 def get_database_staff_count_by_role(day, shift_type, preferences_df, staff_col_prefs, role_col):
     """
     Get count of staff assigned to a specific day and shift type from the database
     UPDATED: Enhanced to use effective role metadata when available
-    
+
     Args:
         day (str): The day to check
         shift_type (str): "D" for day or "N" for night
         preferences_df (DataFrame): Staff preferences data for role lookup
         staff_col_prefs (str): Column name for staff in preferences
         role_col (str): Column name for role in preferences
-        
+
     Returns:
         dict: Dictionary with nurse_count and medic_count
     """

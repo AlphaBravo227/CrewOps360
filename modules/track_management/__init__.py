@@ -21,7 +21,12 @@ from .editor import modify_track_enhanced  # Updated editor
 from .submission import submit_track
 from .preassignment import get_staff_preassignments
 from .utils import reset_track_session_state
-from ..db_utils import get_track_from_db
+from ..db_utils import (
+    get_track_from_db, get_prior_track_from_db,
+    get_active_bidding_year, get_prior_year,
+    ACTIVE_BIDDING_YEAR, PRIOR_YEAR,  # kept for fallback/legacy
+    is_bidding_open,
+)
 from ..hypothetical_scheduler_new import (
     generate_hypothetical_schedule_new as generate_hypothetical_schedule,
     display_hypothetical_results_new as display_hypothetical_results
@@ -46,14 +51,28 @@ def display_staff_track_interface(
     """
     Main interface function for staff track management with enhanced validation including weekend groups and preference editing
     """
-    st.header("Staff Track Management")
-    
+    # Resolve bidding year from DB config at render time (admin may have changed it)
+    _ACTIVE_YR = get_active_bidding_year()
+    _PRIOR_YR  = get_prior_year()
+
+    st.header(f"Staff Track Management — {_ACTIVE_YR} Bidding")
+
+    # ── Bidding status banner (visible to all staff) ──────────────────────────
+    _bidding_open = is_bidding_open()
+    if not _bidding_open:
+        st.error(
+            "🔴 **Bidding is currently CLOSED.**  "
+            "You can view your current track but cannot make or submit any changes. "
+            "Contact your administrator to re-open the bidding window."
+        )
+    # ─────────────────────────────────────────────────────────────────────────
+
     # Check if creating a new track
     create_new = st.session_state.get('create_new_track', False)
     if create_new:
         st.session_state['create_new_track'] = False
         st.session_state['is_new_track'] = True
-    
+
     # Check track source setting
     use_database_logic = st.session_state.get('track_source', "Annual Rebid") == "Annual Rebid"
     st.session_state['using_database_logic'] = use_database_logic
@@ -130,50 +149,67 @@ def display_staff_track_interface(
     
     # Get staff information
     staff_info = preferences_df[preferences_df[staff_col_prefs] == selected_staff].iloc[0]
-    
-    # Check database track
-    db_result = get_track_from_db(selected_staff)
-    has_db_track = db_result[0]
+
+    # ── FY26 Bidding: check for existing bid (FY26) and prior year reference (FY25) ──
+    db_result = get_track_from_db(selected_staff, fiscal_year=_ACTIVE_YR)
+    has_db_track = db_result[0]          # True = staff has a FY26 bid already
     st.session_state['has_db_track'] = has_db_track
-    
+
+    # Also look for the prior-year reference track
+    prior_result = get_prior_track_from_db(selected_staff)
+    has_prior_track = prior_result[0]    # True = staff has an FY25 track in DB
+
     # Get track data based on source
     if use_database_logic and has_db_track:
         db_track_data = db_result[1]['track_data']
         submission_date = db_result[1]['submission_date']
         is_approved = db_result[1]['is_approved']
         version = db_result[1]['version']
-        
+
         staff_track_df = pd.DataFrame([{day: db_track_data.get(day, "") for day in days}])
         staff_track_df[staff_col_tracks] = selected_staff
-        
+
         track_source = "Database"
-        st.info(f"📊 Using Annual Rebid database track (version {version}, submitted on {submission_date}).")
+        st.info(
+            f"📊 **{_ACTIVE_YR} bid track loaded** (version {version}, "
+            f"submitted {submission_date})."
+        )
     else:
+        # Fall back to Excel / DB-generated prior tracks DataFrame
         staff_track_df = current_tracks_df[current_tracks_df[staff_col_tracks] == selected_staff]
-        
+
         if staff_track_df.empty:
-            st.error(f"No current track found for {selected_staff} in Excel file.")
-            return
-        
-        track_source = "Excel File"
+            st.warning(
+                f"No prior track found for **{selected_staff}** — "
+                f"building {_ACTIVE_YR} bid from scratch."
+            )
+            # Create an empty placeholder row so downstream code doesn't break
+            staff_track_df = pd.DataFrame([{day: "" for day in days}])
+            staff_track_df[staff_col_tracks] = selected_staff
+
+        track_source = "Prior Year Reference"
         if use_database_logic and not has_db_track:
-            st.info("📊 No Annual Rebid database track found. Creating new track from scratch.")
+            st.info(
+                f"🆕 No **{_ACTIVE_YR}** bid submitted yet. "
+                f"Build your track below, then submit."
+            )
         else:
             st.info("📊 Using Current Track Changes reference file.")
-    
+
     # Get preassignments
     staff_preassignments = {}
     if preassignment_df is not None:
         staff_preassignments = get_staff_preassignments(selected_staff, preassignment_df, days)
-        
+
         if staff_preassignments:
             preassign_count = len(staff_preassignments)
             st.info(f"📌 {selected_staff} has {preassign_count} preassignments. These will be counted as shifts and cannot be modified.")
-    
+
     # Initialize current track data
     if use_database_logic and has_db_track:
         current_track_data = db_result[1]['track_data']
     elif use_database_logic and not has_db_track:
+        # Start blank for FY26 bid — user will build from scratch (or copy from FY25)
         current_track_data = {day: "" for day in days}
     else:
         current_track_data = {day: staff_track_df.iloc[0][day] for day in days}
@@ -190,38 +226,67 @@ def display_staff_track_interface(
     st.session_state.weekend_minimum = weekend_minimum
     st.session_state.weekend_group = weekend_group  # NEW: Store weekend group
     
-    # Reset and clear buttons
-    reset_col, clear_col = st.columns(2)
-    
-    with reset_col:
-        if st.button("Reset to Current Track", key=f"reset_{selected_staff}", use_container_width=True):
-            is_new = use_database_logic and not has_db_track
-            reset_track_session_state(selected_staff, current_track_data, staff_preassignments)
-            st.session_state['is_new_track'] = is_new
-            st.success("Track reset to current assignments")
-            st.rerun()
-    
-    with clear_col:
-        if st.button("Clear All Shifts", key=f"clear_{selected_staff}", use_container_width=True):
-            blank_track = {day: "" for day in days}
-            if staff_preassignments:
-                for day, preassignment in staff_preassignments.items():
-                    blank_track[day] = preassignment
-            
-            if 'track_changes' not in st.session_state:
-                st.session_state.track_changes = {}
-            st.session_state.track_changes[selected_staff] = blank_track
-            
-            st.session_state.modified_track = {
-                'staff': selected_staff,
-                'track': blank_track.copy(),
-                'valid': False,
-                'is_new': True
-            }
-            st.session_state['is_new_track'] = True
-            
-            st.success("All shifts cleared")
-            st.rerun()
+    # ── Show "Copy from prior year" button if no active-year bid exists yet ────
+    # (only when bidding is open)
+    if _bidding_open and use_database_logic and not has_db_track and has_prior_track:
+        prior_track_data = prior_result[1]['track_data']
+        prior_submission = prior_result[1].get('submission_date', 'unknown date')
+        st.info(
+            f"📋 **You have a {_PRIOR_YR} reference track** (submitted {prior_submission}). "
+            f"You can start your {_ACTIVE_YR} bid from scratch or use your {_PRIOR_YR} "
+            f"track as a starting point."
+        )
+        copy_col, _ = st.columns([1, 2])
+        with copy_col:
+            if st.button(
+                f"📋 Start from {_PRIOR_YR} track",
+                key=f"copy_prior_{selected_staff}",
+                use_container_width=True
+            ):
+                # Populate current_track_data from prior year
+                current_track_data = {day: prior_track_data.get(day, "") for day in days}
+                # Apply preassignments on top
+                if staff_preassignments:
+                    for day, pa in staff_preassignments.items():
+                        current_track_data[day] = pa
+                reset_track_session_state(selected_staff, current_track_data, staff_preassignments)
+                st.session_state['is_new_track'] = True
+                st.success(f"✅ Loaded your {_PRIOR_YR} track as a starting point. Modify and submit below.")
+                st.rerun()
+
+    # Reset and clear buttons — only shown when bidding is open
+    if _bidding_open:
+        reset_col, clear_col = st.columns(2)
+
+        with reset_col:
+            if st.button("Reset to Current Track", key=f"reset_{selected_staff}", use_container_width=True):
+                is_new = use_database_logic and not has_db_track
+                reset_track_session_state(selected_staff, current_track_data, staff_preassignments)
+                st.session_state['is_new_track'] = is_new
+                st.success("Track reset to current assignments")
+                st.rerun()
+
+        with clear_col:
+            if st.button("Clear All Shifts", key=f"clear_{selected_staff}", use_container_width=True):
+                blank_track = {day: "" for day in days}
+                if staff_preassignments:
+                    for day, preassignment in staff_preassignments.items():
+                        blank_track[day] = preassignment
+
+                if 'track_changes' not in st.session_state:
+                    st.session_state.track_changes = {}
+                st.session_state.track_changes[selected_staff] = blank_track
+
+                st.session_state.modified_track = {
+                    'staff': selected_staff,
+                    'track': blank_track.copy(),
+                    'valid': False,
+                    'is_new': True
+                }
+                st.session_state['is_new_track'] = True
+
+                st.success("All shifts cleared")
+                st.rerun()
     
     # Initialize session state if needed
     if ('modified_track' not in st.session_state or 
@@ -263,9 +328,63 @@ def display_staff_track_interface(
     if active_tab == "Submission":
         st.info("🎯 **Navigated to Submission Tab** - You can now submit your track changes.")
        
-    with tabs[0]:  # Current Track
-        display_track(selected_staff, staff_track_df, days, shifts_per_pay_period, night_minimum, 
-                      preassignments=staff_preassignments, track_source=track_source, weekend_minimum=weekend_minimum)
+    with tabs[0]:  # ── Current / Active Schedule ────────────────────────────────
+        if use_database_logic and has_db_track:
+            # ── User has submitted their active-year bid — that IS their working schedule ──
+            _sub_date = db_result[1]['submission_date']
+            _version  = db_result[1]['version']
+
+            display_track(
+                selected_staff, staff_track_df, days, shifts_per_pay_period, night_minimum,
+                preassignments=staff_preassignments, track_source=track_source,
+                weekend_minimum=weekend_minimum,
+                submission_date=_sub_date, version=_version,
+                heading=f"Active {_ACTIVE_YR} Schedule — {selected_staff}",
+            )
+
+            # Prior year shown as a collapsible reference (not the active schedule)
+            if has_prior_track:
+                prior_track_data_ref = prior_result[1]['track_data']
+                prior_sub_date       = prior_result[1].get('submission_date', '')
+                _prior_fy            = prior_result[1].get('fiscal_year', _PRIOR_YR)
+                with st.expander(
+                    f"📅 {_prior_fy} Reference Schedule (submitted {prior_sub_date})",
+                    expanded=False,
+                ):
+                    st.caption(
+                        f"This is the schedule you worked in **{_prior_fy}**. "
+                        f"Use it as a reference when building your {_ACTIVE_YR} bid."
+                    )
+                    prior_df = pd.DataFrame([{day: prior_track_data_ref.get(day, "") for day in days}])
+                    prior_df['STAFF NAME'] = selected_staff
+                    display_track(
+                        selected_staff, prior_df, days,
+                        shifts_per_pay_period, night_minimum,
+                        preassignments={}, track_source=f"{_prior_fy} Reference",
+                        weekend_minimum=weekend_minimum,
+                        heading=f"{_prior_fy} Schedule — {selected_staff}",
+                    )
+
+        elif use_database_logic and not has_db_track:
+            # ── No active-year bid yet ────────────────────────────────────────────
+            st.warning(
+                f"⏳ No **{_ACTIVE_YR} bid** submitted yet. "
+                f"Go to the **Track Modification** tab to build your track."
+            )
+            if has_prior_track:
+                # Prior year IS their currently-worked schedule — show it prominently
+                prior_track_data_ref = prior_result[1]['track_data']
+                prior_sub_date       = prior_result[1].get('submission_date', '')
+                _prior_fy            = prior_result[1].get('fiscal_year', _PRIOR_YR)
+                prior_df = pd.DataFrame([{day: prior_track_data_ref.get(day, "") for day in days}])
+                prior_df['STAFF NAME'] = selected_staff
+                display_track(
+                    selected_staff, prior_df, days,
+                    shifts_per_pay_period, night_minimum,
+                    preassignments={}, track_source=f"{_prior_fy} Reference",
+                    weekend_minimum=weekend_minimum,
+                    heading=f"Active {_prior_fy} Schedule — {selected_staff}",
+                )
     
     with tabs[1]:  # Preferences
         display_preferences(selected_staff, staff_info, preferences_df)
@@ -275,8 +394,8 @@ def display_staff_track_interface(
     
     with tabs[3]:  # Track Modification - UPDATED: Removed validation dashboard from here
         is_new_track = st.session_state.get('is_new_track', use_database_logic and not has_db_track)
-        
-        # UPDATED: Pass weekend group and requirements_df to modification function, but without validation dashboard
+
+        # UPDATED: Pass weekend group, requirements_df, and bidding_open to modification function
         modify_track_enhanced_without_validation(
             selected_staff,
             staff_track_df,
@@ -294,7 +413,8 @@ def display_staff_track_interface(
             preassignments=staff_preassignments,
             is_new_track=is_new_track,
             weekend_minimum=weekend_minimum,
-            requirements_df=requirements_df  # Pass requirements_df for weekend group lookup
+            requirements_df=requirements_df,
+            bidding_open=_bidding_open,  # lock the grid when bidding is closed
         )
     
     with tabs[4]:  # NEW: Validation Tab
@@ -609,10 +729,12 @@ def modify_track_enhanced_without_validation(
     preassignments=None,
     is_new_track=False,
     weekend_minimum=0,
-    requirements_df=None
+    requirements_df=None,
+    bidding_open=True,
 ):
     """
-    UPDATED: Track modification without the validation dashboard (moved to separate tab)
+    UPDATED: Track modification without the validation dashboard (moved to separate tab).
+    Pass bidding_open=False to render the grid in view-only mode.
     """
     from .editor import modify_track_enhanced
     
@@ -745,18 +867,27 @@ def modify_track_enhanced_without_validation(
             'is_new': is_new_track
         }
     
-    # User guidance
-    st.markdown("""
-    ### How to Modify Your Track
-    
-    1. Select days where you want to work by clicking on the radio buttons
-    2. Use **"Validate Block"** buttons to check and lock in individual 2-week blocks before proceeding to next block
-    3. Preassignments (if any) are shown as selected and locked radio buttons
-    4. Days where your role is needed are highlighted in green
-    5. **Weekend group days are highlighted in yellow** (if assigned to a weekend group)
-    6. Go to the **Validation tab** to check your complete track, then proceed to Submission when ready
-    """)
-    
+    # User guidance — adapts based on whether bidding is open or closed
+    if bidding_open:
+        st.markdown("""
+        ### How to Modify Your Track
+
+        1. Select days where you want to work by clicking on the radio buttons
+        2. Use **"Validate Block"** buttons to check and lock in individual 2-week blocks before proceeding to next block
+        3. Preassignments (if any) are shown as selected and locked radio buttons
+        4. Days where your role is needed are highlighted in green
+        5. **Weekend group days are highlighted in yellow** (if assigned to a weekend group)
+        6. Go to the **Validation tab** to check your complete track, then proceed to Submission when ready
+        """)
+    else:
+        st.markdown("""
+        ### 👁️ Track View — Read Only
+
+        Bidding is currently **closed**. You can see the full schedule grid and which shifts are
+        available for each day, but you cannot select or change any assignments.
+        Contact your administrator to re-open the bidding window.
+        """)
+
     # Show preassignments if any
     if preassignments:
         from .preassignment import display_preassignments
@@ -765,12 +896,16 @@ def modify_track_enhanced_without_validation(
     # Display track modification interface WITH enhanced hypothetical scheduler display
     from .editor import display_track_modification_interface_enhanced
     display_track_modification_interface_enhanced(
-        selected_staff, options_by_day, reference_track, days, 
+        selected_staff, options_by_day, reference_track, days,
         preassignments, use_database_logic, has_db_track, staff_role, weekend_group,
-        day_assignments, night_assignments, assignment_details
+        day_assignments, night_assignments, assignment_details,
+        bidding_open=bidding_open,
     )
-    
-    # Quick validation status (simplified)
+
+    # Quick validation status — hidden when bidding is closed (no point validating a locked track)
+    if not bidding_open:
+        return
+
     st.markdown("### 📊 Quick Validation Status")
     st.info("**Note:** For comprehensive validation results, go to the **Validation tab**.")
     
