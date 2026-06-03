@@ -59,6 +59,8 @@ from modules.app_helper import validate_uploaded_database, restore_database_from
 from modules.track_display import display_track_viewer
 from modules.enhanced_landing import inject_custom_css
 from modules.track_swap import display_track_swap_section, handle_track_swap_navigation
+from modules.track_bidding import display_track_bidding
+from modules.db_utils import get_active_track_config, get_track_capacity
 
 # Import training modules with new unified database approach
 try:
@@ -208,12 +210,15 @@ def display_module_selection():
         st.markdown("---")
         
         # Clinical Track Hub Module
-        st.markdown("""
+        _landing_active_cfg = get_active_track_config()
+        _landing_active_label = _landing_active_cfg['track_name'] if _landing_active_cfg else "FY26"
+        st.markdown(f"""
         <div class="module-card">
             <div style="text-align: center;">
                 <h2 style="color: #1E88E5; margin-bottom: 1rem;">🚁 Clinical Track Hub</h2>
+                <p style="color: #4CAF50; font-weight: 600; margin-bottom: 0.5rem;">Active Track: {_landing_active_label}</p>
                 <p style="color: #333; font-size: 1.1rem; margin-bottom: 1.5rem; line-height: 1.6;">
-                    Manage clinical staff schedules, track preferences, validate shift assignments, 
+                    Manage your active clinical staff schedule, track preferences, validate shift assignments,
                     and generate calendar exports for flight operations.
                 </p>
                 <ul style="text-align: left; color: #555; margin-bottom: 2rem;">
@@ -229,9 +234,34 @@ def display_module_selection():
         if st.button("🚁 Enter Clinical Track Hub", use_container_width=True, key="clinical_hub_btn"):
             st.session_state.selected_module = "clinical_track_hub"
             st.rerun()
-        
+
         st.markdown("<br>", unsafe_allow_html=True)
-        
+
+        # Track Bidding Module
+        st.markdown("""
+        <div class="module-card" style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border: 2px solid #FF9800;">
+            <div style="text-align: center;">
+                <h2 style="color: #E65100; margin-bottom: 1rem;">🗳️ Track Bidding</h2>
+                <p style="color: #333; font-size: 1.1rem; margin-bottom: 1.5rem; line-height: 1.6;">
+                    Bid on your preferred shifts for the upcoming track cycle.
+                    Review availability, select your schedule, and submit your bid.
+                </p>
+                <ul style="text-align: left; color: #555; margin-bottom: 2rem;">
+                    <li>🔄 Select shifts for the next bidding cycle</li>
+                    <li>📊 View real-time staffing availability</li>
+                    <li>🔍 Validate your bid against requirements</li>
+                    <li>📤 Submit your bid — no approval needed</li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("🗳️ Enter Track Bidding", use_container_width=True, key="track_bidding_btn"):
+            st.session_state.selected_module = "track_bidding"
+            st.rerun()
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
         # Training & Events Registration Module
         training_status = "Available" if TRAINING_MODULES_AVAILABLE else "Setup Required"
         st.markdown(f"""
@@ -743,11 +773,13 @@ def display_clinical_track_hub():
         st.session_state.selected_module = None
         st.rerun()
     
-    # Original Clinical Track Hub content with proper spacing
-    st.markdown("""
-    # <span style='color:#1E88E5'>Clinical Track Hub</span>
+    # Show active track name in header
+    active_cfg = get_active_track_config()
+    active_label = active_cfg['track_name'] if active_cfg else "FY26"
+    st.markdown(f"""
+    # <span style='color:#1E88E5'>Clinical Track Hub</span> <span style='color:#4CAF50; font-size:1.2rem;'>— Active Track: {active_label}</span>
     """, unsafe_allow_html=True)
-    
+
     # All the existing Clinical Track Hub functionality goes here
     run_clinical_track_hub()
 
@@ -1289,10 +1321,11 @@ def run_clinical_track_hub():
         st.session_state.reduced_rest_col = None
         st.session_state.seniority_col = None
         st.session_state.requirements_df = None
-        st.session_state.max_day_nurses = 12
-        st.session_state.max_day_medics = 12
-        st.session_state.max_night_nurses = 5
-        st.session_state.max_night_medics = 5
+        _init_cap = get_track_capacity((get_active_track_config() or {}).get('track_name', 'FY26'))
+        st.session_state.max_day_nurses = _init_cap['max_day_nurses']
+        st.session_state.max_day_medics = _init_cap['max_day_medics']
+        st.session_state.max_night_nurses = _init_cap['max_night_nurses']
+        st.session_state.max_night_medics = _init_cap['max_night_medics']
         st.session_state.enable_role_delta_filter = False
         st.session_state.day_delta_threshold = 3
         st.session_state.night_delta_threshold = 2
@@ -1437,83 +1470,66 @@ def run_clinical_track_hub():
                 except Exception as e:
                     st.error(f"Error checking staff mismatches: {str(e)}")
 
-            st.header("Track Source Configuration")
-            TRACK_SOURCE_MODE = "Annual Rebid"
-            
-            if TRACK_SOURCE_MODE == "Annual Rebid":
-                st.session_state.track_source = "Annual Rebid"
-                st.success("🔥 **Current Mode: Annual Rebid**")
-                st.info("""
-                **Annual Rebid Mode Active:**
-                - Uses enhanced validation rules for all submissions
-                - Considers all possible shifts regardless of Excel file availability
-                - Applies strict pay period and rest requirements
-                - Saves submitted tracks to the database for future reference
-                """)
-                
-                if 'current_tracks_df' in st.session_state and st.session_state.current_tracks_df is not None:
-                    source_format = detect_data_source_format(st.session_state.current_tracks_df)
-                    st.session_state.data_source_format = source_format
-            
-            elif TRACK_SOURCE_MODE == "In Year Modifications":
-                st.session_state.track_source = "Current Track Changes"
-                st.warning("⚙️ **Current Mode: In Year Modifications**")
-                st.info("""
-                **In Year Modifications Mode Active:**
-                - Uses current track changes logic
-                - Shift availability depends on current staffing levels
-                - Allows manual loading of tracks from Excel files
-                """)
-                
-                st.markdown("---")
-                st.subheader("🔥 Manual Track Import")
-                
-                tracks_file_path = os.path.join("upload files", "Tracks.xlsx")
-                tracks_file_exists = os.path.exists(tracks_file_path)
-                
-                if tracks_file_exists:
-                    st.success(f"✅ Found: {tracks_file_path}")
-                    
-                    try:
-                        file_size = os.path.getsize(tracks_file_path)
-                        file_size_kb = file_size / 1024
-                        mod_time = os.path.getmtime(tracks_file_path)
-                        mod_datetime = datetime.fromtimestamp(mod_time)
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("File Size", f"{file_size_kb:.1f} KB")
-                        with col2:
-                            st.metric("Last Modified", mod_datetime.strftime("%Y-%m-%d %H:%M"))
-                    except:
-                        pass
-                    
-                    if st.button("🔥 Manually Convert Tracks.xlsx to Database", 
-                               key="manual_convert_tracks",
-                               use_container_width=True,
-                               type="primary"):
-                        
-                        success, message = manually_convert_tracks_excel_to_db(tracks_file_path)
-                        
-                        if success:
-                            st.success(f"✅ {message}")
-                            st.rerun()
-                        else:
-                            st.error(f"❌ {message}")                        
-                else:
-                    st.error(f"❌ Tracks.xlsx not found in 'upload files' folder")
+            # Always use database-driven track mode
+            st.session_state.track_source = "Annual Rebid"
+            st.session_state['TRACK_SOURCE_MODE'] = "Annual Rebid"
 
-            st.session_state['TRACK_SOURCE_MODE'] = TRACK_SOURCE_MODE
-            #ensure_track_source_consistency()
-            
-            st.header("Configuration")
-            
+            st.header("Active Track & Capacity")
+            active_track_cfg = get_active_track_config()
+            if active_track_cfg:
+                st.success(f"**Active Track: {active_track_cfg['track_name']}**")
+                cap = get_track_capacity(active_track_cfg['track_name'])
+            else:
+                st.warning("No active track configured. Defaulting to FY26 values.")
+                cap = get_track_capacity('FY26')
+
             with st.expander("Shift Capacity Configuration", expanded=True):
-                st.markdown("#### Shift Capacity Settings (Hardcoded)")
-                st.markdown("- Max Day Shift Nurses: **10**")
-                st.markdown("- Max Day Shift Medics: **10**")
-                st.markdown("- Max Night Shift Nurses: **6**")
-                st.markdown("- Max Night Shift Medics: **5**")
+                st.markdown(f"- Max Day Shift Nurses: **{cap['max_day_nurses']}**")
+                st.markdown(f"- Max Day Shift Medics: **{cap['max_day_medics']}**")
+                st.markdown(f"- Max Night Shift Nurses: **{cap['max_night_nurses']}**")
+                st.markdown(f"- Max Night Shift Medics: **{cap['max_night_medics']}**")
+
+            # Approval queue for active track modifications
+            st.header("Pending Track Approvals")
+            from modules.db_utils import get_db_connection
+            try:
+                _conn = get_db_connection()
+                _cur = _conn.cursor()
+                active_tn = active_track_cfg['track_name'] if active_track_cfg else 'FY26'
+                _cur.execute("""SELECT id, staff_name, submission_date, version
+                    FROM tracks WHERE track_name = ? AND is_active = 1 AND is_approved = 0
+                    ORDER BY submission_date DESC""", (active_tn,))
+                pending = _cur.fetchall()
+                if pending:
+                    st.markdown(f"**{len(pending)} pending modification(s):**")
+                    for pid, pname, pdate, pver in pending:
+                        with st.expander(f"{pname} (v{pver}, submitted {pdate})"):
+                            ac, rc = st.columns(2)
+                            with ac:
+                                if st.button(f"Approve", key=f"approve_{pid}", use_container_width=True):
+                                    now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+                                    _cur.execute("UPDATE tracks SET is_approved = 1, approved_by = 'admin', approval_date = ? WHERE id = ?", (now, pid))
+                                    _conn.commit()
+                                    st.success(f"Approved {pname}")
+                                    st.rerun()
+                            with rc:
+                                reject_notes = st.text_input("Rejection notes", key=f"reject_notes_{pid}")
+                                if st.button(f"Reject", key=f"reject_{pid}", use_container_width=True):
+                                    now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+                                    _cur.execute("UPDATE tracks SET is_approved = -1, approved_by = 'admin', approval_date = ? WHERE id = ?", (now, pid))
+                                    _cur.execute("""INSERT INTO track_history
+                                        (track_id, staff_name, track_data, submission_date, status)
+                                        VALUES (?, ?, 'rejected', ?, ?)""",
+                                        (pid, pname, now, f"rejected: {reject_notes}"))
+                                    _conn.commit()
+                                    st.warning(f"Rejected {pname}")
+                                    st.rerun()
+                else:
+                    st.info("No pending modifications to review.")
+            except Exception as e:
+                st.error(f"Error loading pending approvals: {e}")
+
+            st.header("Configuration")
             
             with st.expander("Role Delta Filter", expanded=False):
                 st.markdown("#### Role Balance Filter")
@@ -2068,6 +2084,9 @@ if st.session_state.selected_module is None:
 elif st.session_state.selected_module == "clinical_track_hub":
     # Show Clinical Track Hub
     display_clinical_track_hub()
+elif st.session_state.selected_module == "track_bidding":
+    # Show Track Bidding
+    display_track_bidding()
 elif st.session_state.selected_module == "training_events":
     # Show Training & Events application (FULL VERSION)
     display_training_events_app()

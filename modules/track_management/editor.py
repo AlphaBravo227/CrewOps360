@@ -96,11 +96,15 @@ def modify_track_enhanced(
         - Staff Role: {staff_role} (treated as {effective_role} for needs calculation)
         """)
     
-    # Hardcoded shift capacity settings
-    max_day_nurses = 10
-    max_day_medics = 10
-    max_night_nurses = 6
-    max_night_medics = 5
+    # Pull shift capacity from database
+    from ..db_utils import get_active_track_config, get_track_capacity
+    _active_cfg = get_active_track_config()
+    _active_tn = _active_cfg['track_name'] if _active_cfg else 'FY26'
+    _cap = get_track_capacity(_active_tn)
+    max_day_nurses = _cap['max_day_nurses']
+    max_day_medics = _cap['max_day_medics']
+    max_night_nurses = _cap['max_night_nurses']
+    max_night_medics = _cap['max_night_medics']
     
     # Generate track modification options
     with st.spinner("Analyzing schedule needs and preferences..."):

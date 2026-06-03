@@ -613,20 +613,14 @@ def submit_track(selected_staff, staff_track, days, shifts_per_pay_period, night
     
     print(f"DEBUG: Final role assignment for {selected_staff}: original='{staff_role}', effective='{effective_role}'")
     
-    # Display track source information
-    from modules.track_source_consistency import display_for_submission, get_track_data_source_info
-
-    # Display mode information
-    display_for_submission()
-
-    # Display specific track status
-    data_source_info = get_track_data_source_info(selected_staff, has_db_track)
-    if data_source_info['source'] == 'Database':
-        st.info(f"📊 You are updating your existing {data_source_info['source']} track.")
-    elif data_source_info['source'] == 'New Track':
-        st.info("ℹ️ You are creating your first track in the system.")
+    # Display active track info
+    from modules.db_utils import get_active_track_config as _get_active_cfg
+    _cfg = _get_active_cfg()
+    active_label = _cfg['track_name'] if _cfg else "FY26"
+    if has_db_track:
+        st.info(f"📊 Updating your existing track in **{active_label}**.")
     else:
-        st.info(f"📄 You are updating from {data_source_info['source']}.")
+        st.info(f"ℹ️ Creating your first track in **{active_label}**.")
     
     # Check if there's a modified track in session state
     if 'modified_track' not in st.session_state or st.session_state.modified_track.get('staff') != selected_staff:
