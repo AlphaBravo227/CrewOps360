@@ -52,19 +52,36 @@ def _render_bidding_admin_sidebar():
         st.markdown("---")
         st.subheader("Create New Bid Track")
         new_name = st.text_input("Track Name (e.g. FY27)", key="new_bid_name")
-        col1, col2 = st.columns(2)
-        with col1:
-            dn = st.number_input("Max Day Nurses", 1, 50, 10, key="new_dn")
-            nn = st.number_input("Max Night Nurses", 1, 50, 6, key="new_nn")
-        with col2:
-            dm = st.number_input("Max Day Medics", 1, 50, 10, key="new_dm")
-            nm = st.number_input("Max Night Medics", 1, 50, 5, key="new_nm")
+
+        st.markdown("**Operational Reference**")
+        ref1, ref2 = st.columns(2)
+        with ref1:
+            new_dv = st.number_input("Day Vehicles", 1, 50, 9, key="new_dv")
+            new_nv = st.number_input("Night Vehicles", 1, 50, 4, key="new_nv")
+        with ref2:
+            new_dls = st.number_input("Day Leave Slots", 0, 10, 2, key="new_dls")
+            new_nls = st.number_input("Night Leave Slots", 0, 10, 1, key="new_nls")
+
+        st.markdown("**Bid Caps** *(vehicles + leave = cap per role)*")
+        calc_dn = new_dv + new_dls
+        calc_nn = new_nv + new_nls
+        st.caption(f"Day cap: {new_dv} vehicles + {new_dls} leave = **{calc_dn}** | Night cap: {new_nv} vehicles + {new_nls} leave = **{calc_nn}**")
+        cap1, cap2 = st.columns(2)
+        with cap1:
+            dn = st.number_input("Max Day Nurses", 1, 50, calc_dn, key="new_dn")
+            nn = st.number_input("Max Night Nurses", 1, 50, calc_nn, key="new_nn")
+        with cap2:
+            dm = st.number_input("Max Day Medics", 1, 50, calc_dn, key="new_dm")
+            nm = st.number_input("Max Night Medics", 1, 50, calc_nn, key="new_nm")
 
         if st.button("Create Bid Track", key="create_bid_btn", use_container_width=True):
             if not new_name.strip():
                 st.error("Please enter a track name.")
             else:
-                ok, msg = create_track_config(new_name.strip(), dn, dm, nn, nm)
+                ok, msg = create_track_config(
+                    new_name.strip(), dn, dm, nn, nm,
+                    day_vehicles=new_dv, night_vehicles=new_nv,
+                    day_leave_slots=new_dls, night_leave_slots=new_nls)
                 if ok:
                     st.success(msg)
                     st.rerun()
@@ -79,8 +96,14 @@ def _render_bidding_admin_sidebar():
             tn = cfg['track_name']
             with st.expander(f"{'🟢' if cfg['is_active'] else '🔵' if cfg['is_bidding_open'] else '⚪'} {tn}", expanded=False):
                 st.markdown(f"**Status:** {'Active' if cfg['is_active'] else 'Bidding Open' if cfg['is_bidding_open'] else 'Inactive'}")
-                st.markdown(f"Day Nurses: **{cfg['max_day_nurses']}** | Day Medics: **{cfg['max_day_medics']}**")
-                st.markdown(f"Night Nurses: **{cfg['max_night_nurses']}** | Night Medics: **{cfg['max_night_medics']}**")
+
+                # Operational reference display
+                dv = cfg.get('day_vehicles', 9)
+                nv = cfg.get('night_vehicles', 4)
+                dls = cfg.get('day_leave_slots', 2)
+                nls = cfg.get('night_leave_slots', 1)
+                st.markdown(f"**Operational:** {dv} day vehicles + {dls} leave | {nv} night vehicles + {nls} leave")
+                st.markdown(f"**Bid Caps:** Day N:**{cfg['max_day_nurses']}** M:**{cfg['max_day_medics']}** | Night N:**{cfg['max_night_nurses']}** M:**{cfg['max_night_medics']}**")
 
                 if not cfg['is_active']:
                     # Toggle bidding
@@ -91,17 +114,36 @@ def _render_bidding_admin_sidebar():
                         toggle_bidding(tn, new_bid_state)
                         st.rerun()
 
-                    # Update capacity
-                    st.markdown("**Update Capacity**")
-                    u_dn = st.number_input("Day Nurses", 1, 50, cfg['max_day_nurses'], key=f"u_dn_{tn}")
-                    u_dm = st.number_input("Day Medics", 1, 50, cfg['max_day_medics'], key=f"u_dm_{tn}")
-                    u_nn = st.number_input("Night Nurses", 1, 50, cfg['max_night_nurses'], key=f"u_nn_{tn}")
-                    u_nm = st.number_input("Night Medics", 1, 50, cfg['max_night_medics'], key=f"u_nm_{tn}")
-                    if st.button("Save Capacity", key=f"save_cap_{tn}", use_container_width=True):
+                    # Update operational reference
+                    st.markdown("**Update Operational Reference**")
+                    or1, or2 = st.columns(2)
+                    with or1:
+                        u_dv = st.number_input("Day Vehicles", 1, 50, dv, key=f"u_dv_{tn}")
+                        u_nv = st.number_input("Night Vehicles", 1, 50, nv, key=f"u_nv_{tn}")
+                    with or2:
+                        u_dls = st.number_input("Day Leave Slots", 0, 10, dls, key=f"u_dls_{tn}")
+                        u_nls = st.number_input("Night Leave Slots", 0, 10, nls, key=f"u_nls_{tn}")
+
+                    calc_day = u_dv + u_dls
+                    calc_night = u_nv + u_nls
+                    st.caption(f"Day cap: {u_dv} + {u_dls} = **{calc_day}** | Night cap: {u_nv} + {u_nls} = **{calc_night}**")
+
+                    # Update bid caps
+                    st.markdown("**Update Bid Caps**")
+                    uc1, uc2 = st.columns(2)
+                    with uc1:
+                        u_dn = st.number_input("Day Nurses", 1, 50, cfg['max_day_nurses'], key=f"u_dn_{tn}")
+                        u_nn = st.number_input("Night Nurses", 1, 50, cfg['max_night_nurses'], key=f"u_nn_{tn}")
+                    with uc2:
+                        u_dm = st.number_input("Day Medics", 1, 50, cfg['max_day_medics'], key=f"u_dm_{tn}")
+                        u_nm = st.number_input("Night Medics", 1, 50, cfg['max_night_medics'], key=f"u_nm_{tn}")
+                    if st.button("Save All Settings", key=f"save_cap_{tn}", use_container_width=True):
                         update_track_config(tn,
                                             max_day_nurses=u_dn, max_day_medics=u_dm,
-                                            max_night_nurses=u_nn, max_night_medics=u_nm)
-                        st.success(f"Capacity updated for {tn}")
+                                            max_night_nurses=u_nn, max_night_medics=u_nm,
+                                            day_vehicles=u_dv, night_vehicles=u_nv,
+                                            day_leave_slots=u_dls, night_leave_slots=u_nls)
+                        st.success(f"Settings updated for {tn}")
                         st.rerun()
 
                     # Promote to active
@@ -182,11 +224,17 @@ def display_track_bidding():
 
     # Show capacity info
     cap = get_track_capacity(bid_track_name)
+    st.markdown("**Staffing Capacity**")
     cap_cols = st.columns(4)
-    cap_cols[0].metric("Max Day Nurses", cap['max_day_nurses'])
-    cap_cols[1].metric("Max Day Medics", cap['max_day_medics'])
-    cap_cols[2].metric("Max Night Nurses", cap['max_night_nurses'])
-    cap_cols[3].metric("Max Night Medics", cap['max_night_medics'])
+    cap_cols[0].metric("Max Day Nurses", cap['max_day_nurses'],
+                       help=f"{cap['day_vehicles']} vehicles + {cap['day_leave_slots']} leave")
+    cap_cols[1].metric("Max Day Medics", cap['max_day_medics'],
+                       help=f"{cap['day_vehicles']} vehicles + {cap['day_leave_slots']} leave")
+    cap_cols[2].metric("Max Night Nurses", cap['max_night_nurses'],
+                       help=f"{cap['night_vehicles']} vehicles + {cap['night_leave_slots']} leave")
+    cap_cols[3].metric("Max Night Medics", cap['max_night_medics'],
+                       help=f"{cap['night_vehicles']} vehicles + {cap['night_leave_slots']} leave")
+    st.caption(f"Day: {cap['day_vehicles']} vehicles + {cap['day_leave_slots']} leave slots | Night: {cap['night_vehicles']} vehicles + {cap['night_leave_slots']} leave slots")
 
     if active_cfg:
         st.markdown(f"*Prior active track: {active_cfg['track_name']}*")
