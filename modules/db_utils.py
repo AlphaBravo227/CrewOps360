@@ -2051,6 +2051,71 @@ def get_tracks_by_track_name(track_name):
     return get_all_bid_tracks(track_name)
 
 
+def delete_track_config(track_name):
+    """Delete a track config and all associated bids/tracks."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT is_active FROM track_configs WHERE track_name = ?", (track_name,))
+        row = cursor.fetchone()
+        if not row:
+            return False, f"Track config '{track_name}' not found"
+        if row[0] == 1:
+            return False, f"Cannot delete the active track config '{track_name}'"
+        cursor.execute("SELECT id FROM tracks WHERE track_name = ?", (track_name,))
+        track_ids = [r[0] for r in cursor.fetchall()]
+        if track_ids:
+            placeholders = ",".join("?" * len(track_ids))
+            cursor.execute(f"DELETE FROM track_history WHERE track_id IN ({placeholders})", track_ids)
+            cursor.execute("DELETE FROM tracks WHERE track_name = ?", (track_name,))
+        cursor.execute("DELETE FROM track_configs WHERE track_name = ?", (track_name,))
+        conn.commit()
+        deleted_bids = len(track_ids)
+        return True, f"Deleted track config '{track_name}' and {deleted_bids} associated bid(s)"
+    except Exception as e:
+        return False, f"Error deleting track config: {e}"
+
+
+def delete_bid(staff_name, track_name):
+    """Delete a single staff member's bid for a track."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM tracks WHERE staff_name = ? AND track_name = ? AND is_active = 0",
+                       (staff_name, track_name))
+        row = cursor.fetchone()
+        if not row:
+            return False, f"No bid found for {staff_name} in {track_name}"
+        track_id = row[0]
+        cursor.execute("DELETE FROM track_history WHERE track_id = ?", (track_id,))
+        cursor.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
+        conn.commit()
+        return True, f"Deleted bid for {staff_name} in {track_name}"
+    except Exception as e:
+        return False, f"Error deleting bid: {e}"
+
+
+def wipe_all_bids(track_name):
+    """Delete ALL bids for a track config (reset bidding)."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM tracks WHERE track_name = ? AND is_active = 0", (track_name,))
+        track_ids = [r[0] for r in cursor.fetchall()]
+        if not track_ids:
+            return True, f"No bids to delete for {track_name}"
+        placeholders = ",".join("?" * len(track_ids))
+        cursor.execute(f"DELETE FROM track_history WHERE track_id IN ({placeholders})", track_ids)
+        cursor.execute("DELETE FROM tracks WHERE track_name = ? AND is_active = 0", (track_name,))
+        conn.commit()
+        return True, f"Wiped {len(track_ids)} bid(s) for {track_name}"
+    except Exception as e:
+        return False, f"Error wiping bids: {e}"
+
+
 # Clean up connections when the module is unloaded
 import atexit
 atexit.register(close_all_connections)

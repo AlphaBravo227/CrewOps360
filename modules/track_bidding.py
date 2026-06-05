@@ -27,6 +27,9 @@ from modules.db_utils import (
     get_bid_track_from_db,
     get_all_bid_tracks,
     get_track_from_db,
+    delete_track_config,
+    delete_bid,
+    wipe_all_bids,
 )
 from modules.security import check_admin_access
 from modules.shift_definitions import day_shifts, night_shifts
@@ -103,21 +106,18 @@ def _render_bidding_admin_sidebar():
         for cfg in all_configs:
             tn = cfg['track_name']
             with st.expander(f"{'🟢' if cfg['is_active'] else '🔵' if cfg['is_bidding_open'] else '⚪'} {tn}", expanded=False):
-                st.markdown(f"**Status:** {'Active' if cfg['is_active'] else 'Bidding Open' if cfg['is_bidding_open'] else 'Inactive'}")
+                status_label = 'Active' if cfg['is_active'] else ('Bidding Open' if cfg['is_bidding_open'] else 'Inactive')
+                st.markdown(f"**Status:** {status_label}")
 
-                # Operational reference display
+                # Current values
                 dv = cfg.get('day_vehicles', 9)
                 nv = cfg.get('night_vehicles', 4)
                 dls = cfg.get('day_leave_slots', 2)
                 nls = cfg.get('night_leave_slots', 1)
                 mds = cfg.get('min_day_staff', 7)
                 mns = cfg.get('min_night_staff', 4)
-                st.markdown(f"**Operational:** {dv} day vehicles + {dls} leave | {nv} night vehicles + {nls} leave")
-                st.markdown(f"**Min Staffing:** Day: **{mds}** | Night: **{mns}**")
-                st.markdown(f"**Bid Caps:** Day N:**{cfg['max_day_nurses']}** M:**{cfg['max_day_medics']}** | Night N:**{cfg['max_night_nurses']}** M:**{cfg['max_night_medics']}**")
 
                 if not cfg['is_active']:
-                    # Toggle bidding
                     new_bid_state = st.checkbox(
                         "Bidding Open", value=bool(cfg['is_bidding_open']),
                         key=f"toggle_bid_{tn}")
@@ -125,52 +125,104 @@ def _render_bidding_admin_sidebar():
                         toggle_bidding(tn, new_bid_state)
                         st.rerun()
 
-                    # Update operational reference
-                    st.markdown("**Update Operational Reference**")
-                    or1, or2 = st.columns(2)
-                    with or1:
-                        u_dv = st.number_input("Day Vehicles", 1, 50, dv, key=f"u_dv_{tn}")
-                        u_nv = st.number_input("Night Vehicles", 1, 50, nv, key=f"u_nv_{tn}")
-                    with or2:
-                        u_dls = st.number_input("Day Leave Slots", 0, 10, dls, key=f"u_dls_{tn}")
-                        u_nls = st.number_input("Night Leave Slots", 0, 10, nls, key=f"u_nls_{tn}")
+                # Editable fields for ALL configs (active and non-active)
+                st.markdown("**Operational Reference**")
+                or1, or2 = st.columns(2)
+                with or1:
+                    u_dv = st.number_input("Day Vehicles", 1, 50, dv, key=f"u_dv_{tn}")
+                    u_nv = st.number_input("Night Vehicles", 1, 50, nv, key=f"u_nv_{tn}")
+                with or2:
+                    u_dls = st.number_input("Day Leave Slots", 0, 10, dls, key=f"u_dls_{tn}")
+                    u_nls = st.number_input("Night Leave Slots", 0, 10, nls, key=f"u_nls_{tn}")
 
-                    st.markdown("**Update Minimum Staffing**")
-                    ms1, ms2 = st.columns(2)
-                    with ms1:
-                        u_mds = st.number_input("Min Day Staff", 1, 50, mds, key=f"u_mds_{tn}")
-                    with ms2:
-                        u_mns = st.number_input("Min Night Staff", 1, 50, mns, key=f"u_mns_{tn}")
+                st.markdown("**Minimum Staffing**")
+                ms1, ms2 = st.columns(2)
+                with ms1:
+                    u_mds = st.number_input("Min Day Staff", 1, 50, mds, key=f"u_mds_{tn}")
+                with ms2:
+                    u_mns = st.number_input("Min Night Staff", 1, 50, mns, key=f"u_mns_{tn}")
 
-                    calc_day = u_dv + u_dls
-                    calc_night = u_nv + u_nls
-                    st.caption(f"Day cap: {u_dv} + {u_dls} = **{calc_day}** | Night cap: {u_nv} + {u_nls} = **{calc_night}**")
+                calc_day = u_dv + u_dls
+                calc_night = u_nv + u_nls
+                st.caption(f"Day cap: {u_dv} + {u_dls} = **{calc_day}** | Night cap: {u_nv} + {u_nls} = **{calc_night}**")
 
-                    # Update bid caps
-                    st.markdown("**Update Bid Caps**")
-                    uc1, uc2 = st.columns(2)
-                    with uc1:
-                        u_dn = st.number_input("Day Nurses", 1, 50, cfg['max_day_nurses'], key=f"u_dn_{tn}")
-                        u_nn = st.number_input("Night Nurses", 1, 50, cfg['max_night_nurses'], key=f"u_nn_{tn}")
-                    with uc2:
-                        u_dm = st.number_input("Day Medics", 1, 50, cfg['max_day_medics'], key=f"u_dm_{tn}")
-                        u_nm = st.number_input("Night Medics", 1, 50, cfg['max_night_medics'], key=f"u_nm_{tn}")
-                    if st.button("Save All Settings", key=f"save_cap_{tn}", use_container_width=True):
-                        update_track_config(tn,
-                                            max_day_nurses=u_dn, max_day_medics=u_dm,
-                                            max_night_nurses=u_nn, max_night_medics=u_nm,
-                                            day_vehicles=u_dv, night_vehicles=u_nv,
-                                            day_leave_slots=u_dls, night_leave_slots=u_nls,
-                                            min_day_staff=u_mds, min_night_staff=u_mns)
-                        st.success(f"Settings updated for {tn}")
-                        st.rerun()
+                st.markdown("**Bid Caps**")
+                uc1, uc2 = st.columns(2)
+                with uc1:
+                    u_dn = st.number_input("Day Nurses", 1, 50, cfg['max_day_nurses'], key=f"u_dn_{tn}")
+                    u_nn = st.number_input("Night Nurses", 1, 50, cfg['max_night_nurses'], key=f"u_nn_{tn}")
+                with uc2:
+                    u_dm = st.number_input("Day Medics", 1, 50, cfg['max_day_medics'], key=f"u_dm_{tn}")
+                    u_nm = st.number_input("Night Medics", 1, 50, cfg['max_night_medics'], key=f"u_nm_{tn}")
 
+                if st.button("Save All Settings", key=f"save_cap_{tn}", use_container_width=True):
+                    update_track_config(tn,
+                                        max_day_nurses=u_dn, max_day_medics=u_dm,
+                                        max_night_nurses=u_nn, max_night_medics=u_nm,
+                                        day_vehicles=u_dv, night_vehicles=u_nv,
+                                        day_leave_slots=u_dls, night_leave_slots=u_nls,
+                                        min_day_staff=u_mds, min_night_staff=u_mns)
+                    st.success(f"Settings updated for {tn}")
+                    st.rerun()
+
+                # Bid count and management
+                st.markdown("---")
+                bid_tracks_result = get_all_bid_tracks(tn)
+                bid_list = bid_tracks_result[1] if bid_tracks_result[0] else []
+                bid_count = len(bid_list) if isinstance(bid_list, list) else 0
+                st.markdown(f"**Bids submitted:** {bid_count}")
+
+                if bid_count > 0 and isinstance(bid_list, list):
+                    for b in bid_list:
+                        role = b['metadata'].get('effective_role', '?')
+                        bcol1, bcol2 = st.columns([3, 1])
+                        with bcol1:
+                            st.markdown(f"- {b['staff_name']} (v{b['version']}, {role})")
+                        with bcol2:
+                            if st.button("Delete", key=f"del_bid_{tn}_{b['staff_name']}", type="secondary"):
+                                st.session_state[f'confirm_del_bid_{tn}_{b["staff_name"]}'] = True
+
+                        if st.session_state.get(f'confirm_del_bid_{tn}_{b["staff_name"]}', False):
+                            st.warning(f"Delete bid for **{b['staff_name']}**?")
+                            dc1, dc2 = st.columns(2)
+                            with dc1:
+                                if st.button("Yes, Delete", key=f"yes_del_bid_{tn}_{b['staff_name']}"):
+                                    ok, msg = delete_bid(b['staff_name'], tn)
+                                    st.session_state[f'confirm_del_bid_{tn}_{b["staff_name"]}'] = False
+                                    if ok:
+                                        st.success(msg)
+                                    else:
+                                        st.error(msg)
+                                    st.rerun()
+                            with dc2:
+                                if st.button("Cancel", key=f"no_del_bid_{tn}_{b['staff_name']}"):
+                                    st.session_state[f'confirm_del_bid_{tn}_{b["staff_name"]}'] = False
+                                    st.rerun()
+
+                    # Wipe all bids button
+                    if st.button(f"Wipe All Bids for {tn}", key=f"wipe_bids_{tn}", use_container_width=True):
+                        st.session_state[f'confirm_wipe_{tn}'] = True
+
+                    if st.session_state.get(f'confirm_wipe_{tn}', False):
+                        st.warning(f"This will delete **all {bid_count} bids** for {tn}. This cannot be undone.")
+                        wc1, wc2 = st.columns(2)
+                        with wc1:
+                            if st.button("Yes, Wipe All", key=f"yes_wipe_{tn}"):
+                                ok, msg = wipe_all_bids(tn)
+                                st.session_state[f'confirm_wipe_{tn}'] = False
+                                if ok:
+                                    st.success(msg)
+                                else:
+                                    st.error(msg)
+                                st.rerun()
+                        with wc2:
+                            if st.button("Cancel", key=f"no_wipe_{tn}"):
+                                st.session_state[f'confirm_wipe_{tn}'] = False
+                                st.rerun()
+
+                if not cfg['is_active']:
                     # Promote to active
                     st.markdown("---")
-                    bid_tracks_result = get_all_bid_tracks(tn)
-                    bid_count = len(bid_tracks_result[1]) if bid_tracks_result[0] else 0
-                    st.markdown(f"**Bids submitted:** {bid_count}")
-
                     if st.button(f"Promote {tn} to Active", key=f"promote_{tn}",
                                  type="primary", use_container_width=True):
                         st.session_state[f'confirm_promote_{tn}'] = True
@@ -192,7 +244,48 @@ def _render_bidding_admin_sidebar():
                                 st.session_state[f'confirm_promote_{tn}'] = False
                                 st.rerun()
 
-        # ── Section 3: bid submission status ──
+                    # Delete track config
+                    st.markdown("---")
+                    if st.button(f"Delete {tn}", key=f"delete_cfg_{tn}", use_container_width=True):
+                        st.session_state[f'confirm_delete_cfg_{tn}'] = True
+
+                    if st.session_state.get(f'confirm_delete_cfg_{tn}', False):
+                        st.error(f"Delete track config **{tn}** and all its bids? This cannot be undone.")
+                        d1, d2 = st.columns(2)
+                        with d1:
+                            if st.button("Yes, Delete", key=f"yes_del_cfg_{tn}"):
+                                ok, msg = delete_track_config(tn)
+                                st.session_state[f'confirm_delete_cfg_{tn}'] = False
+                                if ok:
+                                    st.success(msg)
+                                else:
+                                    st.error(msg)
+                                st.rerun()
+                        with d2:
+                            if st.button("Cancel", key=f"no_del_cfg_{tn}"):
+                                st.session_state[f'confirm_delete_cfg_{tn}'] = False
+                                st.rerun()
+
+        # ── Section 3: create test bid ──
+        st.markdown("---")
+        st.subheader("Test Bid Setup")
+        st.caption("Create a test track config for testing the bidding flow")
+        if st.button("Create Test Track", key="create_test_track", use_container_width=True):
+            test_name = f"TEST_{datetime.now(_eastern_tz).strftime('%m%d_%H%M')}"
+            ok, msg = create_track_config(
+                test_name, max_day_nurses=3, max_day_medics=3,
+                max_night_nurses=2, max_night_medics=2,
+                day_vehicles=2, night_vehicles=1,
+                day_leave_slots=1, night_leave_slots=1,
+                min_day_staff=2, min_night_staff=1)
+            if ok:
+                toggle_bidding(test_name, True)
+                st.success(f"Test track '{test_name}' created with bidding open. Small caps (Day N:3 M:3, Night N:2 M:2) for quick testing.")
+                st.rerun()
+            else:
+                st.error(msg)
+
+        # ── Section 4: bid submission status ──
         st.markdown("---")
         st.subheader("Bid Submission Status")
         bid_cfg = get_bidding_track_config()
