@@ -173,30 +173,31 @@ def _render_bidding_admin_sidebar():
                 st.markdown(f"**Bids submitted:** {bid_count}")
 
                 if bid_count > 0 and isinstance(bid_list, list):
-                    for b in bid_list:
+                    for bi, b in enumerate(bid_list):
                         role = b['metadata'].get('effective_role', '?')
+                        bkey = f"{tn}_{bi}_{b['staff_name']}"
                         bcol1, bcol2 = st.columns([3, 1])
                         with bcol1:
                             st.markdown(f"- {b['staff_name']} (v{b['version']}, {role})")
                         with bcol2:
-                            if st.button("Delete", key=f"del_bid_{tn}_{b['staff_name']}", type="secondary"):
-                                st.session_state[f'confirm_del_bid_{tn}_{b["staff_name"]}'] = True
+                            if st.button("Delete", key=f"del_bid_{bkey}", type="secondary"):
+                                st.session_state[f'confirm_del_bid_{bkey}'] = True
 
-                        if st.session_state.get(f'confirm_del_bid_{tn}_{b["staff_name"]}', False):
+                        if st.session_state.get(f'confirm_del_bid_{bkey}', False):
                             st.warning(f"Delete bid for **{b['staff_name']}**?")
                             dc1, dc2 = st.columns(2)
                             with dc1:
-                                if st.button("Yes, Delete", key=f"yes_del_bid_{tn}_{b['staff_name']}"):
+                                if st.button("Yes, Delete", key=f"yes_del_bid_{bkey}"):
                                     ok, msg = delete_bid(b['staff_name'], tn)
-                                    st.session_state[f'confirm_del_bid_{tn}_{b["staff_name"]}'] = False
+                                    st.session_state[f'confirm_del_bid_{bkey}'] = False
                                     if ok:
                                         st.success(msg)
                                     else:
                                         st.error(msg)
                                     st.rerun()
                             with dc2:
-                                if st.button("Cancel", key=f"no_del_bid_{tn}_{b['staff_name']}"):
-                                    st.session_state[f'confirm_del_bid_{tn}_{b["staff_name"]}'] = False
+                                if st.button("Cancel", key=f"no_del_bid_{bkey}"):
+                                    st.session_state[f'confirm_del_bid_{bkey}'] = False
                                     st.rerun()
 
                     # Wipe all bids button
