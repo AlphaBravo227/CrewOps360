@@ -266,26 +266,7 @@ def _render_bidding_admin_sidebar():
                                 st.session_state[f'confirm_delete_cfg_{tn}'] = False
                                 st.rerun()
 
-        # ── Section 3: create test bid ──
-        st.markdown("---")
-        st.subheader("Test Bid Setup")
-        st.caption("Create a test track config for testing the bidding flow")
-        if st.button("Create Test Track", key="create_test_track", use_container_width=True):
-            test_name = f"TEST_{datetime.now(_eastern_tz).strftime('%m%d_%H%M')}"
-            ok, msg = create_track_config(
-                test_name, max_day_nurses=3, max_day_medics=3,
-                max_night_nurses=2, max_night_medics=2,
-                day_vehicles=2, night_vehicles=1,
-                day_leave_slots=1, night_leave_slots=1,
-                min_day_staff=2, min_night_staff=1)
-            if ok:
-                toggle_bidding(test_name, True)
-                st.success(f"Test track '{test_name}' created with bidding open. Small caps (Day N:3 M:3, Night N:2 M:2) for quick testing.")
-                st.rerun()
-            else:
-                st.error(msg)
-
-        # ── Section 4: bid submission status ──
+        # ── Section 3: bid submission status ──
         st.markdown("---")
         st.subheader("Bid Submission Status")
         bid_cfg = get_bidding_track_config()
