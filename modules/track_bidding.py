@@ -105,7 +105,8 @@ def _render_bidding_admin_sidebar():
 
         for cfg in all_configs:
             tn = cfg['track_name']
-            with st.expander(f"{'🟢' if cfg['is_active'] else '🔵' if cfg['is_bidding_open'] else '⚪'} {tn}", expanded=False):
+            just_saved = st.session_state.get(f'config_saved_{tn}', False)
+            with st.expander(f"{'🟢' if cfg['is_active'] else '🔵' if cfg['is_bidding_open'] else '⚪'} {tn}", expanded=just_saved):
                 status_label = 'Active' if cfg['is_active'] else ('Bidding Open' if cfg['is_bidding_open'] else 'Inactive')
                 st.markdown(f"**Status:** {status_label}")
 
@@ -156,14 +157,20 @@ def _render_bidding_admin_sidebar():
                     u_nm = st.number_input("Night Medics", 1, 50, cfg['max_night_medics'], key=f"u_nm_{tn}")
 
                 if st.button("Save All Settings", key=f"save_cap_{tn}", use_container_width=True):
-                    update_track_config(tn,
+                    ok, msg = update_track_config(tn,
                                         max_day_nurses=u_dn, max_day_medics=u_dm,
                                         max_night_nurses=u_nn, max_night_medics=u_nm,
                                         day_vehicles=u_dv, night_vehicles=u_nv,
                                         day_leave_slots=u_dls, night_leave_slots=u_nls,
                                         min_day_staff=u_mds, min_night_staff=u_mns)
-                    st.success(f"Settings updated for {tn}")
-                    st.rerun()
+                    if ok:
+                        st.session_state[f'config_saved_{tn}'] = True
+                        st.rerun()
+                    else:
+                        st.error(f"Save failed: {msg}")
+
+                if st.session_state.pop(f'config_saved_{tn}', False):
+                    st.success(f"Settings saved for {tn}")
 
                 # Bid count and management
                 st.markdown("---")
