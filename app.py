@@ -1484,7 +1484,8 @@ def run_clinical_track_hub():
                 cap = get_track_capacity('FY26')
 
             with st.expander("Shift Capacity Configuration", expanded=True):
-                st.markdown(f"**Operational Reference:** {cap.get('day_vehicles', 9)} day vehicles + {cap.get('day_leave_slots', 2)} leave | {cap.get('night_vehicles', 4)} night vehicles + {cap.get('night_leave_slots', 1)} leave")
+                st.markdown(f"**Operational:** {cap.get('day_vehicles', 9)} day vehicles + {cap.get('day_leave_slots', 2)} leave | {cap.get('night_vehicles', 4)} night vehicles + {cap.get('night_leave_slots', 1)} leave")
+                st.markdown(f"**Min Staffing:** Day: **{cap.get('min_day_staff', 7)}** | Night: **{cap.get('min_night_staff', 4)}**")
                 st.markdown(f"- Max Day Shift Nurses: **{cap['max_day_nurses']}**")
                 st.markdown(f"- Max Day Shift Medics: **{cap['max_day_medics']}**")
                 st.markdown(f"- Max Night Shift Nurses: **{cap['max_night_nurses']}**")

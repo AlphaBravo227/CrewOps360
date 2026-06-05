@@ -241,6 +241,8 @@ def initialize_database():
             night_vehicles INTEGER DEFAULT 4,
             day_leave_slots INTEGER DEFAULT 2,
             night_leave_slots INTEGER DEFAULT 1,
+            min_day_staff INTEGER DEFAULT 7,
+            min_night_staff INTEGER DEFAULT 4,
             created_date TEXT NOT NULL,
             modified_date TEXT NOT NULL
         )
@@ -257,6 +259,10 @@ def initialize_database():
             cursor.execute('ALTER TABLE track_configs ADD COLUMN day_leave_slots INTEGER DEFAULT 2')
         if 'night_leave_slots' not in tc_columns:
             cursor.execute('ALTER TABLE track_configs ADD COLUMN night_leave_slots INTEGER DEFAULT 1')
+        if 'min_day_staff' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN min_day_staff INTEGER DEFAULT 7')
+        if 'min_night_staff' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN min_night_staff INTEGER DEFAULT 4')
 
         # Check if we need to add the new columns to existing tracks table
         cursor.execute("PRAGMA table_info(tracks)")
@@ -284,11 +290,12 @@ def initialize_database():
                 INSERT INTO track_configs (track_name, is_active, is_bidding_open,
                     max_day_nurses, max_day_medics, max_night_nurses, max_night_medics,
                     day_vehicles, night_vehicles, day_leave_slots, night_leave_slots,
+                    min_day_staff, min_night_staff,
                     created_date, modified_date)
-                VALUES ('FY26', 1, 0, 11, 11, 5, 5, 9, 4, 2, 1, ?, ?)
+                VALUES ('FY26', 1, 0, 11, 11, 5, 5, 9, 4, 2, 1, 7, 4, ?, ?)
             ''', (now, now))
         else:
-            # Update existing FY26 to corrected capacity values
+            # Update existing FY26 to corrected values
             cursor.execute('''
                 UPDATE track_configs SET
                     max_day_nurses = 11, max_day_medics = 11,
@@ -296,7 +303,9 @@ def initialize_database():
                     day_vehicles = COALESCE(day_vehicles, 9),
                     night_vehicles = COALESCE(night_vehicles, 4),
                     day_leave_slots = COALESCE(day_leave_slots, 2),
-                    night_leave_slots = COALESCE(night_leave_slots, 1)
+                    night_leave_slots = COALESCE(night_leave_slots, 1),
+                    min_day_staff = COALESCE(min_day_staff, 7),
+                    min_night_staff = COALESCE(min_night_staff, 4)
                 WHERE track_name = 'FY26'
             ''')
 
@@ -1783,7 +1792,8 @@ def get_all_track_configs():
 def create_track_config(track_name, max_day_nurses=11, max_day_medics=11,
                         max_night_nurses=5, max_night_medics=5,
                         day_vehicles=9, night_vehicles=4,
-                        day_leave_slots=2, night_leave_slots=1):
+                        day_leave_slots=2, night_leave_slots=1,
+                        min_day_staff=7, min_night_staff=4):
     """Create a new track config (not active, bidding closed by default)."""
     try:
         initialize_database()
@@ -1795,11 +1805,13 @@ def create_track_config(track_name, max_day_nurses=11, max_day_medics=11,
             (track_name, is_active, is_bidding_open,
              max_day_nurses, max_day_medics, max_night_nurses, max_night_medics,
              day_vehicles, night_vehicles, day_leave_slots, night_leave_slots,
+             min_day_staff, min_night_staff,
              created_date, modified_date)
-            VALUES (?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (track_name, max_day_nurses, max_day_medics,
               max_night_nurses, max_night_medics,
               day_vehicles, night_vehicles, day_leave_slots, night_leave_slots,
+              min_day_staff, min_night_staff,
               now, now))
         conn.commit()
         return True, f"Track config '{track_name}' created successfully"
@@ -1817,7 +1829,8 @@ def update_track_config(track_name, **kwargs):
         cursor = conn.cursor()
         allowed = {'is_active', 'is_bidding_open', 'max_day_nurses', 'max_day_medics',
                     'max_night_nurses', 'max_night_medics',
-                    'day_vehicles', 'night_vehicles', 'day_leave_slots', 'night_leave_slots'}
+                    'day_vehicles', 'night_vehicles', 'day_leave_slots', 'night_leave_slots',
+                    'min_day_staff', 'min_night_staff'}
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return False, "No valid fields to update"
@@ -1849,11 +1862,14 @@ def get_track_capacity(track_name):
             'night_vehicles': config.get('night_vehicles', 4),
             'day_leave_slots': config.get('day_leave_slots', 2),
             'night_leave_slots': config.get('night_leave_slots', 1),
+            'min_day_staff': config.get('min_day_staff', 7),
+            'min_night_staff': config.get('min_night_staff', 4),
         }
     return {'max_day_nurses': 11, 'max_day_medics': 11,
             'max_night_nurses': 5, 'max_night_medics': 5,
             'day_vehicles': 9, 'night_vehicles': 4,
-            'day_leave_slots': 2, 'night_leave_slots': 1}
+            'day_leave_slots': 2, 'night_leave_slots': 1,
+            'min_day_staff': 7, 'min_night_staff': 4}
 
 
 def promote_bid_to_active(bid_track_name):
