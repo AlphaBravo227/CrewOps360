@@ -295,11 +295,13 @@ def initialize_database():
                 VALUES ('FY26', 1, 0, 11, 11, 5, 5, 9, 4, 2, 1, 7, 4, ?, ?)
             ''', (now, now))
         else:
-            # Update existing FY26 to corrected values
+            # Fill in any NULL columns on existing FY26 without overwriting user edits
             cursor.execute('''
                 UPDATE track_configs SET
-                    max_day_nurses = 11, max_day_medics = 11,
-                    max_night_nurses = 5, max_night_medics = 5,
+                    max_day_nurses = COALESCE(max_day_nurses, 11),
+                    max_day_medics = COALESCE(max_day_medics, 11),
+                    max_night_nurses = COALESCE(max_night_nurses, 5),
+                    max_night_medics = COALESCE(max_night_medics, 5),
                     day_vehicles = COALESCE(day_vehicles, 9),
                     night_vehicles = COALESCE(night_vehicles, 4),
                     day_leave_slots = COALESCE(day_leave_slots, 2),
