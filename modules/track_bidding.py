@@ -542,8 +542,9 @@ def _display_bidding_staff_interface(
         st.session_state[bid_modified_key] = {
             'staff': selected_staff, 'track': blank.copy(), 'valid': False, 'is_new': True
         }
-        st.success("All shifts cleared")
+        st.success("Cleared your in-progress selections below. If you already submitted a bid, it is unchanged until you submit again.")
         st.rerun()
+    st.caption("Clears your working selections below — does not delete a bid you've already submitted unless you resubmit afterward.")
 
     # Initialize session state for bidding track changes
     if bid_changes_key not in st.session_state:
