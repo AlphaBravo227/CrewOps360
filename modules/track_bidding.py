@@ -509,11 +509,10 @@ def _display_bidding_staff_interface(
     active_result = get_track_from_db(selected_staff, active_track_name)
     has_active = active_result[0]
 
-    # Determine starting point for the bid editor: existing bid > active track > blank
+    # Determine starting point for the bid editor: existing bid > blank
+    # (never the active track — a fresh bid should start empty, not a copy of last cycle's track)
     if has_bid:
         current_track_data = bid_result[1]['track_data']
-    elif has_active:
-        current_track_data = active_result[1]['track_data']
     else:
         current_track_data = {day: "" for day in days}
 
@@ -533,28 +532,18 @@ def _display_bidding_staff_interface(
     bid_changes_key = f'bid_track_changes_{bid_track_name}'
     bid_modified_key = f'bid_modified_track_{bid_track_name}'
 
-    # Reset / Clear buttons
-    r_col, c_col = st.columns(2)
-    with r_col:
-        if st.button("Reset to Current", key=f"bid_reset_{selected_staff}_{bid_track_name}", use_container_width=True):
-            if bid_changes_key in st.session_state:
-                del st.session_state[bid_changes_key]
-            if bid_modified_key in st.session_state:
-                del st.session_state[bid_modified_key]
-            st.success("Reset to current data")
-            st.rerun()
-    with c_col:
-        if st.button("Clear All Shifts", key=f"bid_clear_{selected_staff}_{bid_track_name}", use_container_width=True):
-            blank = {day: "" for day in days}
-            if staff_preassignments:
-                for day, pa in staff_preassignments.items():
-                    blank[day] = pa
-            st.session_state[bid_changes_key] = {selected_staff: blank}
-            st.session_state[bid_modified_key] = {
-                'staff': selected_staff, 'track': blank.copy(), 'valid': False, 'is_new': True
-            }
-            st.success("All shifts cleared")
-            st.rerun()
+    # Clear button
+    if st.button("Clear All Shifts", key=f"bid_clear_{selected_staff}_{bid_track_name}", use_container_width=True):
+        blank = {day: "" for day in days}
+        if staff_preassignments:
+            for day, pa in staff_preassignments.items():
+                blank[day] = pa
+        st.session_state[bid_changes_key] = {selected_staff: blank}
+        st.session_state[bid_modified_key] = {
+            'staff': selected_staff, 'track': blank.copy(), 'valid': False, 'is_new': True
+        }
+        st.success("All shifts cleared")
+        st.rerun()
 
     # Initialize session state for bidding track changes
     if bid_changes_key not in st.session_state:
@@ -719,7 +708,7 @@ def _display_track_selection_tab(
         night_assignments = modification_results["night_assignments"]
         assignment_details = modification_results["assignment_details"]
 
-    # Reference track: use active track or bid
+    # Reference track: always the active track — shown for comparison only, never edited
     bid_result = get_bid_track_from_db(selected_staff, bid_track_name)
     has_bid = bid_result[0]
     active_cfg = get_active_track_config()
@@ -727,9 +716,7 @@ def _display_track_selection_tab(
     active_result = get_track_from_db(selected_staff, active_name)
     has_active = active_result[0]
 
-    if has_bid:
-        reference_track = bid_result[1]['track_data'].copy()
-    elif has_active:
+    if has_active:
         reference_track = active_result[1]['track_data'].copy()
     elif current_tracks_df is not None and staff_col_tracks:
         st_df = current_tracks_df[current_tracks_df[staff_col_tracks] == selected_staff]
@@ -740,9 +727,12 @@ def _display_track_selection_tab(
     else:
         reference_track = {day: "" for day in days}
 
-    # Initialize track changes
+    # Initialize track changes: existing bid > blank — never a copy of the reference track
     if selected_staff not in st.session_state.track_changes:
-        track_data = reference_track.copy()
+        if has_bid:
+            track_data = bid_result[1]['track_data'].copy()
+        else:
+            track_data = {day: "" for day in days}
         if preassignments:
             for day, pa in preassignments.items():
                 if pa == "AT":
