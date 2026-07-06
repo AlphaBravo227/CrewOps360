@@ -156,13 +156,33 @@ def _render_bidding_admin_sidebar():
                     u_dm = st.number_input("Day Medics", 1, 50, cfg['max_day_medics'], key=f"u_dm_{tn}")
                     u_nm = st.number_input("Night Medics", 1, 50, cfg['max_night_medics'], key=f"u_nm_{tn}")
 
+                st.markdown("**Base Shift Counts** *(day/night shift slots per base, used for hypothetical bid assignments)*")
+                bc_day, bc_night = st.columns(2)
+                with bc_day:
+                    st.caption("Day shifts per base")
+                    u_day_kmht = st.number_input("KMHT", 0, 20, cfg.get('day_kmht', 1), key=f"u_day_kmht_{tn}")
+                    u_day_klwm = st.number_input("KLWM", 0, 20, cfg.get('day_klwm', 2), key=f"u_day_klwm_{tn}")
+                    u_day_kbed = st.number_input("KBED", 0, 20, cfg.get('day_kbed', 2), key=f"u_day_kbed_{tn}")
+                    u_day_1b9 = st.number_input("1B9", 0, 20, cfg.get('day_1b9', 2), key=f"u_day_1b9_{tn}")
+                    u_day_kpym = st.number_input("KPYM", 0, 20, cfg.get('day_kpym', 2), key=f"u_day_kpym_{tn}")
+                with bc_night:
+                    st.caption("Night shifts per base")
+                    u_night_klwm = st.number_input("KLWM", 0, 20, cfg.get('night_klwm', 1), key=f"u_night_klwm_{tn}")
+                    u_night_kbed = st.number_input("KBED", 0, 20, cfg.get('night_kbed', 2), key=f"u_night_kbed_{tn}")
+                    u_night_kpym = st.number_input("KPYM", 0, 20, cfg.get('night_kpym', 2), key=f"u_night_kpym_{tn}")
+                    st.caption("KMHT and 1B9 have no night shifts")
+
                 if st.button("Save All Settings", key=f"save_cap_{tn}", use_container_width=True):
                     ok, msg = update_track_config(tn,
                                         max_day_nurses=u_dn, max_day_medics=u_dm,
                                         max_night_nurses=u_nn, max_night_medics=u_nm,
                                         day_vehicles=u_dv, night_vehicles=u_nv,
                                         day_leave_slots=u_dls, night_leave_slots=u_nls,
-                                        min_day_staff=u_mds, min_night_staff=u_mns)
+                                        min_day_staff=u_mds, min_night_staff=u_mns,
+                                        day_kmht=u_day_kmht, day_klwm=u_day_klwm,
+                                        day_kbed=u_day_kbed, day_1b9=u_day_1b9, day_kpym=u_day_kpym,
+                                        night_klwm=u_night_klwm, night_kbed=u_night_kbed,
+                                        night_kpym=u_night_kpym)
                     if ok:
                         st.session_state[f'config_saved_{tn}'] = True
                         st.rerun()

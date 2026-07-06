@@ -243,6 +243,14 @@ def initialize_database():
             night_leave_slots INTEGER DEFAULT 1,
             min_day_staff INTEGER DEFAULT 7,
             min_night_staff INTEGER DEFAULT 4,
+            day_kmht INTEGER DEFAULT 1,
+            day_klwm INTEGER DEFAULT 2,
+            day_kbed INTEGER DEFAULT 2,
+            day_1b9 INTEGER DEFAULT 2,
+            day_kpym INTEGER DEFAULT 2,
+            night_klwm INTEGER DEFAULT 1,
+            night_kbed INTEGER DEFAULT 2,
+            night_kpym INTEGER DEFAULT 2,
             created_date TEXT NOT NULL,
             modified_date TEXT NOT NULL
         )
@@ -263,6 +271,22 @@ def initialize_database():
             cursor.execute('ALTER TABLE track_configs ADD COLUMN min_day_staff INTEGER DEFAULT 7')
         if 'min_night_staff' not in tc_columns:
             cursor.execute('ALTER TABLE track_configs ADD COLUMN min_night_staff INTEGER DEFAULT 4')
+        if 'day_kmht' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN day_kmht INTEGER DEFAULT 1')
+        if 'day_klwm' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN day_klwm INTEGER DEFAULT 2')
+        if 'day_kbed' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN day_kbed INTEGER DEFAULT 2')
+        if 'day_1b9' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN day_1b9 INTEGER DEFAULT 2')
+        if 'day_kpym' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN day_kpym INTEGER DEFAULT 2')
+        if 'night_klwm' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN night_klwm INTEGER DEFAULT 1')
+        if 'night_kbed' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN night_kbed INTEGER DEFAULT 2')
+        if 'night_kpym' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN night_kpym INTEGER DEFAULT 2')
 
         # Check if we need to add the new columns to existing tracks table
         cursor.execute("PRAGMA table_info(tracks)")
@@ -291,8 +315,10 @@ def initialize_database():
                     max_day_nurses, max_day_medics, max_night_nurses, max_night_medics,
                     day_vehicles, night_vehicles, day_leave_slots, night_leave_slots,
                     min_day_staff, min_night_staff,
+                    day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
+                    night_klwm, night_kbed, night_kpym,
                     created_date, modified_date)
-                VALUES ('FY26', 1, 0, 11, 11, 5, 5, 9, 4, 2, 1, 7, 4, ?, ?)
+                VALUES ('FY26', 1, 0, 11, 11, 5, 5, 9, 4, 2, 1, 7, 4, 1, 2, 2, 2, 2, 1, 2, 2, ?, ?)
             ''', (now, now))
         else:
             # Fill in any NULL columns on existing FY26 without overwriting user edits
@@ -307,7 +333,15 @@ def initialize_database():
                     day_leave_slots = COALESCE(day_leave_slots, 2),
                     night_leave_slots = COALESCE(night_leave_slots, 1),
                     min_day_staff = COALESCE(min_day_staff, 7),
-                    min_night_staff = COALESCE(min_night_staff, 4)
+                    min_night_staff = COALESCE(min_night_staff, 4),
+                    day_kmht = COALESCE(day_kmht, 1),
+                    day_klwm = COALESCE(day_klwm, 2),
+                    day_kbed = COALESCE(day_kbed, 2),
+                    day_1b9 = COALESCE(day_1b9, 2),
+                    day_kpym = COALESCE(day_kpym, 2),
+                    night_klwm = COALESCE(night_klwm, 1),
+                    night_kbed = COALESCE(night_kbed, 2),
+                    night_kpym = COALESCE(night_kpym, 2)
                 WHERE track_name = 'FY26'
             ''')
 
@@ -1795,7 +1829,9 @@ def create_track_config(track_name, max_day_nurses=11, max_day_medics=11,
                         max_night_nurses=5, max_night_medics=5,
                         day_vehicles=9, night_vehicles=4,
                         day_leave_slots=2, night_leave_slots=1,
-                        min_day_staff=7, min_night_staff=4):
+                        min_day_staff=7, min_night_staff=4,
+                        day_kmht=1, day_klwm=2, day_kbed=2, day_1b9=2, day_kpym=2,
+                        night_klwm=1, night_kbed=2, night_kpym=2):
     """Create a new track config (not active, bidding closed by default)."""
     try:
         initialize_database()
@@ -1808,12 +1844,16 @@ def create_track_config(track_name, max_day_nurses=11, max_day_medics=11,
              max_day_nurses, max_day_medics, max_night_nurses, max_night_medics,
              day_vehicles, night_vehicles, day_leave_slots, night_leave_slots,
              min_day_staff, min_night_staff,
+             day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
+             night_klwm, night_kbed, night_kpym,
              created_date, modified_date)
-            VALUES (?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (track_name, max_day_nurses, max_day_medics,
               max_night_nurses, max_night_medics,
               day_vehicles, night_vehicles, day_leave_slots, night_leave_slots,
               min_day_staff, min_night_staff,
+              day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
+              night_klwm, night_kbed, night_kpym,
               now, now))
         conn.commit()
         return True, f"Track config '{track_name}' created successfully"
@@ -1832,7 +1872,9 @@ def update_track_config(track_name, **kwargs):
         allowed = {'is_active', 'is_bidding_open', 'max_day_nurses', 'max_day_medics',
                     'max_night_nurses', 'max_night_medics',
                     'day_vehicles', 'night_vehicles', 'day_leave_slots', 'night_leave_slots',
-                    'min_day_staff', 'min_night_staff'}
+                    'min_day_staff', 'min_night_staff',
+                    'day_kmht', 'day_klwm', 'day_kbed', 'day_1b9', 'day_kpym',
+                    'night_klwm', 'night_kbed', 'night_kpym'}
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return False, "No valid fields to update"
@@ -1872,6 +1914,39 @@ def get_track_capacity(track_name):
             'day_vehicles': 9, 'night_vehicles': 4,
             'day_leave_slots': 2, 'night_leave_slots': 1,
             'min_day_staff': 7, 'min_night_staff': 4}
+
+
+# Default per-base shift-slot counts, matching the historical fixed shift-to-base
+# mapping. KMHT and 1B9 have no night presence.
+_DEFAULT_BASE_SHIFT_COUNTS = {
+    'KMHT': {'day': 1, 'night': 0},
+    'KLWM': {'day': 2, 'night': 1},
+    'KBED': {'day': 2, 'night': 2},
+    '1B9':  {'day': 2, 'night': 0},
+    'KPYM': {'day': 2, 'night': 2},
+}
+
+
+def get_base_shift_counts(track_name):
+    """
+    Return {base_name: {'day': N, 'night': N}} shift-slot counts for a track config,
+    used by the hypothetical scheduler to size competition for each base. Falls back
+    to the historical fixed defaults for any track config not found or not yet
+    carrying these columns.
+    """
+    config = get_track_config_by_name(track_name)
+    if not config:
+        return _DEFAULT_BASE_SHIFT_COUNTS
+    return {
+        'KMHT': {'day': config.get('day_kmht', _DEFAULT_BASE_SHIFT_COUNTS['KMHT']['day']), 'night': 0},
+        'KLWM': {'day': config.get('day_klwm', _DEFAULT_BASE_SHIFT_COUNTS['KLWM']['day']),
+                 'night': config.get('night_klwm', _DEFAULT_BASE_SHIFT_COUNTS['KLWM']['night'])},
+        'KBED': {'day': config.get('day_kbed', _DEFAULT_BASE_SHIFT_COUNTS['KBED']['day']),
+                 'night': config.get('night_kbed', _DEFAULT_BASE_SHIFT_COUNTS['KBED']['night'])},
+        '1B9':  {'day': config.get('day_1b9', _DEFAULT_BASE_SHIFT_COUNTS['1B9']['day']), 'night': 0},
+        'KPYM': {'day': config.get('day_kpym', _DEFAULT_BASE_SHIFT_COUNTS['KPYM']['day']),
+                 'night': config.get('night_kpym', _DEFAULT_BASE_SHIFT_COUNTS['KPYM']['night'])},
+    }
 
 
 def promote_bid_to_active(bid_track_name):
