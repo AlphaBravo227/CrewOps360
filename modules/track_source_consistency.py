@@ -239,11 +239,6 @@ def ensure_track_source_consistency():
     return True
 
 # Example usage functions for each location where 📊 appears
-def display_for_current_track_tab(selected_staff):
-    """Display track source info in Current Track tab"""
-    display_track_source_info("current_track_tab")
-    display_track_data_source_info(selected_staff, "current_track_tab")
-
 def display_for_track_modification(selected_staff):
     """Display track source info in Track Modification tab"""
     display_track_source_info("track_modification")

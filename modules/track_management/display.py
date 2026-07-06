@@ -17,13 +17,10 @@ def display_track(selected_staff, staff_track, days, shifts_per_pay_period, nigh
     FIXED: Proper AT counting in all validation functions
     """
     st.subheader(f"Current Track for {selected_staff}")
-    
+
     # Check if using Annual Rebid mode
     use_database_logic = st.session_state.get('track_source', "Annual Rebid") == "Annual Rebid"
-      
-    from ..track_source_consistency import display_for_current_track_tab
-    display_for_current_track_tab(selected_staff)
-    
+
     # Extract track data
     track_data = {day: staff_track.iloc[0][day] for day in days}
     

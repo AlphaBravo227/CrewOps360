@@ -438,7 +438,7 @@ def _display_bidding_staff_interface(
     preassignment_df, bid_track_name, capacity
 ):
     """Render the tabbed bidding interface for a single staff member."""
-    from modules.track_management.display import display_track
+    from modules.track_management.display import display_schedule_by_blocks
     from modules.track_management.preference_display import display_preferences
     from modules.preference_editor import display_location_preference_editor
     from modules.track_management.preassignment import get_staff_preassignments
@@ -509,16 +509,13 @@ def _display_bidding_staff_interface(
     active_result = get_track_from_db(selected_staff, active_track_name)
     has_active = active_result[0]
 
-    # Determine current track data to display
+    # Determine starting point for the bid editor: existing bid > active track > blank
     if has_bid:
         current_track_data = bid_result[1]['track_data']
-        track_label = f"Your submitted bid (v{bid_result[1]['version']})"
     elif has_active:
         current_track_data = active_result[1]['track_data']
-        track_label = f"Your active track ({active_track_name}) — no bid submitted yet"
     else:
         current_track_data = {day: "" for day in days}
-        track_label = "No active track or bid — starting fresh"
 
     # Apply preassignments
     if staff_preassignments:
@@ -602,17 +599,20 @@ def _display_bidding_staff_interface(
     # ── Tab 0: Current Track ──
     with tabs[0]:
         st.subheader("Current Track")
-        st.info(track_label)
-        # Build a small DataFrame for display
-        track_df = pd.DataFrame([{day: current_track_data.get(day, "") for day in days}])
-        track_df[staff_col_prefs] = selected_staff
-        display_track(
-            selected_staff, track_df, days,
-            shifts_per_pay_period, night_minimum,
-            preassignments=staff_preassignments,
-            track_source="Bid" if has_bid else ("Active Track" if has_active else "New"),
-            weekend_minimum=weekend_minimum
-        )
+        if has_active:
+            st.info(f"📊 Your active track: **{active_track_name}**")
+            display_schedule_by_blocks(active_result[1]['track_data'], days, staff_preassignments)
+        else:
+            st.info("You do not have an active track on file yet.")
+
+        st.markdown("---")
+
+        st.subheader("Current Track Bid")
+        if has_bid:
+            st.info(f"📊 Your submitted bid for **{bid_track_name}** (version {bid_result[1]['version']}, submitted {bid_result[1]['submission_date']}).")
+            display_schedule_by_blocks(bid_result[1]['track_data'], days, staff_preassignments)
+        else:
+            st.info(f"You have not submitted a bid for **{bid_track_name}** yet. Use the **Track Selection** tab to build your bid, then submit it from the **Submission** tab.")
 
     # ── Tab 1: Preferences ──
     with tabs[1]:
