@@ -321,8 +321,8 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                     day_name = day_parts[0] if day_parts else "Unknown"
                     day_headers.append(day_name)
                 
-                # Reference track row
-                reference_row = {"Row Type": "Reference Track"}
+                # Reference track row — this is always the staff member's active track, shown for comparison
+                reference_row = {"Row Type": "Your Active Track"}
                 for idx, day in enumerate(week_days):
                     reference_assignment = reference_track.get(day, "")
                     reference_row[day_headers[idx]] = reference_assignment if reference_assignment else "Off"
@@ -362,9 +362,9 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                             elif "Pre:" in str(val):
                                 styles.loc[idx, col] = 'background-color: #e2e3e5; font-weight: bold'
                     # Highlight changes in Current Track Changes mode
-                    if not use_database_logic and "Reference Track" in df.index and "Proposed Track" in df.index:
+                    if not use_database_logic and "Your Active Track" in df.index and "Proposed Track" in df.index:
                         for col in df.columns:
-                            ref_val = str(df.loc["Reference Track", col]).replace("Off", "")
+                            ref_val = str(df.loc["Your Active Track", col]).replace("Off", "")
                             mod_val = str(df.loc["Proposed Track", col]).replace("Off", "")
                             if "Pre:" in ref_val or "Pre:" in mod_val:
                                 continue
