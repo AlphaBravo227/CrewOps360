@@ -376,6 +376,10 @@ def _run_bidding_interface(bid_track_name, capacity):
         st.error("Preferences file not found in 'upload files' folder.")
         return
 
+    if not excel_files['current_tracks']:
+        st.error("Current tracks file not found in 'upload files' folder.")
+        return
+
     def load_excel(path):
         return pd.read_excel(path) if path else None
 
@@ -394,7 +398,7 @@ def _run_bidding_interface(bid_track_name, capacity):
     staff_col_prefs = mappings['staff_col_prefs']
     staff_col_tracks = mappings.get('staff_col_tracks')
     role_col = mappings['role_col']
-    days = detection['days']
+    days = list(current_tracks_df.columns[1:43])  # 6 weeks = 42 days (mirrors run_clinical_track_hub)
     no_matrix_col = mappings.get('no_matrix_col')
     reduced_rest_col = mappings.get('reduced_rest_col')
     seniority_col = mappings.get('seniority_col')
