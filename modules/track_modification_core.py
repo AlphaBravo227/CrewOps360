@@ -62,27 +62,32 @@ def get_all_staff_updated_preferences(preferences_df, staff_col_prefs):
 
 def enhance_hypothetical_scheduler_with_staffing_analysis(
     selected_staff, preferences_df, current_tracks_df, days,
-    staff_col_prefs, staff_col_tracks, role_col, seniority_col
+    staff_col_prefs, staff_col_tracks, role_col, seniority_col,
+    bid_track_name=None
 ):
     """
     Enhanced hypothetical scheduler that includes comprehensive staffing analysis
     FIXED: Now ensures ALL staff members' most recent preferences are used
-    
+
+    bid_track_name: if set, count occupancy/competition against submitted bids for
+        this cycle instead of the active roster (see get_staff_on_shift_from_database).
+
     Returns:
         dict: Enhanced results including staffing analysis for each day/shift
     """
     # FIXED: Get most recent preferences for ALL staff, not just selected staff
     updated_preferences_df = get_all_staff_updated_preferences(preferences_df, staff_col_prefs)
-    
+
     # Check whether the selected staff has base preferences on file
     from modules.db_utils import get_location_preferences_from_db
     has_base_prefs, _ = get_location_preferences_from_db(selected_staff)
     preference_source = 'database' if has_base_prefs else 'no_base_preferences'
-    
+
     # Generate schedule with updated preferences for ALL staff
     base_results = generate_hypothetical_schedule(
         selected_staff, updated_preferences_df, current_tracks_df, days,
-        staff_col_prefs, staff_col_tracks, role_col, seniority_col
+        staff_col_prefs, staff_col_tracks, role_col, seniority_col,
+        bid_track_name=bid_track_name
     )
     
     # Add preference source information to results
@@ -105,16 +110,18 @@ def enhance_hypothetical_scheduler_with_staffing_analysis(
         
         # Calculate staffing for day shift
         day_staffing = calculate_shift_staffing_analysis(
-            day, "D", "day", updated_preferences_df, current_tracks_df, 
+            day, "D", "day", updated_preferences_df, current_tracks_df,
             staff_col_prefs, staff_col_tracks, role_col,
-            max_day_nurses, max_day_medics, use_database_logic
+            max_day_nurses, max_day_medics, use_database_logic,
+            bid_track_name=bid_track_name
         )
-        
-        # Calculate staffing for night shift  
+
+        # Calculate staffing for night shift
         night_staffing = calculate_shift_staffing_analysis(
             day, "N", "night", updated_preferences_df, current_tracks_df,
             staff_col_prefs, staff_col_tracks, role_col,
-            max_night_nurses, max_night_medics, use_database_logic
+            max_night_nurses, max_night_medics, use_database_logic,
+            bid_track_name=bid_track_name
         )
         
         # Rest of the function remains the same...
@@ -172,20 +179,27 @@ def enhance_hypothetical_scheduler_with_staffing_analysis(
 def calculate_shift_staffing_analysis(
     day, shift_code, shift_type, preferences_df, current_tracks_df,
     staff_col_prefs, staff_col_tracks, role_col,
-    max_nurses, max_medics, use_database_logic
+    max_nurses, max_medics, use_database_logic,
+    bid_track_name=None
 ):
     """
     Calculate comprehensive staffing analysis for a specific shift
     This replaces the duplicate logic in analyze_track_modification_needs
-    
+
+    bid_track_name: if set, count occupancy against submitted bids for this
+        cycle instead of the active roster (see get_staff_on_shift_from_database).
+
     Returns:
         dict: Complete staffing analysis including counts, needs, etc.
     """
     from modules.hypothetical_scheduler_new import get_staff_on_shift_from_database, get_staff_on_shift_from_excel, get_staff_role_for_counting
-    
+
     # Get current staff on shift using the same logic as hypothetical scheduler
     if use_database_logic:
-        staff_on_shift = get_staff_on_shift_from_database(day, shift_code, preferences_df, staff_col_prefs, role_col)
+        staff_on_shift = get_staff_on_shift_from_database(
+            day, shift_code, preferences_df, staff_col_prefs, role_col,
+            bid_track_name=bid_track_name
+        )
     else:
         staff_on_shift = get_staff_on_shift_from_excel(day, shift_code, current_tracks_df, staff_col_tracks)
     
@@ -349,11 +363,17 @@ def calculate_all_modification_options(
     selected_staff, preferences_df, current_tracks_df, days,
     staff_col_prefs, staff_col_tracks, role_col, no_matrix_col,
     reduced_rest_col, seniority_col, max_day_nurses=None, max_day_medics=None,
-    max_night_nurses=None, max_night_medics=None
+    max_night_nurses=None, max_night_medics=None, bid_track_name=None
 ):
     """
     FIXED: Calculate all track modification options using enhanced hypothetical scheduler
     Now uses single source of truth for all staffing calculations
+
+    bid_track_name: pass the bidding cycle's track_name (e.g. "FY27") when calling
+        this from the Track Bidding flow, so availability and hypothetical
+        assignments are computed against bids submitted for that cycle instead
+        of the currently active roster. Leave as None for in-year modifications
+        against the live/active track (Clinical Track Hub behavior, unchanged).
     """
     # Update session state with passed values if provided
     if max_day_nurses is not None:
@@ -364,7 +384,7 @@ def calculate_all_modification_options(
         st.session_state.max_night_nurses = max_night_nurses
     if max_night_medics is not None:
         st.session_state.max_night_medics = max_night_medics
-    
+
     # FIXED: Use enhanced hypothetical scheduler with staffing analysis
     results = enhance_hypothetical_scheduler_with_staffing_analysis(
         selected_staff,
@@ -374,7 +394,8 @@ def calculate_all_modification_options(
         staff_col_prefs,
         staff_col_tracks,
         role_col,
-        seniority_col
+        seniority_col,
+        bid_track_name=bid_track_name
     )
     
     day_assignments = results['day_assignments']

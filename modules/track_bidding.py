@@ -702,7 +702,8 @@ def _display_track_selection_tab(
             staff_col_prefs, staff_col_tracks, role_col, no_matrix_col,
             reduced_rest_col, seniority_col,
             max_day_nurses=max_day_nurses, max_day_medics=max_day_medics,
-            max_night_nurses=max_night_nurses, max_night_medics=max_night_medics
+            max_night_nurses=max_night_nurses, max_night_medics=max_night_medics,
+            bid_track_name=bid_track_name
         )
         options_by_day = modification_results["options_by_day"]
         day_assignments = modification_results["day_assignments"]
@@ -907,7 +908,8 @@ def _display_bid_hypothetical(
             staff_col_prefs, staff_col_tracks, role_col, no_matrix_col,
             reduced_rest_col, seniority_col,
             max_day_nurses=max_dn, max_day_medics=max_dm,
-            max_night_nurses=max_nn, max_night_medics=max_nm
+            max_night_nurses=max_nn, max_night_medics=max_nm,
+            bid_track_name=bid_track_name
         )
 
     day_assignments = results['day_assignments']

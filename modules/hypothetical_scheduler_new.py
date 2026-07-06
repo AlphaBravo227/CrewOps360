@@ -152,18 +152,23 @@ def get_staff_shift_preferences(staff_name, preferences_df, staff_col_prefs, shi
     except:
         return {}
 
-def get_staff_on_shift_from_database(day, shift_type, preferences_df, staff_col_prefs, role_col):
+def get_staff_on_shift_from_database(day, shift_type, preferences_df, staff_col_prefs, role_col, bid_track_name=None):
     """
     FIXED: Get staff assigned to a specific day and shift type from database
     Properly handles day name format variations
-    
+
     Args:
-        day (str): The day to check  
+        day (str): The day to check
         shift_type (str): "D" for day or "N" for night
         preferences_df (DataFrame): Preferences DataFrame
         staff_col_prefs (str): Column name for staff
         role_col (str): Column name for role
-        
+        bid_track_name (str, optional): If set, count occupancy against submitted
+            bids for this bidding cycle instead of the currently active roster —
+            used when computing availability for a Track Bidding cycle, where
+            capacity should reflect only what's actually been bid so far, not
+            who is active on the prior/current cycle.
+
     Returns:
         list: List of staff names assigned to this SPECIFIC shift type
     """
@@ -171,16 +176,23 @@ def get_staff_on_shift_from_database(day, shift_type, preferences_df, staff_col_
         db_path = 'data/medflight_tracks.db'
         if not os.path.exists(db_path):
             return []
-        
+
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT staff_name, track_data 
-            FROM tracks 
-            WHERE is_active = 1
-        """)
-        
+
+        if bid_track_name:
+            cursor.execute("""
+                SELECT staff_name, track_data
+                FROM tracks
+                WHERE track_name = ? AND is_active = 0
+            """, (bid_track_name,))
+        else:
+            cursor.execute("""
+                SELECT staff_name, track_data
+                FROM tracks
+                WHERE is_active = 1
+            """)
+
         results = cursor.fetchall()
         conn.close()
         
@@ -310,11 +322,13 @@ def get_staff_role_for_counting(staff_name, preferences_df, staff_col_prefs, rol
 def calculate_hypothetical_assignment(
     selected_staff, day, shift_type, preferences_df, current_tracks_df,
     staff_col_prefs, staff_col_tracks, role_col, seniority_col, use_database_logic,
-    all_base_prefs=None
+    all_base_prefs=None, bid_track_name=None
 ):
     """
     Simulate seniority-based shift assignment using base preferences.
     all_base_prefs: {staff_name: row_dict} pre-loaded from user_location_preferences.
+    bid_track_name: if set, count competitors from submitted bids for this cycle
+        instead of the active roster (see get_staff_on_shift_from_database).
     Returns assignment as base short name (e.g. "KBED"), preference_score as rank int.
     """
     from .shift_definitions import day_shifts, night_shifts
@@ -323,7 +337,8 @@ def calculate_hypothetical_assignment(
     if use_database_logic:
         staff_on_shift = get_staff_on_shift_from_database(
             day, "D" if shift_type == "day" else "N",
-            preferences_df, staff_col_prefs, role_col
+            preferences_df, staff_col_prefs, role_col,
+            bid_track_name=bid_track_name
         )
     else:
         staff_on_shift = get_staff_on_shift_from_excel(
@@ -505,11 +520,14 @@ def calculate_hypothetical_assignment(
 
 def generate_hypothetical_schedule_new(
     selected_staff, preferences_df, current_tracks_df, days,
-    staff_col_prefs, staff_col_tracks, role_col, seniority_col
+    staff_col_prefs, staff_col_tracks, role_col, seniority_col,
+    bid_track_name=None
 ):
     """
     Generate a hypothetical schedule using base preferences (user_location_preferences).
     Base prefs are loaded once and passed into each per-day competition.
+    bid_track_name: if set, simulate competition against submitted bids for this
+        cycle instead of the active roster (see get_staff_on_shift_from_database).
     """
     use_database_logic = st.session_state.get('track_source', "Annual Rebid") == "Annual Rebid"
 
@@ -528,13 +546,13 @@ def generate_hypothetical_schedule_new(
         day_result = calculate_hypothetical_assignment(
             selected_staff, day, "day", preferences_df, current_tracks_df,
             staff_col_prefs, staff_col_tracks, role_col, seniority_col,
-            use_database_logic, all_base_prefs
+            use_database_logic, all_base_prefs, bid_track_name=bid_track_name
         )
 
         night_result = calculate_hypothetical_assignment(
             selected_staff, day, "night", preferences_df, current_tracks_df,
             staff_col_prefs, staff_col_tracks, role_col, seniority_col,
-            use_database_logic, all_base_prefs
+            use_database_logic, all_base_prefs, bid_track_name=bid_track_name
         )
 
         day_assignments[day] = day_result['assignment']
