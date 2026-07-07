@@ -406,7 +406,13 @@ def _run_bidding_interface(bid_track_name, capacity):
     preferences_df = load_excel(excel_files['preferences'])
     current_tracks_df = load_excel(excel_files['current_tracks'])
     requirements_df = load_excel(excel_files['requirements'])
-    preassignment_df = load_excel(excel_files['preassignments'])
+
+    # NOTE: preassignments must be loaded via load_preassignments() rather than a bare
+    # load_excel() — get_staff_preassignments() looks staff up via
+    # preassignment_df.loc[staff_name], which requires the staff-name index (and
+    # duplicate-row handling) that only load_preassignments() sets up.
+    from modules.track_management.preassignment import load_preassignments
+    preassignment_df = load_preassignments() if excel_files['preassignments'] else None
 
     if preferences_df is None:
         st.error("Could not load preferences file.")
