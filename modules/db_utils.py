@@ -226,10 +226,72 @@ def initialize_database():
         )
         ''')
         
+        # Create track_configs table for track naming and bidding system
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS track_configs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_name TEXT NOT NULL UNIQUE,
+            is_active INTEGER DEFAULT 0,
+            is_bidding_open INTEGER DEFAULT 0,
+            max_day_nurses INTEGER DEFAULT 11,
+            max_day_medics INTEGER DEFAULT 11,
+            max_night_nurses INTEGER DEFAULT 5,
+            max_night_medics INTEGER DEFAULT 5,
+            day_vehicles INTEGER DEFAULT 9,
+            night_vehicles INTEGER DEFAULT 4,
+            day_leave_slots INTEGER DEFAULT 2,
+            night_leave_slots INTEGER DEFAULT 1,
+            min_day_staff INTEGER DEFAULT 7,
+            min_night_staff INTEGER DEFAULT 4,
+            day_kmht INTEGER DEFAULT 1,
+            day_klwm INTEGER DEFAULT 2,
+            day_kbed INTEGER DEFAULT 2,
+            day_1b9 INTEGER DEFAULT 2,
+            day_kpym INTEGER DEFAULT 2,
+            night_klwm INTEGER DEFAULT 1,
+            night_kbed INTEGER DEFAULT 2,
+            night_kpym INTEGER DEFAULT 2,
+            created_date TEXT NOT NULL,
+            modified_date TEXT NOT NULL
+        )
+        ''')
+
+        # Add reference columns to track_configs if they don't exist (migration)
+        cursor.execute("PRAGMA table_info(track_configs)")
+        tc_columns = [column[1] for column in cursor.fetchall()]
+        if 'day_vehicles' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN day_vehicles INTEGER DEFAULT 9')
+        if 'night_vehicles' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN night_vehicles INTEGER DEFAULT 4')
+        if 'day_leave_slots' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN day_leave_slots INTEGER DEFAULT 2')
+        if 'night_leave_slots' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN night_leave_slots INTEGER DEFAULT 1')
+        if 'min_day_staff' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN min_day_staff INTEGER DEFAULT 7')
+        if 'min_night_staff' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN min_night_staff INTEGER DEFAULT 4')
+        if 'day_kmht' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN day_kmht INTEGER DEFAULT 1')
+        if 'day_klwm' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN day_klwm INTEGER DEFAULT 2')
+        if 'day_kbed' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN day_kbed INTEGER DEFAULT 2')
+        if 'day_1b9' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN day_1b9 INTEGER DEFAULT 2')
+        if 'day_kpym' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN day_kpym INTEGER DEFAULT 2')
+        if 'night_klwm' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN night_klwm INTEGER DEFAULT 1')
+        if 'night_kbed' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN night_kbed INTEGER DEFAULT 2')
+        if 'night_kpym' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN night_kpym INTEGER DEFAULT 2')
+
         # Check if we need to add the new columns to existing tracks table
         cursor.execute("PRAGMA table_info(tracks)")
         columns = [column[1] for column in cursor.fetchall()]
-        
+
         # Add new columns if they don't exist
         if 'original_role' not in columns:
             cursor.execute('ALTER TABLE tracks ADD COLUMN original_role TEXT')
@@ -241,6 +303,50 @@ def initialize_database():
             cursor.execute('ALTER TABLE tracks ADD COLUMN has_preassignments INTEGER DEFAULT 0')
         if 'preassignment_count' not in columns:
             cursor.execute('ALTER TABLE tracks ADD COLUMN preassignment_count INTEGER DEFAULT 0')
+        if 'track_name' not in columns:
+            cursor.execute("ALTER TABLE tracks ADD COLUMN track_name TEXT DEFAULT 'FY26'")
+
+        # Seed the default FY26 track config if it doesn't exist
+        cursor.execute("SELECT id FROM track_configs WHERE track_name = 'FY26'")
+        if not cursor.fetchone():
+            now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute('''
+                INSERT INTO track_configs (track_name, is_active, is_bidding_open,
+                    max_day_nurses, max_day_medics, max_night_nurses, max_night_medics,
+                    day_vehicles, night_vehicles, day_leave_slots, night_leave_slots,
+                    min_day_staff, min_night_staff,
+                    day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
+                    night_klwm, night_kbed, night_kpym,
+                    created_date, modified_date)
+                VALUES ('FY26', 1, 0, 11, 11, 5, 5, 9, 4, 2, 1, 7, 4, 1, 2, 2, 2, 2, 1, 2, 2, ?, ?)
+            ''', (now, now))
+        else:
+            # Fill in any NULL columns on existing FY26 without overwriting user edits
+            cursor.execute('''
+                UPDATE track_configs SET
+                    max_day_nurses = COALESCE(max_day_nurses, 11),
+                    max_day_medics = COALESCE(max_day_medics, 11),
+                    max_night_nurses = COALESCE(max_night_nurses, 5),
+                    max_night_medics = COALESCE(max_night_medics, 5),
+                    day_vehicles = COALESCE(day_vehicles, 9),
+                    night_vehicles = COALESCE(night_vehicles, 4),
+                    day_leave_slots = COALESCE(day_leave_slots, 2),
+                    night_leave_slots = COALESCE(night_leave_slots, 1),
+                    min_day_staff = COALESCE(min_day_staff, 7),
+                    min_night_staff = COALESCE(min_night_staff, 4),
+                    day_kmht = COALESCE(day_kmht, 1),
+                    day_klwm = COALESCE(day_klwm, 2),
+                    day_kbed = COALESCE(day_kbed, 2),
+                    day_1b9 = COALESCE(day_1b9, 2),
+                    day_kpym = COALESCE(day_kpym, 2),
+                    night_klwm = COALESCE(night_klwm, 1),
+                    night_kbed = COALESCE(night_kbed, 2),
+                    night_kpym = COALESCE(night_kpym, 2)
+                WHERE track_name = 'FY26'
+            ''')
+
+        # Backfill track_name on any existing rows that are still NULL
+        cursor.execute("UPDATE tracks SET track_name = 'FY26' WHERE track_name IS NULL")
 
         # NEW: Create summer_leave_requests table for vacation time selections
         cursor.execute('''
@@ -377,16 +483,16 @@ def get_track_swaps_from_db(limit=50):
         print(error_message)
         return (False, error_message)
 
-def save_track_to_db(staff_name, track_data, is_new=False):
+def save_track_to_db(staff_name, track_data, is_new=False, track_name=None):
     """
     Save track data to SQLite database
-    UPDATED: Enhanced to handle role metadata when available
-    
+
     Args:
         staff_name (str): Name of the staff member
         track_data (dict or enhanced_dict): Dictionary of day -> assignment or enhanced structure
         is_new (bool): Whether this is a new track or an update
-        
+        track_name (str, optional): Track name to save under (defaults to active track)
+
     Returns:
         tuple: (success, message, track_id)
     """
@@ -410,13 +516,18 @@ def save_track_to_db(staff_name, track_data, is_new=False):
             metadata = {}
             track_json = json.dumps(actual_track_data)
         
+        # Resolve track_name: default to the active track config
+        if not track_name:
+            active_cfg = get_active_track_config()
+            track_name = active_cfg['track_name'] if active_cfg else 'FY26'
+
         # Get current date and time
         submission_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Check if staff member already has a track
+
+        # Check if staff member already has a track for this track_name
         cursor.execute(
-            "SELECT id, version FROM tracks WHERE staff_name = ? AND is_active = 1", 
-            (staff_name,)
+            "SELECT id, version FROM tracks WHERE staff_name = ? AND track_name = ? AND is_active = 1",
+            (staff_name, track_name)
         )
         existing_track = cursor.fetchone()
         
@@ -490,25 +601,26 @@ def save_track_to_db(staff_name, track_data, is_new=False):
                 cursor.execute("""
                     INSERT INTO tracks (
                         staff_name, track_data, submission_date, version, is_active,
-                        original_role, effective_role, track_source, has_preassignments, preassignment_count
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        original_role, effective_role, track_source, has_preassignments, preassignment_count, track_name
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    staff_name, 
-                    track_json, 
-                    submission_date, 
-                    1, 
+                    staff_name,
+                    track_json,
+                    submission_date,
+                    1,
                     1,
                     metadata.get('original_role'),
                     metadata.get('effective_role'),
                     metadata.get('track_source'),
                     1 if metadata.get('has_preassignments') else 0,
-                    metadata.get('preassignment_count', 0)
+                    metadata.get('preassignment_count', 0),
+                    track_name
                 ))
             else:
                 # Legacy insert without metadata
                 cursor.execute(
-                    "INSERT INTO tracks (staff_name, track_data, submission_date, version, is_active) VALUES (?, ?, ?, ?, ?)",
-                    (staff_name, track_json, submission_date, 1, 1)
+                    "INSERT INTO tracks (staff_name, track_data, submission_date, version, is_active, track_name) VALUES (?, ?, ?, ?, ?, ?)",
+                    (staff_name, track_json, submission_date, 1, 1, track_name)
                 )
             
             # Get the new track ID
@@ -534,36 +646,42 @@ def save_track_to_db(staff_name, track_data, is_new=False):
         print(error_message)
         return (False, error_message, None)
 
-def get_track_from_db(staff_name):
+def get_track_from_db(staff_name, track_name=None):
     """
-    Retrieve track data from SQLite database
-    UPDATED: Enhanced to return role metadata when available
-    
+    Retrieve track data from SQLite database.
+    If track_name is None, returns the active track (is_active=1).
+    If track_name is provided, returns the track for that track_name.
+
     Args:
         staff_name (str): Name of the staff member
-        
+        track_name (str, optional): Specific track_name to look up
+
     Returns:
         tuple: (success, track_data_with_metadata or error_message)
     """
     try:
-        # Validate input
         if not staff_name:
             return (False, "Invalid staff name provided")
-        
-        # Initialize database if needed
+
         initialize_database()
-        
-        # Get database connection for this thread
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # Query database for staff member's active track with metadata
-        cursor.execute("""
-            SELECT id, track_data, submission_date, is_approved, version,
-                   original_role, effective_role, track_source, has_preassignments, preassignment_count
-            FROM tracks 
-            WHERE staff_name = ? AND is_active = 1
-        """, (staff_name,))
+
+        if track_name:
+            cursor.execute("""
+                SELECT id, track_data, submission_date, is_approved, version,
+                       original_role, effective_role, track_source, has_preassignments, preassignment_count
+                FROM tracks
+                WHERE staff_name = ? AND track_name = ?
+                ORDER BY version DESC LIMIT 1
+            """, (staff_name, track_name))
+        else:
+            cursor.execute("""
+                SELECT id, track_data, submission_date, is_approved, version,
+                       original_role, effective_role, track_source, has_preassignments, preassignment_count
+                FROM tracks
+                WHERE staff_name = ? AND is_active = 1
+            """, (staff_name,))
         result = cursor.fetchone()
         
         if result:
@@ -1634,6 +1752,446 @@ def get_all_summer_leave_configs():
     except Exception as e:
         print(f"Error getting all summer leave configs: {str(e)}")
         return {}
+
+# ============================================================================
+# TRACK CONFIG / BIDDING DATABASE FUNCTIONS
+# ============================================================================
+
+def get_active_track_config():
+    """Return the track_config row where is_active = 1, or None."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM track_configs WHERE is_active = 1 LIMIT 1")
+        row = cursor.fetchone()
+        if row:
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+        return None
+    except Exception as e:
+        print(f"Error getting active track config: {e}")
+        return None
+
+
+def get_bidding_track_config():
+    """Return the track_config row that is currently open for bidding, or None."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM track_configs WHERE is_bidding_open = 1 AND is_active = 0 LIMIT 1")
+        row = cursor.fetchone()
+        if row:
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+        return None
+    except Exception as e:
+        print(f"Error getting bidding track config: {e}")
+        return None
+
+
+def get_track_config_by_name(track_name):
+    """Return track_config for a given track_name, or None."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM track_configs WHERE track_name = ?", (track_name,))
+        row = cursor.fetchone()
+        if row:
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+        return None
+    except Exception as e:
+        print(f"Error getting track config by name: {e}")
+        return None
+
+
+def get_all_track_configs():
+    """Return all track_config rows."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM track_configs ORDER BY created_date DESC")
+        rows = cursor.fetchall()
+        if rows:
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, r)) for r in rows]
+        return []
+    except Exception as e:
+        print(f"Error getting all track configs: {e}")
+        return []
+
+
+def create_track_config(track_name, max_day_nurses=11, max_day_medics=11,
+                        max_night_nurses=5, max_night_medics=5,
+                        day_vehicles=9, night_vehicles=4,
+                        day_leave_slots=2, night_leave_slots=1,
+                        min_day_staff=7, min_night_staff=4,
+                        day_kmht=1, day_klwm=2, day_kbed=2, day_1b9=2, day_kpym=2,
+                        night_klwm=1, night_kbed=2, night_kpym=2):
+    """Create a new track config (not active, bidding closed by default)."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute('''
+            INSERT INTO track_configs
+            (track_name, is_active, is_bidding_open,
+             max_day_nurses, max_day_medics, max_night_nurses, max_night_medics,
+             day_vehicles, night_vehicles, day_leave_slots, night_leave_slots,
+             min_day_staff, min_night_staff,
+             day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
+             night_klwm, night_kbed, night_kpym,
+             created_date, modified_date)
+            VALUES (?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (track_name, max_day_nurses, max_day_medics,
+              max_night_nurses, max_night_medics,
+              day_vehicles, night_vehicles, day_leave_slots, night_leave_slots,
+              min_day_staff, min_night_staff,
+              day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
+              night_klwm, night_kbed, night_kpym,
+              now, now))
+        conn.commit()
+        return True, f"Track config '{track_name}' created successfully"
+    except sqlite3.IntegrityError:
+        return False, f"Track config '{track_name}' already exists"
+    except Exception as e:
+        return False, f"Error creating track config: {e}"
+
+
+def update_track_config(track_name, **kwargs):
+    """Update fields on a track config. Pass keyword args for columns to update."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        allowed = {'is_active', 'is_bidding_open', 'max_day_nurses', 'max_day_medics',
+                    'max_night_nurses', 'max_night_medics',
+                    'day_vehicles', 'night_vehicles', 'day_leave_slots', 'night_leave_slots',
+                    'min_day_staff', 'min_night_staff',
+                    'day_kmht', 'day_klwm', 'day_kbed', 'day_1b9', 'day_kpym',
+                    'night_klwm', 'night_kbed', 'night_kpym'}
+        updates = {k: v for k, v in kwargs.items() if k in allowed}
+        if not updates:
+            return False, "No valid fields to update"
+        updates['modified_date'] = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [track_name]
+        cursor.execute(f"UPDATE track_configs SET {set_clause} WHERE track_name = ?", values)
+        conn.commit()
+        return True, f"Track config '{track_name}' updated"
+    except Exception as e:
+        return False, f"Error updating track config: {e}"
+
+
+def toggle_bidding(track_name, open_bidding):
+    """Open or close bidding for a track_name."""
+    return update_track_config(track_name, is_bidding_open=1 if open_bidding else 0)
+
+
+def get_track_capacity(track_name):
+    """Return capacity dict for a track_name, or defaults."""
+    config = get_track_config_by_name(track_name)
+    if config:
+        return {
+            'max_day_nurses': config['max_day_nurses'],
+            'max_day_medics': config['max_day_medics'],
+            'max_night_nurses': config['max_night_nurses'],
+            'max_night_medics': config['max_night_medics'],
+            'day_vehicles': config.get('day_vehicles', 9),
+            'night_vehicles': config.get('night_vehicles', 4),
+            'day_leave_slots': config.get('day_leave_slots', 2),
+            'night_leave_slots': config.get('night_leave_slots', 1),
+            'min_day_staff': config.get('min_day_staff', 7),
+            'min_night_staff': config.get('min_night_staff', 4),
+        }
+    return {'max_day_nurses': 11, 'max_day_medics': 11,
+            'max_night_nurses': 5, 'max_night_medics': 5,
+            'day_vehicles': 9, 'night_vehicles': 4,
+            'day_leave_slots': 2, 'night_leave_slots': 1,
+            'min_day_staff': 7, 'min_night_staff': 4}
+
+
+# Default per-base shift-slot counts, matching the historical fixed shift-to-base
+# mapping. KMHT and 1B9 have no night presence.
+_DEFAULT_BASE_SHIFT_COUNTS = {
+    'KMHT': {'day': 1, 'night': 0},
+    'KLWM': {'day': 2, 'night': 1},
+    'KBED': {'day': 2, 'night': 2},
+    '1B9':  {'day': 2, 'night': 0},
+    'KPYM': {'day': 2, 'night': 2},
+}
+
+
+def get_base_shift_counts(track_name):
+    """
+    Return {base_name: {'day': N, 'night': N}} shift-slot counts for a track config,
+    used by the hypothetical scheduler to size competition for each base. Falls back
+    to the historical fixed defaults for any track config not found or not yet
+    carrying these columns.
+    """
+    config = get_track_config_by_name(track_name)
+    if not config:
+        return _DEFAULT_BASE_SHIFT_COUNTS
+    return {
+        'KMHT': {'day': config.get('day_kmht', _DEFAULT_BASE_SHIFT_COUNTS['KMHT']['day']), 'night': 0},
+        'KLWM': {'day': config.get('day_klwm', _DEFAULT_BASE_SHIFT_COUNTS['KLWM']['day']),
+                 'night': config.get('night_klwm', _DEFAULT_BASE_SHIFT_COUNTS['KLWM']['night'])},
+        'KBED': {'day': config.get('day_kbed', _DEFAULT_BASE_SHIFT_COUNTS['KBED']['day']),
+                 'night': config.get('night_kbed', _DEFAULT_BASE_SHIFT_COUNTS['KBED']['night'])},
+        '1B9':  {'day': config.get('day_1b9', _DEFAULT_BASE_SHIFT_COUNTS['1B9']['day']), 'night': 0},
+        'KPYM': {'day': config.get('day_kpym', _DEFAULT_BASE_SHIFT_COUNTS['KPYM']['day']),
+                 'night': config.get('night_kpym', _DEFAULT_BASE_SHIFT_COUNTS['KPYM']['night'])},
+    }
+
+
+def promote_bid_to_active(bid_track_name):
+    """
+    Promote a bidding track to active:
+    1. Set is_active=0 on the currently active track config
+    2. Set is_active=0 on all tracks belonging to the old active track_name
+    3. Set is_active=1, is_bidding_open=0 on the bid track config
+    4. Set is_active=1 on all tracks belonging to the bid track_name
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+        # Find current active track config
+        cursor.execute("SELECT track_name FROM track_configs WHERE is_active = 1")
+        active_row = cursor.fetchone()
+        if active_row:
+            old_active = active_row[0]
+            # Deactivate old active config
+            cursor.execute("UPDATE track_configs SET is_active = 0, modified_date = ? WHERE track_name = ?",
+                           (now, old_active))
+            # Deactivate all tracks in the old active group
+            cursor.execute("UPDATE tracks SET is_active = 0 WHERE track_name = ?", (old_active,))
+
+        # Activate the bid track config
+        cursor.execute("""UPDATE track_configs SET is_active = 1, is_bidding_open = 0, modified_date = ?
+                          WHERE track_name = ?""", (now, bid_track_name))
+        # Activate all tracks in the bid group
+        cursor.execute("UPDATE tracks SET is_active = 1 WHERE track_name = ?", (bid_track_name,))
+
+        conn.commit()
+        return True, f"'{bid_track_name}' is now the active track"
+    except Exception as e:
+        return False, f"Error promoting bid track: {e}"
+
+
+def save_bid_track_to_db(staff_name, track_data, track_name, metadata=None):
+    """Save a bid track for a staff member under a specific track_name."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if isinstance(track_data, dict) and 'track_data' in track_data and 'staff_metadata' in track_data:
+            actual_track_data = track_data['track_data']
+            meta = track_data['staff_metadata']
+        else:
+            actual_track_data = track_data
+            meta = metadata or {}
+
+        track_json = json.dumps(actual_track_data)
+        submission_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+        # Check for existing bid by this staff for this track_name
+        cursor.execute("""SELECT id, version FROM tracks
+                          WHERE staff_name = ? AND track_name = ? AND is_active = 0""",
+                       (staff_name, track_name))
+        existing = cursor.fetchone()
+
+        if existing:
+            track_id = existing[0]
+            new_version = existing[1] + 1
+            cursor.execute("""INSERT INTO track_history
+                (track_id, staff_name, track_data, submission_date, status)
+                VALUES (?, ?, ?, ?, ?)""",
+                (track_id, staff_name, track_json, submission_date, "bid_updated"))
+            cursor.execute("""UPDATE tracks SET
+                track_data = ?, submission_date = ?, version = ?,
+                original_role = ?, effective_role = ?, track_source = ?,
+                has_preassignments = ?, preassignment_count = ?
+                WHERE id = ?""", (
+                track_json, submission_date, new_version,
+                meta.get('original_role'), meta.get('effective_role'),
+                meta.get('track_source', 'Bid'),
+                1 if meta.get('has_preassignments') else 0,
+                meta.get('preassignment_count', 0),
+                track_id))
+            message = f"Bid updated for {staff_name} (version {new_version})"
+        else:
+            cursor.execute("""INSERT INTO tracks
+                (staff_name, track_data, submission_date, version, is_active, track_name,
+                 original_role, effective_role, track_source, has_preassignments, preassignment_count)
+                VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?)""", (
+                staff_name, track_json, submission_date, track_name,
+                meta.get('original_role'), meta.get('effective_role'),
+                meta.get('track_source', 'Bid'),
+                1 if meta.get('has_preassignments') else 0,
+                meta.get('preassignment_count', 0)))
+            track_id = cursor.lastrowid
+            cursor.execute("""INSERT INTO track_history
+                (track_id, staff_name, track_data, submission_date, status)
+                VALUES (?, ?, ?, ?, ?)""",
+                (track_id, staff_name, track_json, submission_date, "bid_created"))
+            message = f"Bid saved for {staff_name}"
+
+        conn.commit()
+        return True, message, track_id
+    except Exception as e:
+        return False, f"Error saving bid: {e}", None
+
+
+def get_bid_track_from_db(staff_name, track_name):
+    """Get a staff member's bid track for a given track_name."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""SELECT id, track_data, submission_date, is_approved, version,
+                          original_role, effective_role, track_source,
+                          has_preassignments, preassignment_count
+                          FROM tracks WHERE staff_name = ? AND track_name = ?
+                          ORDER BY version DESC LIMIT 1""",
+                       (staff_name, track_name))
+        result = cursor.fetchone()
+        if result:
+            track_data = json.loads(result[1])
+            return True, {
+                'track_id': result[0],
+                'track_data': track_data,
+                'submission_date': result[2],
+                'is_approved': result[3] == 1,
+                'version': result[4],
+                'metadata': {
+                    'original_role': result[5],
+                    'effective_role': result[6],
+                    'track_source': result[7],
+                    'has_preassignments': result[8] == 1,
+                    'preassignment_count': result[9],
+                }
+            }
+        return False, f"No bid found for {staff_name} in {track_name}"
+    except Exception as e:
+        return False, f"Error getting bid track: {e}"
+
+
+def get_all_bid_tracks(track_name):
+    """Get all submitted bids for a given track_name."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""SELECT staff_name, track_data, submission_date, version,
+                          original_role, effective_role, track_source,
+                          has_preassignments, preassignment_count
+                          FROM tracks WHERE track_name = ?
+                          ORDER BY staff_name""", (track_name,))
+        results = cursor.fetchall()
+        if results:
+            tracks = []
+            for row in results:
+                try:
+                    td = json.loads(row[1])
+                    tracks.append({
+                        'staff_name': row[0],
+                        'track_data': td,
+                        'submission_date': row[2],
+                        'version': row[3],
+                        'metadata': {
+                            'original_role': row[4],
+                            'effective_role': row[5],
+                            'track_source': row[6],
+                            'has_preassignments': row[7] == 1,
+                            'preassignment_count': row[8],
+                        }
+                    })
+                except json.JSONDecodeError:
+                    continue
+            return True, tracks
+        return False, "No bids found"
+    except Exception as e:
+        return False, f"Error getting bid tracks: {e}"
+
+
+def get_tracks_by_track_name(track_name):
+    """Get all tracks for a given track_name (active or bid)."""
+    return get_all_bid_tracks(track_name)
+
+
+def delete_track_config(track_name):
+    """Delete a track config and all associated bids/tracks."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT is_active FROM track_configs WHERE track_name = ?", (track_name,))
+        row = cursor.fetchone()
+        if not row:
+            return False, f"Track config '{track_name}' not found"
+        if row[0] == 1:
+            return False, f"Cannot delete the active track config '{track_name}'"
+        cursor.execute("SELECT id FROM tracks WHERE track_name = ?", (track_name,))
+        track_ids = [r[0] for r in cursor.fetchall()]
+        if track_ids:
+            placeholders = ",".join("?" * len(track_ids))
+            cursor.execute(f"DELETE FROM track_history WHERE track_id IN ({placeholders})", track_ids)
+            cursor.execute("DELETE FROM tracks WHERE track_name = ?", (track_name,))
+        cursor.execute("DELETE FROM track_configs WHERE track_name = ?", (track_name,))
+        conn.commit()
+        deleted_bids = len(track_ids)
+        return True, f"Deleted track config '{track_name}' and {deleted_bids} associated bid(s)"
+    except Exception as e:
+        return False, f"Error deleting track config: {e}"
+
+
+def delete_bid(staff_name, track_name):
+    """Delete a single staff member's bid for a track."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM tracks WHERE staff_name = ? AND track_name = ? AND is_active = 0",
+                       (staff_name, track_name))
+        row = cursor.fetchone()
+        if not row:
+            return False, f"No bid found for {staff_name} in {track_name}"
+        track_id = row[0]
+        cursor.execute("DELETE FROM track_history WHERE track_id = ?", (track_id,))
+        cursor.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
+        conn.commit()
+        return True, f"Deleted bid for {staff_name} in {track_name}"
+    except Exception as e:
+        return False, f"Error deleting bid: {e}"
+
+
+def wipe_all_bids(track_name):
+    """Delete ALL bids for a track config (reset bidding)."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM tracks WHERE track_name = ? AND is_active = 0", (track_name,))
+        track_ids = [r[0] for r in cursor.fetchall()]
+        if not track_ids:
+            return True, f"No bids to delete for {track_name}"
+        placeholders = ",".join("?" * len(track_ids))
+        cursor.execute(f"DELETE FROM track_history WHERE track_id IN ({placeholders})", track_ids)
+        cursor.execute("DELETE FROM tracks WHERE track_name = ? AND is_active = 0", (track_name,))
+        conn.commit()
+        return True, f"Wiped {len(track_ids)} bid(s) for {track_name}"
+    except Exception as e:
+        return False, f"Error wiping bids: {e}"
+
 
 # Clean up connections when the module is unloaded
 import atexit

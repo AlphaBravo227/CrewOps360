@@ -12,17 +12,43 @@ import os
 from .shift_definitions import day_shifts, night_shifts
 from .db_utils import get_db_connection
 
-# Maps each individual shift to its base short name (matches user_location_preferences keys)
-_SHIFT_TO_BASE = {
-    "D11H": "KMHT", "D11B": "KMHT",
-    "D9L":  "KLWM", "LG":   "KLWM",
-    "D7B":  "KBED", "GR":   "KBED",
-    "D11M": "1B9",  "MG":   "1B9",
-    "D7P":  "KPYM", "PG":   "KPYM",
-    "N9L":  "KLWM",
-    "N7B":  "KBED", "NG":   "KBED",
-    "N7P":  "KPYM", "NP":   "KPYM",
+# Historical fixed shift-to-base slot counts, used as a fallback when a track
+# config has no explicit override on file. KMHT and 1B9 have no night presence.
+_DEFAULT_BASE_SHIFT_COUNTS = {
+    'KMHT': {'day': 1, 'night': 0},
+    'KLWM': {'day': 2, 'night': 1},
+    'KBED': {'day': 2, 'night': 2},
+    '1B9':  {'day': 2, 'night': 0},
+    'KPYM': {'day': 2, 'night': 2},
 }
+
+_DAY_BASES = ['KMHT', 'KLWM', 'KBED', '1B9', 'KPYM']
+_NIGHT_BASES = ['KLWM', 'KBED', 'KPYM']
+
+
+def _build_available_slots(shift_type, base_shift_counts):
+    """
+    Build virtual competition slots for a shift type, sized per the admin-configured
+    base_shift_counts (see db_utils.get_base_shift_counts). Slot tokens (e.g. "KPYM#1")
+    are internal bookkeeping only — never surfaced to users, only the resolved base
+    name is (via the returned slot_to_base mapping).
+
+    Returns:
+        tuple: (available_slots list, slot_to_base dict)
+    """
+    counts = base_shift_counts if base_shift_counts is not None else _DEFAULT_BASE_SHIFT_COUNTS
+    key = 'day' if shift_type == 'day' else 'night'
+    bases = _DAY_BASES if shift_type == 'day' else _NIGHT_BASES
+
+    available_slots = []
+    slot_to_base = {}
+    for base in bases:
+        count = counts.get(base, {}).get(key, 0)
+        for i in range(count):
+            slot = f"{base}#{i + 1}"
+            available_slots.append(slot)
+            slot_to_base[slot] = base
+    return available_slots, slot_to_base
 
 
 def _load_all_base_preferences():
@@ -152,18 +178,23 @@ def get_staff_shift_preferences(staff_name, preferences_df, staff_col_prefs, shi
     except:
         return {}
 
-def get_staff_on_shift_from_database(day, shift_type, preferences_df, staff_col_prefs, role_col):
+def get_staff_on_shift_from_database(day, shift_type, preferences_df, staff_col_prefs, role_col, bid_track_name=None):
     """
     FIXED: Get staff assigned to a specific day and shift type from database
     Properly handles day name format variations
-    
+
     Args:
-        day (str): The day to check  
+        day (str): The day to check
         shift_type (str): "D" for day or "N" for night
         preferences_df (DataFrame): Preferences DataFrame
         staff_col_prefs (str): Column name for staff
         role_col (str): Column name for role
-        
+        bid_track_name (str, optional): If set, count occupancy against submitted
+            bids for this bidding cycle instead of the currently active roster —
+            used when computing availability for a Track Bidding cycle, where
+            capacity should reflect only what's actually been bid so far, not
+            who is active on the prior/current cycle.
+
     Returns:
         list: List of staff names assigned to this SPECIFIC shift type
     """
@@ -171,16 +202,23 @@ def get_staff_on_shift_from_database(day, shift_type, preferences_df, staff_col_
         db_path = 'data/medflight_tracks.db'
         if not os.path.exists(db_path):
             return []
-        
+
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT staff_name, track_data 
-            FROM tracks 
-            WHERE is_active = 1
-        """)
-        
+
+        if bid_track_name:
+            cursor.execute("""
+                SELECT staff_name, track_data
+                FROM tracks
+                WHERE track_name = ? AND is_active = 0
+            """, (bid_track_name,))
+        else:
+            cursor.execute("""
+                SELECT staff_name, track_data
+                FROM tracks
+                WHERE is_active = 1
+            """)
+
         results = cursor.fetchall()
         conn.close()
         
@@ -310,20 +348,23 @@ def get_staff_role_for_counting(staff_name, preferences_df, staff_col_prefs, rol
 def calculate_hypothetical_assignment(
     selected_staff, day, shift_type, preferences_df, current_tracks_df,
     staff_col_prefs, staff_col_tracks, role_col, seniority_col, use_database_logic,
-    all_base_prefs=None
+    all_base_prefs=None, bid_track_name=None, base_shift_counts=None
 ):
     """
     Simulate seniority-based shift assignment using base preferences.
     all_base_prefs: {staff_name: row_dict} pre-loaded from user_location_preferences.
+    bid_track_name: if set, count competitors from submitted bids for this cycle
+        instead of the active roster (see get_staff_on_shift_from_database).
+    base_shift_counts: {base: {'day': N, 'night': N}} slot counts for this cycle
+        (see db_utils.get_base_shift_counts); falls back to historical defaults if None.
     Returns assignment as base short name (e.g. "KBED"), preference_score as rank int.
     """
-    from .shift_definitions import day_shifts, night_shifts
-
     # Step 1: Get staff currently assigned to this shift type
     if use_database_logic:
         staff_on_shift = get_staff_on_shift_from_database(
             day, "D" if shift_type == "day" else "N",
-            preferences_df, staff_col_prefs, role_col
+            preferences_df, staff_col_prefs, role_col,
+            bid_track_name=bid_track_name
         )
     else:
         staff_on_shift = get_staff_on_shift_from_excel(
@@ -356,16 +397,15 @@ def calculate_hypothetical_assignment(
         (i for i, (s, _) in enumerate(staff_with_seniority) if s == selected_staff), None
     )
 
-    # Step 5: Max slots and available shifts
-    # Only include shifts that have a base mapping — FW and any future unmapped shifts are excluded
+    # Step 5: Max slots and available shifts, sized per admin-configured base shift counts
     if shift_type == "day":
-        available_shifts = [s for s in day_shifts.keys() if s in _SHIFT_TO_BASE]
-        max_shifts = len(available_shifts)  # 9 base-mapped day shifts
+        available_shifts, shift_to_base = _build_available_slots("day", base_shift_counts)
+        max_shifts = len(available_shifts)
         location_key = 'day_locations'
         max_rank = 5
     else:
-        available_shifts = [s for s in night_shifts.keys() if s in _SHIFT_TO_BASE]
-        max_shifts = len(available_shifts)  # 5 base-mapped night shifts
+        available_shifts, shift_to_base = _build_available_slots("night", base_shift_counts)
+        max_shifts = len(available_shifts)
         location_key = 'night_locations'
         max_rank = 3
 
@@ -415,15 +455,15 @@ def calculate_hypothetical_assignment(
             locations = staff_base_data.get(location_key, {})
             # Score = max_rank + 1 - rank  (rank 1 → highest score, competing for most-preferred base first)
             shift_scores = {
-                shift: (max_rank + 1 - locations[_SHIFT_TO_BASE[shift]])
+                shift: (max_rank + 1 - locations[shift_to_base[shift]])
                 for shift in available_shifts
-                if _SHIFT_TO_BASE.get(shift) in locations and locations.get(_SHIFT_TO_BASE.get(shift)) is not None
+                if shift_to_base.get(shift) in locations and locations.get(shift_to_base.get(shift)) is not None
             }
 
             if shift_scores:
                 best_shift = max(shift_scores.items(), key=lambda x: x[1])
                 shift_name = best_shift[0]
-                base_short = _SHIFT_TO_BASE.get(shift_name, shift_name)
+                base_short = shift_to_base.get(shift_name, shift_name)
                 preference_rank = locations.get(base_short)
 
                 assigned_shifts[staff] = {'shift': shift_name, 'preference': preference_rank}
@@ -447,7 +487,7 @@ def calculate_hypothetical_assignment(
             else:
                 # Base prefs exist but none match remaining shifts — take first available
                 shift_name = available_shifts[0]
-                base_short = _SHIFT_TO_BASE.get(shift_name, shift_name)
+                base_short = shift_to_base.get(shift_name, shift_name)
                 assigned_shifts[staff] = {'shift': shift_name, 'preference': None}
                 available_shifts.remove(shift_name)
                 assignment_log.append(f"{staff} → {base_short} ({shift_name}, no preferred base available)")
@@ -469,7 +509,7 @@ def calculate_hypothetical_assignment(
         else:
             # No base preferences — take first available shift
             shift_name = available_shifts[0]
-            base_short = _SHIFT_TO_BASE.get(shift_name, shift_name)
+            base_short = shift_to_base.get(shift_name, shift_name)
             assigned_shifts[staff] = {'shift': shift_name, 'preference': None}
             available_shifts.remove(shift_name)
             assignment_log.append(f"{staff} → {base_short} ({shift_name}, no base prefs)")
@@ -505,16 +545,29 @@ def calculate_hypothetical_assignment(
 
 def generate_hypothetical_schedule_new(
     selected_staff, preferences_df, current_tracks_df, days,
-    staff_col_prefs, staff_col_tracks, role_col, seniority_col
+    staff_col_prefs, staff_col_tracks, role_col, seniority_col,
+    bid_track_name=None
 ):
     """
     Generate a hypothetical schedule using base preferences (user_location_preferences).
     Base prefs are loaded once and passed into each per-day competition.
+    bid_track_name: if set, simulate competition against submitted bids for this
+        cycle instead of the active roster (see get_staff_on_shift_from_database).
+        Also determines which track config's base shift counts apply.
     """
     use_database_logic = st.session_state.get('track_source', "Annual Rebid") == "Annual Rebid"
 
     # Load all staff base preferences once to avoid per-staff DB queries in the loop
     all_base_prefs = _load_all_base_preferences()
+
+    # Resolve which track config's base shift counts apply: the bid cycle being
+    # bid on, or (for in-year modifications) the currently active track.
+    from .db_utils import get_active_track_config, get_base_shift_counts
+    effective_track_name = bid_track_name
+    if not effective_track_name:
+        active_cfg = get_active_track_config()
+        effective_track_name = active_cfg['track_name'] if active_cfg else 'FY26'
+    base_shift_counts = get_base_shift_counts(effective_track_name)
 
     day_assignments = {}
     night_assignments = {}
@@ -528,13 +581,15 @@ def generate_hypothetical_schedule_new(
         day_result = calculate_hypothetical_assignment(
             selected_staff, day, "day", preferences_df, current_tracks_df,
             staff_col_prefs, staff_col_tracks, role_col, seniority_col,
-            use_database_logic, all_base_prefs
+            use_database_logic, all_base_prefs, bid_track_name=bid_track_name,
+            base_shift_counts=base_shift_counts
         )
 
         night_result = calculate_hypothetical_assignment(
             selected_staff, day, "night", preferences_df, current_tracks_df,
             staff_col_prefs, staff_col_tracks, role_col, seniority_col,
-            use_database_logic, all_base_prefs
+            use_database_logic, all_base_prefs, bid_track_name=bid_track_name,
+            base_shift_counts=base_shift_counts
         )
 
         day_assignments[day] = day_result['assignment']

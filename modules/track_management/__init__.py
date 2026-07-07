@@ -11,8 +11,6 @@ import pandas as pd
 # Import the enhanced validation modules
 from ..enhanced_track_validator import validate_track_comprehensive
 from ..enhanced_validation_display import display_comprehensive_validation
-from ..track_source_consistency import display_for_validation
-display_for_validation()
 
 # Import other components
 from .display import display_track
@@ -643,9 +641,11 @@ def modify_track_enhanced_without_validation(
     use_database_logic = st.session_state.get('track_source', "Annual Rebid") == "Annual Rebid"
     has_db_track = st.session_state.get('has_db_track', False)
 
-    # Display track source info
-    from ..track_source_consistency import display_for_track_modification
-    display_for_track_modification(selected_staff)
+    # Display active track info
+    from ..db_utils import get_active_track_config as _get_active_cfg
+    _cfg = _get_active_cfg()
+    if _cfg:
+        st.info(f"📊 Active Track: **{_cfg['track_name']}** — Modifying your active track.")
     
     # Get track source information
     from ..db_utils import get_track_from_db
@@ -678,11 +678,15 @@ def modify_track_enhanced_without_validation(
         - Staff Role: {staff_role} (treated as {effective_role} for needs calculation)
         """)
     
-    # Hardcoded shift capacity settings
-    max_day_nurses = 10
-    max_day_medics = 10
-    max_night_nurses = 6
-    max_night_medics = 5
+    # Pull shift capacity from database
+    from ..db_utils import get_active_track_config, get_track_capacity
+    _active_cfg = get_active_track_config()
+    _active_tn = _active_cfg['track_name'] if _active_cfg else 'FY26'
+    _cap = get_track_capacity(_active_tn)
+    max_day_nurses = _cap['max_day_nurses']
+    max_day_medics = _cap['max_day_medics']
+    max_night_nurses = _cap['max_night_nurses']
+    max_night_medics = _cap['max_night_medics']
     
     # Generate track modification options
     with st.spinner("Analyzing schedule needs and preferences..."):
