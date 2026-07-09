@@ -1990,6 +1990,7 @@ def run_clinical_track_hub():
         # Check if we're in fullscreen track viewer mode
         if st.session_state.get('track_viewer_fullscreen', False):
             display_track_viewer()
+            st.stop()  # Prevent other content from rendering
 
         # Check if we're in fullscreen fiscal year mode
         if st.session_state.get('fy_show_fullscreen', False):

@@ -157,7 +157,7 @@ def display_fullscreen_track_viewer():
     col1, col2 = st.columns([1, 6])
     
     with col1:
-        if st.button("← Back", use_container_width=True):
+        if st.button("← Back", key="track_viewer_fullscreen_back", use_container_width=True):
             st.session_state.track_viewer_fullscreen = False
             st.session_state.pop('selected_role_fullscreen', None)
             st.session_state.pop('selected_staff_filter_fullscreen', None)
