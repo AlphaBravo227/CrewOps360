@@ -4,6 +4,7 @@ import streamlit as st
 from datetime import datetime, timedelta
 import pandas as pd
 import pytz
+import os
 
 _eastern_tz = pytz.timezone('America/New_York')
 
@@ -105,6 +106,7 @@ class AdminAccess:
             ("📈 Enrollment Reports", "enrollment_reports", "View and export enrollment data"),
             ("👥 Manage Staff", "manage_staff", "View staff enrollment status"),
             ("📚 Manage Classes", "manage_classes", "Configure class settings and schedules"),
+            ("🗓️ Training Years", "training_years", "Manage fiscal-year rosters and cutover"),
             ("📄 Data Export", "data_management", "Export training data"),
             ("📊 System Statistics", "system_stats", "View training system usage"),
             ("🗂️ Database Maintenance", "database_maintenance", "Training database operations"),
@@ -197,6 +199,8 @@ class AdminAccess:
             self._show_manage_staff()
         elif function_key == "manage_classes":
             self._show_manage_classes()
+        elif function_key == "training_years":
+            self._show_training_years()
         elif function_key == "data_management":
             self._show_data_management()
         elif function_key == "system_stats":
@@ -1337,6 +1341,171 @@ class AdminAccess:
                             st.error(f"Failed to add educator: {message}")
                     else:
                         st.error("Unexpected response from educator system")
+
+    def _show_training_years(self):
+        """Manage fiscal-year training cohorts: which Excel roster is active, which
+        Track Bidding cohort it corresponds to, and promoting the next year live."""
+        st.subheader("🗓️ Training Years")
+        st.caption(
+            "Each training year points at its own roster file in training/upload/ and can be "
+            "linked to a Track Bidding cohort for reference. Promoting a year to active switches "
+            "which roster the registration screen loads for everyone."
+        )
+
+        unified_db = st.session_state.get('unified_db')
+        if not unified_db:
+            st.error("Training database not initialized")
+            return
+
+        # Track cohorts are a soft reference only (no enforced FK) - just for the dropdown
+        try:
+            from modules.db_utils import get_all_track_configs
+            track_options = [""] + [c['track_name'] for c in get_all_track_configs()]
+        except Exception:
+            track_options = [""]
+
+        all_years = unified_db.get_all_training_years()
+
+        st.markdown("### Existing Training Years")
+        if not all_years:
+            st.info("No training years configured yet.")
+
+        for ty in all_years:
+            label = ty['year_label']
+            is_active = bool(ty['is_active'])
+            status_icon = "🟢" if is_active else "⚪"
+            with st.expander(f"{status_icon} {label} {'(Active)' if is_active else ''}", expanded=False):
+                roster_filename = ty.get('roster_filename') or ""
+                if roster_filename:
+                    roster_path = os.path.join('training', 'upload', roster_filename)
+                    if os.path.exists(roster_path):
+                        st.success(f"Roster file found: `{roster_path}`")
+                    else:
+                        st.warning(f"Roster file not found on disk: `{roster_path}`")
+                else:
+                    st.warning("No roster filename set yet")
+
+                u_roster = st.text_input(
+                    "Roster filename (in training/upload/)", value=roster_filename,
+                    key=f"ty_roster_{label}"
+                )
+                current_track = ty.get('linked_track_name') or ""
+                track_index = track_options.index(current_track) if current_track in track_options else 0
+                u_track = st.selectbox(
+                    "Linked track cohort", options=track_options, index=track_index,
+                    key=f"ty_track_{label}",
+                    help="For reference only - which Track Bidding cohort's dates this training year corresponds to"
+                )
+                col1, col2 = st.columns(2)
+                with col1:
+                    u_start = st.text_input(
+                        "Start date (YYYY-MM-DD)", value=ty.get('start_date') or "",
+                        key=f"ty_start_{label}"
+                    )
+                with col2:
+                    u_end = st.text_input(
+                        "End date (YYYY-MM-DD)", value=ty.get('end_date') or "",
+                        key=f"ty_end_{label}"
+                    )
+
+                if st.button("Save", key=f"ty_save_{label}"):
+                    ok, msg = unified_db.update_training_year(
+                        label, roster_filename=u_roster.strip(),
+                        linked_track_name=u_track, start_date=u_start.strip(),
+                        end_date=u_end.strip()
+                    )
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+                if not is_active:
+                    st.markdown("---")
+                    promote_col, delete_col = st.columns(2)
+
+                    with promote_col:
+                        if st.button(f"Promote {label} to Active", key=f"ty_promote_{label}", type="primary"):
+                            st.session_state[f'confirm_ty_promote_{label}'] = True
+
+                        if st.session_state.get(f'confirm_ty_promote_{label}', False):
+                            st.warning(
+                                f"This switches the registration screen to {label}'s roster "
+                                f"for all staff. Are you sure?"
+                            )
+                            yc, nc = st.columns(2)
+                            with yc:
+                                if st.button("Yes, Promote", key=f"ty_promote_yes_{label}"):
+                                    ok, msg = unified_db.promote_training_year_to_active(label)
+                                    st.session_state[f'confirm_ty_promote_{label}'] = False
+                                    if ok:
+                                        # Force the training subsystem to reload against the
+                                        # newly active roster instead of serving stale cached
+                                        # Excel/enrollment objects for the rest of the session.
+                                        for key in ('training_excel_handler', 'training_track_manager',
+                                                    'training_enrollment_manager', 'training_educator_manager',
+                                                    'training_excel_admin_functions'):
+                                            st.session_state.pop(key, None)
+                                        st.success(msg)
+                                    else:
+                                        st.error(msg)
+                                    st.rerun()
+                            with nc:
+                                if st.button("Cancel", key=f"ty_promote_no_{label}"):
+                                    st.session_state[f'confirm_ty_promote_{label}'] = False
+                                    st.rerun()
+
+                    with delete_col:
+                        if st.button(f"Delete {label}", key=f"ty_delete_{label}"):
+                            st.session_state[f'confirm_ty_delete_{label}'] = True
+
+                        if st.session_state.get(f'confirm_ty_delete_{label}', False):
+                            st.error(f"Delete training year {label}? This cannot be undone.")
+                            yc, nc = st.columns(2)
+                            with yc:
+                                if st.button("Yes, Delete", key=f"ty_delete_yes_{label}"):
+                                    ok, msg = unified_db.delete_training_year(label)
+                                    st.session_state[f'confirm_ty_delete_{label}'] = False
+                                    if ok:
+                                        st.success(msg)
+                                    else:
+                                        st.error(msg)
+                                    st.rerun()
+                            with nc:
+                                if st.button("Cancel", key=f"ty_delete_no_{label}"):
+                                    st.session_state[f'confirm_ty_delete_{label}'] = False
+                                    st.rerun()
+
+        st.markdown("---")
+        st.markdown("### Create New Training Year")
+        with st.form("create_training_year_form"):
+            new_label = st.text_input("Year label (e.g. FY27)")
+            new_roster = st.text_input(
+                "Roster filename (in training/upload/)",
+                placeholder="FY27 Education Classes Roster.xlsx"
+            )
+            new_track = st.selectbox("Linked track cohort", options=track_options, key="new_ty_track")
+            c1, c2 = st.columns(2)
+            with c1:
+                new_start = st.text_input("Start date (YYYY-MM-DD)", key="new_ty_start")
+            with c2:
+                new_end = st.text_input("End date (YYYY-MM-DD)", key="new_ty_end")
+
+            submitted = st.form_submit_button("Create Training Year")
+            if submitted:
+                if not new_label.strip():
+                    st.error("Please enter a year label")
+                else:
+                    ok, msg = unified_db.create_training_year(
+                        new_label.strip(), roster_filename=new_roster.strip() or None,
+                        linked_track_name=new_track or None,
+                        start_date=new_start.strip() or None, end_date=new_end.strip() or None
+                    )
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
     def _show_track_status_manager(self):
         """Show track status management functionality"""

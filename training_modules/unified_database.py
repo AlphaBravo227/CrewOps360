@@ -130,11 +130,184 @@ class UnifiedDatabase:
                 details TEXT
             )
         ''')
-        
+
+        # Create training_years table: one row per fiscal-year training cohort,
+        # pointing at its Excel roster file and (optionally) a matching
+        # modules.db_utils track_configs cohort. Mirrors the track_configs
+        # active/promote pattern used by Track Bidding.
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS training_years (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                year_label TEXT NOT NULL UNIQUE,
+                is_active INTEGER DEFAULT 0,
+                roster_filename TEXT,
+                linked_track_name TEXT,
+                start_date TEXT,
+                end_date TEXT,
+                created_date TEXT NOT NULL,
+                modified_date TEXT NOT NULL
+            )
+        ''')
+
+        # Add training_year column to enrollment/signup tables if missing (migration).
+        # Existing rows backfill to 'FY26' since that's the only cohort that existed
+        # before this column was introduced.
+        for table_name in ('training_enrollments', 'training_educator_signups'):
+            self.cursor.execute(f"PRAGMA table_info({table_name})")
+            existing_columns = [col[1] for col in self.cursor.fetchall()]
+            if 'training_year' not in existing_columns:
+                self.cursor.execute(
+                    f"ALTER TABLE {table_name} ADD COLUMN training_year TEXT DEFAULT 'FY26'"
+                )
+
+        # Seed the default FY26 training year if it doesn't exist yet
+        self.cursor.execute("SELECT id FROM training_years WHERE year_label = 'FY26'")
+        if not self.cursor.fetchone():
+            now = self._format_eastern_timestamp(self._get_eastern_time())
+            self.cursor.execute('''
+                INSERT INTO training_years
+                    (year_label, is_active, roster_filename, linked_track_name,
+                     start_date, end_date, created_date, modified_date)
+                VALUES ('FY26', 1, ?, 'FY26', '2025-09-28', '2026-09-26', ?, ?)
+            ''', ('MASTER Education Classes Roster.xlsx', now, now))
+
         self.conn.commit()
         self.disconnect()
         print("Training tables created successfully with proper AUTO INCREMENT")
-        
+
+    # ========================================================================
+    # TRAINING YEAR METHODS (fiscal-year roster/cohort management)
+    # ========================================================================
+
+    def _training_year_row_to_dict(self, row):
+        return {
+            'id': row['id'],
+            'year_label': row['year_label'],
+            'is_active': row['is_active'],
+            'roster_filename': row['roster_filename'],
+            'linked_track_name': row['linked_track_name'],
+            'start_date': row['start_date'],
+            'end_date': row['end_date'],
+            'created_date': row['created_date'],
+            'modified_date': row['modified_date'],
+        }
+
+    def _fetch_active_training_year_row(self):
+        """Query training_years for the active row using the currently-open cursor.
+        Callers must already hold a connection (via self.connect()); this does not
+        manage connect/disconnect itself so it's safe to call mid-transaction."""
+        self.cursor.execute("SELECT * FROM training_years WHERE is_active = 1 LIMIT 1")
+        return self.cursor.fetchone()
+
+    def get_active_training_year(self):
+        """Return the training_years row where is_active = 1, or None."""
+        self.connect()
+        try:
+            row = self._fetch_active_training_year_row()
+            return self._training_year_row_to_dict(row) if row else None
+        finally:
+            self.disconnect()
+
+    def get_training_year(self, year_label):
+        """Return the training_years row for a given year_label, or None."""
+        self.connect()
+        try:
+            self.cursor.execute("SELECT * FROM training_years WHERE year_label = ?", (year_label,))
+            row = self.cursor.fetchone()
+            return self._training_year_row_to_dict(row) if row else None
+        finally:
+            self.disconnect()
+
+    def get_all_training_years(self):
+        """Return all training_years rows, most recently created first."""
+        self.connect()
+        try:
+            self.cursor.execute("SELECT * FROM training_years ORDER BY created_date DESC")
+            rows = self.cursor.fetchall()
+            return [self._training_year_row_to_dict(row) for row in rows]
+        finally:
+            self.disconnect()
+
+    def create_training_year(self, year_label, roster_filename=None, linked_track_name=None,
+                              start_date=None, end_date=None):
+        """Create a new training year (inactive by default)."""
+        self.connect()
+        try:
+            now = self._format_eastern_timestamp(self._get_eastern_time())
+            self.cursor.execute('''
+                INSERT INTO training_years
+                    (year_label, is_active, roster_filename, linked_track_name,
+                     start_date, end_date, created_date, modified_date)
+                VALUES (?, 0, ?, ?, ?, ?, ?, ?)
+            ''', (year_label, roster_filename, linked_track_name, start_date, end_date, now, now))
+            self.conn.commit()
+            return True, f"Training year '{year_label}' created successfully"
+        except sqlite3.IntegrityError:
+            return False, f"Training year '{year_label}' already exists"
+        except Exception as e:
+            return False, f"Error creating training year: {e}"
+        finally:
+            self.disconnect()
+
+    def update_training_year(self, year_label, **kwargs):
+        """Update roster_filename/linked_track_name/start_date/end_date on a training year."""
+        allowed = {'roster_filename', 'linked_track_name', 'start_date', 'end_date'}
+        updates = {k: v for k, v in kwargs.items() if k in allowed}
+        if not updates:
+            return False, "No valid fields to update"
+        self.connect()
+        try:
+            updates['modified_date'] = self._format_eastern_timestamp(self._get_eastern_time())
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            values = list(updates.values()) + [year_label]
+            self.cursor.execute(f"UPDATE training_years SET {set_clause} WHERE year_label = ?", values)
+            self.conn.commit()
+            return True, f"Training year '{year_label}' updated"
+        except Exception as e:
+            return False, f"Error updating training year: {e}"
+        finally:
+            self.disconnect()
+
+    def promote_training_year_to_active(self, year_label):
+        """Deactivate the currently active training year and activate year_label."""
+        self.connect()
+        try:
+            now = self._format_eastern_timestamp(self._get_eastern_time())
+            active_row = self._fetch_active_training_year_row()
+            if active_row:
+                self.cursor.execute(
+                    "UPDATE training_years SET is_active = 0, modified_date = ? WHERE year_label = ?",
+                    (now, active_row['year_label'])
+                )
+            self.cursor.execute(
+                "UPDATE training_years SET is_active = 1, modified_date = ? WHERE year_label = ?",
+                (now, year_label)
+            )
+            self.conn.commit()
+            return True, f"'{year_label}' is now the active training year"
+        except Exception as e:
+            return False, f"Error promoting training year: {e}"
+        finally:
+            self.disconnect()
+
+    def delete_training_year(self, year_label):
+        """Delete a training year config. Blocked if it is currently active."""
+        self.connect()
+        try:
+            self.cursor.execute("SELECT is_active FROM training_years WHERE year_label = ?", (year_label,))
+            row = self.cursor.fetchone()
+            if not row:
+                return False, f"Training year '{year_label}' not found"
+            if row['is_active']:
+                return False, f"Cannot delete the active training year '{year_label}'"
+            self.cursor.execute("DELETE FROM training_years WHERE year_label = ?", (year_label,))
+            self.conn.commit()
+            return True, f"Deleted training year '{year_label}'"
+        except Exception as e:
+            return False, f"Error deleting training year: {e}"
+        finally:
+            self.disconnect()
+
     def migrate_from_separate_database(self, old_db_path):
         """
         Migrate data from the old separate training database to the unified database.
@@ -268,15 +441,20 @@ class UnifiedDatabase:
             override_timestamp = self._format_eastern_timestamp(current_time) if conflict_override else None
             
             print(f"DEBUG: Inserting new enrollment with timestamp {enrollment_timestamp}")
-            
+
+            active_year_row = self._fetch_active_training_year_row()
+            training_year = active_year_row['year_label'] if active_year_row else 'FY26'
+
             # Insert with explicit column list (excludes id to allow auto-increment)
             self.cursor.execute('''
-                INSERT INTO training_enrollments 
+                INSERT INTO training_enrollments
                 (staff_name, class_name, class_date, role, meeting_type, session_time,
-                 conflict_override, conflict_details, override_acknowledged, enrollment_date, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+                 conflict_override, conflict_details, override_acknowledged, enrollment_date, status,
+                 training_year)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
             ''', (staff_name, class_name, class_date, role, meeting_type, session_time,
-                conflict_override, conflict_details, override_timestamp, enrollment_timestamp))
+                conflict_override, conflict_details, override_timestamp, enrollment_timestamp,
+                training_year))
             
             # Get the auto-generated ID
             inserted_id = self.cursor.lastrowid
@@ -394,14 +572,17 @@ class UnifiedDatabase:
                 inserted_id = existing['id']
                 print(f"SUCCESS: Educator signup reactivated with ID: {inserted_id}")
             else:
+                active_year_row = self._fetch_active_training_year_row()
+                training_year = active_year_row['year_label'] if active_year_row else 'FY26'
+
                 # Insert with explicit column list (excludes id to allow auto-increment)
                 self.cursor.execute('''
                     INSERT INTO training_educator_signups
                     (staff_name, class_name, class_date, conflict_override, conflict_details,
-                     override_acknowledged, signup_date, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
+                     override_acknowledged, signup_date, status, training_year)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
                 ''', (staff_name, class_name, class_date, conflict_override, conflict_details,
-                     override_timestamp, signup_timestamp))
+                     override_timestamp, signup_timestamp, training_year))
 
                 # Get the auto-generated ID
                 inserted_id = self.cursor.lastrowid
@@ -1002,9 +1183,30 @@ class UnifiedDatabase:
                     signup_dict['override_acknowledged_display'] = self._parse_and_format_timestamp(
                         signup_dict['override_acknowledged']
                     )
-                
+
                 signups.append(signup_dict)
-            
+
             return signups
         finally:
             self.disconnect()
+
+
+def get_active_roster_path(db_path='data/medflight_tracks.db', upload_folder='training/upload',
+                            default_filename='MASTER Education Classes Roster.xlsx'):
+    """
+    Resolve the Excel roster path for the currently active training year.
+    Falls back to the historical default path if no training year is configured yet
+    (e.g. the training_years table hasn't been created by initialize_training_tables() yet).
+    """
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT roster_filename FROM training_years WHERE is_active = 1 LIMIT 1")
+        row = cursor.fetchone()
+        conn.close()
+        if row and row['roster_filename']:
+            return os.path.join(upload_folder, row['roster_filename'])
+    except sqlite3.OperationalError:
+        pass
+    return os.path.join(upload_folder, default_filename)

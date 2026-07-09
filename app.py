@@ -64,7 +64,7 @@ from modules.db_utils import get_active_track_config, get_track_capacity
 
 # Import training modules with new unified database approach
 try:
-    from training_modules.unified_database import UnifiedDatabase
+    from training_modules.unified_database import UnifiedDatabase, get_active_roster_path
     from training_modules.excel_handler import ExcelHandler
     from training_modules.enrollment_manager import EnrollmentManager
     from training_modules.ui_components import UIComponents as TrainingUIComponents  # Renamed to avoid conflict
@@ -457,11 +457,11 @@ def display_training_events_app():
 
         # Initialize Excel handler
         if 'training_excel_handler' not in st.session_state:
-            excel_path = 'training/upload/MASTER Education Classes Roster.xlsx'
-            
+            excel_path = get_active_roster_path()
+
             if not os.path.exists(excel_path):
                 st.error(f"Excel file not found: {excel_path}")
-                st.info("Please ensure the 'MASTER Education Classes Roster.xlsx' file is in the training/upload folder")
+                st.info("Please ensure the roster file is in the training/upload folder, or check the active Training Year's roster filename in Training Admin > Training Years")
                 return
             
             st.session_state.training_excel_handler = ExcelHandler(excel_path)
@@ -557,6 +557,10 @@ def display_training_events_app():
             st.warning("⚠️ No track database found")
 
     # USER INTERFACE - This should be accessible to all authenticated users
+    active_training_year = st.session_state.unified_db.get_active_training_year()
+    if active_training_year:
+        st.caption(f"📅 Registering for: **{active_training_year['year_label']}**")
+
     # Staff selection
     staff_list = st.session_state.training_excel_handler.get_staff_list()
     selected_staff = st.selectbox(
@@ -2100,7 +2104,8 @@ elif st.session_state.selected_module == "summer_leave":
     # Initialize Excel handler and track manager if not already done
     if 'training_excel_handler' not in st.session_state or st.session_state.training_excel_handler is None:
         from training_modules.excel_handler import ExcelHandler
-        excel_path = 'training/upload/MASTER Education Classes Roster.xlsx'
+        from training_modules.unified_database import get_active_roster_path
+        excel_path = get_active_roster_path()
         if os.path.exists(excel_path):
             st.session_state.training_excel_handler = ExcelHandler(excel_path)
         else:
