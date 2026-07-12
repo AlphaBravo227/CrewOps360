@@ -847,7 +847,7 @@ def _display_bid_submission(
 ):
     """Handle bid submission."""
     st.subheader(f"Submit Bid for {selected_staff}")
-    st.info(f"Submitting bid for **{bid_track_name}**. No admin approval is needed — your bid will be recorded immediately.")
+    st.info(f"Submitting bid for **{bid_track_name}**.")
 
     modified_track = st.session_state.track_changes.get(selected_staff, {})
     valid = st.session_state.modified_track.get('valid', False)
