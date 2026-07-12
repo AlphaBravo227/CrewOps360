@@ -250,7 +250,7 @@ def display_module_selection():
                     <li>🔄 Select shifts for the next bidding cycle</li>
                     <li>📊 View real-time staffing availability</li>
                     <li>🔍 Validate your bid against requirements</li>
-                    <li>📤 Submit your bid — no approval needed</li>
+                    <li>📤 Submit your bid</li>
                 </ul>
             </div>
         </div>
