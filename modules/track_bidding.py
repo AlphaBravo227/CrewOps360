@@ -22,6 +22,9 @@ from modules.db_utils import (
     update_track_config,
     toggle_bidding,
     get_track_capacity,
+    get_track_capacity_by_weekday,
+    get_weekday_capacity_overrides,
+    set_weekday_capacity_override,
     promote_bid_to_active,
     save_bid_track_to_db,
     get_bid_track_from_db,
@@ -155,6 +158,54 @@ def _render_bidding_admin_sidebar():
                 with uc2:
                     u_dm = st.number_input("Day Medics", 1, 50, cfg['max_day_medics'], key=f"u_dm_{tn}")
                     u_nm = st.number_input("Night Medics", 1, 50, cfg['max_night_medics'], key=f"u_nm_{tn}")
+
+                st.markdown("**Day-of-Week Limits** *(optional — further restricts the Bid Caps above on specific weekdays)*")
+                use_wd_cap = st.checkbox(
+                    "Use day-of-week specific limits", value=bool(cfg.get('use_weekday_capacity', False)),
+                    key=f"use_wd_cap_{tn}")
+                if use_wd_cap != bool(cfg.get('use_weekday_capacity', False)):
+                    update_track_config(tn, use_weekday_capacity=1 if use_wd_cap else 0)
+                    st.rerun()
+
+                if use_wd_cap:
+                    weekday_order = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+                    overrides = get_weekday_capacity_overrides(tn)
+                    grid_rows = []
+                    for wd in weekday_order:
+                        ov = overrides.get(wd, {})
+                        grid_rows.append({
+                            "Day": wd,
+                            "Max Day Nurses": ov.get('max_day_nurses') if ov.get('max_day_nurses') is not None else u_dn,
+                            "Max Day Medics": ov.get('max_day_medics') if ov.get('max_day_medics') is not None else u_dm,
+                            "Max Night Nurses": ov.get('max_night_nurses') if ov.get('max_night_nurses') is not None else u_nn,
+                            "Max Night Medics": ov.get('max_night_medics') if ov.get('max_night_medics') is not None else u_nm,
+                        })
+                    edited_grid = st.data_editor(
+                        pd.DataFrame(grid_rows),
+                        hide_index=True, use_container_width=True, key=f"wd_grid_{tn}",
+                        column_config={
+                            "Day": st.column_config.TextColumn(disabled=True),
+                            "Max Day Nurses": st.column_config.NumberColumn(min_value=0, max_value=50, step=1),
+                            "Max Day Medics": st.column_config.NumberColumn(min_value=0, max_value=50, step=1),
+                            "Max Night Nurses": st.column_config.NumberColumn(min_value=0, max_value=50, step=1),
+                            "Max Night Medics": st.column_config.NumberColumn(min_value=0, max_value=50, step=1),
+                        }
+                    )
+                    st.caption("Blank/unedited rows use the Bid Caps above. Saving writes all 7 days explicitly, so a later change to Bid Caps won't retroactively change days you've saved here.")
+                    if st.button("Save Day-of-Week Limits", key=f"save_wd_cap_{tn}", use_container_width=True):
+                        for _, row in edited_grid.iterrows():
+                            set_weekday_capacity_override(
+                                tn, row["Day"],
+                                max_day_nurses=int(row["Max Day Nurses"]),
+                                max_day_medics=int(row["Max Day Medics"]),
+                                max_night_nurses=int(row["Max Night Nurses"]),
+                                max_night_medics=int(row["Max Night Medics"]),
+                            )
+                        st.session_state[f'wd_cap_saved_{tn}'] = True
+                        st.rerun()
+
+                    if st.session_state.pop(f'wd_cap_saved_{tn}', False):
+                        st.success(f"Day-of-week limits saved for {tn}")
 
                 st.markdown("**Base Shift Counts** *(day/night shift slots per base, used for hypothetical bid assignments)*")
                 bc_day, bc_night = st.columns(2)
@@ -356,6 +407,22 @@ def display_track_bidding():
     cap_cols[3].metric("Max Night Medics", cap['max_night_medics'],
                        help=f"{cap['night_vehicles']} vehicles + {cap['night_leave_slots']} leave")
     st.caption(f"Day: {cap['day_vehicles']} vehicles + {cap['day_leave_slots']} leave slots (min staffing: {cap['min_day_staff']}) | Night: {cap['night_vehicles']} vehicles + {cap['night_leave_slots']} leave slots (min staffing: {cap['min_night_staff']})")
+
+    if cap.get('use_weekday_capacity'):
+        with st.expander("Day-of-week limits (in addition to the caps above)"):
+            weekday_caps = get_track_capacity_by_weekday(bid_track_name)
+            weekday_order = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+            table = [
+                {
+                    "Day": wd,
+                    "Max Day Nurses": weekday_caps[wd]['max_day_nurses'],
+                    "Max Day Medics": weekday_caps[wd]['max_day_medics'],
+                    "Max Night Nurses": weekday_caps[wd]['max_night_nurses'],
+                    "Max Night Medics": weekday_caps[wd]['max_night_medics'],
+                }
+                for wd in weekday_order
+            ]
+            st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
 
     if active_cfg:
         st.markdown(f"*Prior active track: {active_cfg['track_name']}*")

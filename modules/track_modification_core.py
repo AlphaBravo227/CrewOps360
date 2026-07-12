@@ -93,26 +93,40 @@ def enhance_hypothetical_scheduler_with_staffing_analysis(
     # Add preference source information to results
     base_results['preference_source'] = preference_source
     
-    # Get max shifts from session state
-    max_day_nurses = st.session_state.get('max_day_nurses', 10)
-    max_day_medics = st.session_state.get('max_day_medics', 10)
-    max_night_nurses = st.session_state.get('max_night_nurses', 6)
-    max_night_medics = st.session_state.get('max_night_medics', 5)
-    
     # Check track source setting
     use_database_logic = st.session_state.get('track_source', "Annual Rebid") == "Annual Rebid"
-    
+
+    # Resolve which track config's capacity applies: the bid cycle being bid on,
+    # or (for in-year modifications) the currently active track. Day-of-week
+    # overrides (if enabled for this track) refine the flat max_day/night
+    # nurse/medic caps per weekday; see db_utils.get_track_capacity_by_weekday.
+    from modules.db_utils import get_active_track_config, get_track_capacity_by_weekday
+    effective_track_name = bid_track_name
+    if not effective_track_name:
+        active_cfg = get_active_track_config()
+        effective_track_name = active_cfg['track_name'] if active_cfg else 'FY26'
+    weekday_caps = get_track_capacity_by_weekday(effective_track_name)
+
+    # Fallback caps, used only if a day's weekday token isn't recognized
+    fallback_caps = {
+        'max_day_nurses': st.session_state.get('max_day_nurses', 10),
+        'max_day_medics': st.session_state.get('max_day_medics', 10),
+        'max_night_nurses': st.session_state.get('max_night_nurses', 6),
+        'max_night_medics': st.session_state.get('max_night_medics', 5),
+    }
+
     # Enhance assignment_details with comprehensive staffing analysis
     enhanced_assignment_details = {}
-    
+
     for day in days:
         day_data = base_results['assignment_details'].get(day, {})
-        
+        caps = weekday_caps.get(day.split()[0], fallback_caps)
+
         # Calculate staffing for day shift
         day_staffing = calculate_shift_staffing_analysis(
             day, "D", "day", updated_preferences_df, current_tracks_df,
             staff_col_prefs, staff_col_tracks, role_col,
-            max_day_nurses, max_day_medics, use_database_logic,
+            caps['max_day_nurses'], caps['max_day_medics'], use_database_logic,
             bid_track_name=bid_track_name
         )
 
@@ -120,7 +134,7 @@ def enhance_hypothetical_scheduler_with_staffing_analysis(
         night_staffing = calculate_shift_staffing_analysis(
             day, "N", "night", updated_preferences_df, current_tracks_df,
             staff_col_prefs, staff_col_tracks, role_col,
-            max_night_nurses, max_night_medics, use_database_logic,
+            caps['max_night_nurses'], caps['max_night_medics'], use_database_logic,
             bid_track_name=bid_track_name
         )
         
