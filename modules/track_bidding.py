@@ -846,6 +846,10 @@ def _display_bid_submission(
     preferences_df, staff_col_prefs, role_col
 ):
     """Handle bid submission."""
+    from modules.enhanced_track_validator import validate_track_comprehensive
+    from modules.pdf_generator import generate_bid_summary_pdf
+    from modules.email_notifications import send_bid_submission_notification, send_bid_summary_email
+
     st.subheader(f"Submit Bid for {selected_staff}")
     st.info(f"Submitting bid for **{bid_track_name}**.")
 
@@ -876,6 +880,8 @@ def _display_bid_submission(
 
     if valid:
         bid_submitted_key = f'bid_submitted_{bid_track_name}_{selected_staff}'
+        admin_notice_key = f'bid_admin_notice_{bid_track_name}_{selected_staff}'
+
         if not st.session_state.get(bid_submitted_key, False):
             if st.button("Submit Bid", use_container_width=True, type="primary", key=f"submit_bid_{bid_track_name}"):
                 with st.spinner("Saving bid..."):
@@ -906,6 +912,26 @@ def _display_bid_submission(
                     ok, msg, tid = save_bid_track_to_db(selected_staff, track_to_save, bid_track_name, meta)
                     if ok:
                         st.session_state[bid_submitted_key] = True
+
+                        # Notify the admin recipients with bid summary statistics (sent from the admin account)
+                        try:
+                            bid_result = get_bid_track_from_db(selected_staff, bid_track_name)
+                            if bid_result[0]:
+                                saved_bid = bid_result[1]
+                                weekend_group = st.session_state.get('weekend_group')
+                                validation_result = validate_track_comprehensive(
+                                    saved_bid['track_data'], shifts_per_pay_period, night_minimum,
+                                    weekend_minimum, preassignments, days, weekend_group,
+                                    staff_name=selected_staff
+                                )
+                                admin_ok, admin_msg = send_bid_submission_notification(
+                                    selected_staff, bid_track_name, saved_bid['track_data'],
+                                    saved_bid['version'], saved_bid['submission_date'], validation_result
+                                )
+                                st.session_state[admin_notice_key] = ("success", admin_msg) if admin_ok else ("warning", admin_msg)
+                        except Exception as e:
+                            st.session_state[admin_notice_key] = ("warning", f"Admin notification failed: {e}")
+
                         st.success(f"Bid submitted successfully! {msg}")
                         st.balloons()
                         st.rerun()
@@ -913,8 +939,59 @@ def _display_bid_submission(
                         st.error(f"Error: {msg}")
         else:
             st.success(f"Your bid for {bid_track_name} has been submitted.")
+
+            if admin_notice_key in st.session_state:
+                notice_type, notice_msg = st.session_state[admin_notice_key]
+                (st.success if notice_type == "success" else st.warning)(notice_msg)
+
+            # Reload the authoritative saved bid (version/timestamp/data) to build the summary PDF
+            bid_result = get_bid_track_from_db(selected_staff, bid_track_name)
+            if bid_result[0]:
+                saved_bid = bid_result[1]
+                weekend_group = st.session_state.get('weekend_group')
+                validation_result = validate_track_comprehensive(
+                    saved_bid['track_data'], shifts_per_pay_period, night_minimum,
+                    weekend_minimum, preassignments, days, weekend_group,
+                    staff_name=selected_staff
+                )
+                pdf_bytes, pdf_filename = generate_bid_summary_pdf(
+                    selected_staff, saved_bid['track_data'], days, bid_track_name,
+                    saved_bid['version'], saved_bid['submission_date'],
+                    shifts_per_pay_period, night_minimum, weekend_minimum,
+                    preassignments, validation_result, weekend_group
+                )
+
+                st.markdown("### Bid Summary PDF")
+                dl_col, email_col = st.columns(2)
+
+                with dl_col:
+                    st.download_button(
+                        "Download Bid Summary PDF", data=pdf_bytes, file_name=pdf_filename,
+                        mime="application/pdf", use_container_width=True,
+                        key=f"download_bid_pdf_{bid_track_name}_{selected_staff}"
+                    )
+
+                with email_col:
+                    email_result_key = f'bid_email_result_{bid_track_name}_{selected_staff}'
+                    with st.form(key=f"bid_email_form_{bid_track_name}_{selected_staff}"):
+                        email_addr = st.text_input("Email this summary to:", placeholder="you@example.com")
+                        send_clicked = st.form_submit_button("Send PDF to Email", use_container_width=True)
+                    if send_clicked:
+                        send_ok, send_msg = send_bid_summary_email(
+                            email_addr, selected_staff, bid_track_name, pdf_bytes, pdf_filename
+                        )
+                        st.session_state[email_result_key] = ("success", send_msg) if send_ok else ("error", send_msg)
+
+                    if email_result_key in st.session_state:
+                        result_type, result_msg = st.session_state[email_result_key]
+                        (st.success if result_type == "success" else st.error)(result_msg)
+            else:
+                st.warning("Could not reload your submitted bid to build the summary PDF.")
+
             if st.button("Update Bid", use_container_width=True, key=f"update_bid_{bid_track_name}"):
-                st.session_state[f'bid_submitted_{bid_track_name}_{selected_staff}'] = False
+                st.session_state[bid_submitted_key] = False
+                st.session_state.pop(admin_notice_key, None)
+                st.session_state.pop(f'bid_email_result_{bid_track_name}_{selected_staff}', None)
                 st.rerun()
     else:
         st.error("Cannot submit — fix validation issues first.")

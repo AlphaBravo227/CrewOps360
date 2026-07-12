@@ -469,5 +469,308 @@ def generate_schedule_pdf(staff_name, track_data, days, shifts_per_pay_period=0,
     # Create filename with sanitized staff name
     safe_name = ''.join(c if c.isalnum() else '_' for c in staff_name)
     filename = f"{safe_name}_schedule_{datetime.now(_eastern_tz).strftime('%Y%m%d%H%M%S')}.pdf"
-    
+
+    return pdf_bytes, filename
+
+
+def fit_text_to_width(pdf, text, max_width):
+    """
+    Truncate text with an ellipsis so it fits max_width (mm) in the PDF's current font.
+    Char-count budgets can't guarantee a fit since glyph widths vary (e.g. 'W' vs 'i').
+    """
+    text = sanitize_text_for_pdf(text)
+    if pdf.get_string_width(text) <= max_width:
+        return text
+    while text and pdf.get_string_width(text + '...') > max_width:
+        text = text[:-1]
+    return (text + '...') if text else '...'
+
+
+class BidSummaryPDF(FPDF):
+    """Compact single-page PDF summarizing one submitted track bid."""
+
+    def header(self):
+        self.set_font('Arial', 'B', 14)
+        self.cell(0, 8, 'Boston MedFlight - Track Bid Summary', 0, 1, 'C')
+        self.set_font('Arial', '', 8)
+        gen_ts = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
+        self.cell(0, 5, sanitize_text_for_pdf(f'Generated: {gen_ts}'), 0, 1, 'C')
+        self.line(10, 18, 200, 18)
+        self.ln(3)
+
+    def footer(self):
+        self.set_y(-8)
+        self.set_font('Arial', 'I', 6)
+        self.cell(0, 5, 'Boston MedFlight - CrewOps360 (auto-generated)', 0, 0, 'C')
+
+    def section_title(self, text):
+        self.set_font('Arial', 'B', 11)
+        self.set_fill_color(230, 230, 230)
+        self.cell(0, 6.5, sanitize_text_for_pdf(text), 0, 1, 'L', 0)
+        self.ln(0.5)
+
+
+def _build_requirement_rows(shifts_by_pay_period, shifts_per_pay_period, night_count,
+                             night_minimum, weekend_count, weekend_minimum,
+                             validation_result, weekend_group):
+    """
+    Build (label, status, short_summary) rows for the Requirements Met table.
+    Summaries are generated from counts/issue-lengths rather than the validator's
+    verbose `details` strings so each row stays a predictable single line.
+    """
+    rows = []
+
+    pp_status = validation_result.get('shifts_per_pay_period', {}).get('status', True) if validation_result else (
+        shifts_per_pay_period <= 0 or all(c == shifts_per_pay_period for c in shifts_by_pay_period)
+    )
+    periods_str = '/'.join(str(c) for c in shifts_by_pay_period)
+    pp_summary = f"Periods: {periods_str} (need {shifts_per_pay_period} each)" if shifts_per_pay_period > 0 \
+        else f"Periods: {periods_str} (no requirement)"
+    rows.append(("Pay Period Shifts", pp_status, pp_summary))
+
+    night_status = validation_result.get('night_minimum', {}).get('status', True) if validation_result else (
+        night_count >= night_minimum
+    )
+    rows.append(("Night Minimum", night_status, f"{night_count} nights (minimum {night_minimum})"))
+
+    weekend_status = validation_result.get('weekend_minimum', {}).get('status', True) if validation_result else (
+        weekend_count >= weekend_minimum
+    )
+    rows.append(("Weekend Minimum", weekend_status, f"{weekend_count} weekend shifts (minimum {weekend_minimum})"))
+
+    if validation_result:
+        week_res = validation_result.get('shifts_per_week')
+        if week_res is not None:
+            n = len(week_res.get('issues', []))
+            summary = "All weeks under 4 shifts" if week_res.get('status', True) else f"{n} week(s) at/over 4-shift limit"
+            rows.append(("Weekly Shift Limit", week_res.get('status', True), summary))
+
+        rest_res = validation_result.get('rest_requirements')
+        if rest_res is not None:
+            n = len(rest_res.get('issues', []))
+            summary = "All rest requirements met" if rest_res.get('status', True) else f"{n} rest requirement violation(s)"
+            rows.append(("Rest Requirements", rest_res.get('status', True), summary))
+
+        consec_res = validation_result.get('consecutive_shifts')
+        if consec_res is not None:
+            n = len(consec_res.get('issues', []))
+            summary = "Consecutive-shift limit respected" if consec_res.get('status', True) else f"{n} sequence(s) too long"
+            rows.append(("Consecutive Shift Limit", consec_res.get('status', True), summary))
+
+        wg_res = validation_result.get('weekend_group_assignment')
+        if wg_res is not None and weekend_group:
+            periods = wg_res.get('periods_validated', [])
+            met = sum(1 for p in periods if p.get('valid'))
+            total = len(periods)
+            summary = f"Group {weekend_group}: {met}/{total} periods met" if total else f"Group {weekend_group}"
+            rows.append(("Weekend Group", wg_res.get('status', True), summary))
+
+    return rows
+
+
+def generate_bid_summary_pdf(staff_name, track_data, days, track_name, version, submission_date,
+                              shifts_per_pay_period=0, night_minimum=0, weekend_minimum=0,
+                              preassignments=None, validation_result=None, weekend_group=None):
+    """
+    Generate a one-page PDF summarizing a submitted track bid: who/what/when,
+    which requirements were met, key metrics, and a compact 6-week grid.
+
+    Args:
+        staff_name (str): Name of the staff member
+        track_data (dict): Dictionary of day -> assignment (preassignments already merged in)
+        days (list): Ordered list of the 42 schedule days
+        track_name (str): Bid track/cycle name (e.g. "FY27")
+        version (int): Bid version number
+        submission_date (str): Timestamp string as stored in the database
+        shifts_per_pay_period (int): Required shifts per 14-day pay period (exact match)
+        night_minimum (int): Minimum night shifts required
+        weekend_minimum (int): Minimum weekend shifts required
+        preassignments (dict, optional): Dictionary of day -> preassignment value
+        validation_result (dict, optional): Result of validate_track_comprehensive(); if
+            omitted, falls back to the three basic pay-period/night/weekend checks
+        weekend_group (str, optional): Weekend group assignment (A-E)
+
+    Returns:
+        tuple: (pdf_bytes, filename)
+    """
+    pdf = BidSummaryPDF()
+    pdf.alias_nb_pages()
+    pdf.set_auto_page_break(False)
+    pdf.add_page()
+
+    if isinstance(days, pd.Index):
+        days_list = days.tolist()
+    else:
+        days_list = list(days)
+
+    total_shifts, day_shifts, night_shifts, at_shifts = count_shifts_comprehensive(track_data, preassignments)
+    weekend_shifts = count_weekend_shifts_comprehensive(track_data, preassignments)
+    shifts_by_pay_period = count_shifts_by_pay_period_comprehensive(track_data, days_list, preassignments)
+    expected_total = shifts_per_pay_period * 3 if shifts_per_pay_period > 0 else 0
+
+    overall_valid = validation_result.get('overall_valid', True) if validation_result else True
+
+    # Bid details block
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(45, 6.5, 'Staff Member:', 0, 0)
+    pdf.set_font('Arial', '', 10)
+    pdf.cell(75, 6.5, fit_text_to_width(pdf, staff_name, 71), 0, 0)
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(30, 6.5, 'Bid Version:', 0, 0)
+    pdf.set_font('Arial', '', 10)
+    pdf.cell(0, 6.5, f'v{version}', 0, 1)
+
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(45, 6.5, 'Bid Track:', 0, 0)
+    pdf.set_font('Arial', '', 10)
+    pdf.cell(75, 6.5, fit_text_to_width(pdf, track_name, 71), 0, 0)
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(30, 6.5, 'Submitted:', 0, 0)
+    pdf.set_font('Arial', '', 10)
+    pdf.cell(0, 6.5, sanitize_text_for_pdf(submission_date), 0, 1)
+
+    pdf.ln(1)
+    if overall_valid:
+        pdf.set_fill_color(212, 237, 218)
+        status_text = 'ALL REQUIREMENTS MET'
+    else:
+        pdf.set_fill_color(248, 215, 218)
+        n_issues = sum(1 for v in (validation_result or {}).values() if isinstance(v, dict) and not v.get('status', True))
+        status_text = f'{n_issues} REQUIREMENT(S) NOT MET'
+    pdf.set_font('Arial', 'B', 11)
+    pdf.cell(0, 7, status_text, 1, 1, 'C', 1)
+    pdf.ln(1.5)
+
+    # Requirements Met table
+    pdf.section_title('Requirements Met')
+    rows = _build_requirement_rows(
+        shifts_by_pay_period, shifts_per_pay_period, night_shifts, night_minimum,
+        weekend_shifts, weekend_minimum, validation_result, weekend_group
+    )
+    pdf.set_font('Arial', 'B', 9)
+    pdf.set_fill_color(220, 220, 220)
+    pdf.cell(55, 6, 'Requirement', 1, 0, 'L', 1)
+    pdf.cell(25, 6, 'Status', 1, 0, 'C', 1)
+    pdf.cell(110, 6, 'Summary', 1, 1, 'L', 1)
+    pdf.set_font('Arial', '', 9)
+    for label, status, summary in rows:
+        pdf.set_fill_color(212, 237, 218) if status else pdf.set_fill_color(248, 215, 218)
+        pdf.cell(55, 6, fit_text_to_width(pdf, label, 51), 1, 0, 'L')
+        pdf.cell(25, 6, 'Met' if status else 'Not Met', 1, 0, 'C', 1)
+        pdf.cell(110, 6, fit_text_to_width(pdf, summary, 106), 1, 1, 'L')
+    pdf.ln(2)
+
+    # Metrics table
+    pdf.section_title('Bid Metrics')
+    pdf.set_font('Arial', 'B', 9)
+    pdf.set_fill_color(220, 220, 220)
+    pdf.cell(65, 6, 'Metric', 1, 0, 'L', 1)
+    pdf.cell(35, 6, 'Value', 1, 0, 'C', 1)
+    pdf.cell(45, 6, 'Requirement', 1, 0, 'C', 1)
+    pdf.cell(45, 6, 'Status', 1, 1, 'C', 1)
+    pdf.set_font('Arial', '', 9)
+
+    def metric_row(label, value, requirement, status_text):
+        pdf.cell(65, 6, label, 1, 0, 'L')
+        pdf.cell(35, 6, str(value), 1, 0, 'C')
+        pdf.cell(45, 6, requirement, 1, 0, 'C')
+        pdf.cell(45, 6, sanitize_text_for_pdf(status_text), 1, 1, 'C')
+
+    total_status = "Met" if expected_total == 0 or total_shifts == expected_total else "Not Met"
+    metric_row('Total Shifts', total_shifts, f'{expected_total}' if expected_total else 'N/A', total_status)
+    metric_row('Day Shifts', day_shifts, 'N/A', 'N/A')
+    metric_row('Night Shifts', night_shifts, f'{night_minimum} minimum', "Met" if night_shifts >= night_minimum else "Not Met")
+    metric_row('Weekend Shifts', weekend_shifts, f'{weekend_minimum} minimum', "Met" if weekend_shifts >= weekend_minimum else "Not Met")
+    if at_shifts > 0:
+        metric_row('AT Preassignments', at_shifts, 'N/A', 'N/A')
+    pdf.ln(2)
+
+    # Pay period breakdown mini-table
+    pdf.set_font('Arial', 'B', 9)
+    pdf.set_fill_color(220, 220, 220)
+    pdf.cell(65, 6, 'Pay Period', 1, 0, 'L', 1)
+    pdf.cell(35, 6, 'Shifts', 1, 0, 'C', 1)
+    pdf.cell(45, 6, 'Required', 1, 0, 'C', 1)
+    pdf.cell(45, 6, 'Status', 1, 1, 'C', 1)
+    pdf.set_font('Arial', '', 9)
+    pp_names = ["Pay Period 1 (Block A)", "Pay Period 2 (Block B)", "Pay Period 3 (Block C)"]
+    for name, count in zip(pp_names, shifts_by_pay_period):
+        status = "Met" if shifts_per_pay_period == 0 or count == shifts_per_pay_period else "Not Met"
+        pdf.cell(65, 6, name, 1, 0, 'L')
+        pdf.cell(35, 6, str(count), 1, 0, 'C')
+        pdf.cell(45, 6, f'{shifts_per_pay_period}' if shifts_per_pay_period else 'N/A', 1, 0, 'C')
+        pdf.cell(45, 6, status, 1, 1, 'C')
+    pdf.ln(2)
+
+    # Compact schedule grid
+    pdf.section_title('Submitted Track')
+    blocks = ["A", "B", "C"]
+    for block_idx, block in enumerate(blocks):
+        start_idx = block_idx * 14
+        end_idx = start_idx + 14
+        block_days = days_list[start_idx:end_idx]
+        if not block_days:
+            continue
+
+        pdf.set_font('Arial', 'B', 8)
+        pdf.cell(0, 5, f'Block {block}', 0, 1)
+
+        for week_idx in range(2):
+            week_start = week_idx * 7
+            week_end = min(week_start + 7, len(block_days))
+            week_days = block_days[week_start:week_end]
+            if not week_days:
+                continue
+
+            cell_width = 172 / len(week_days)
+            pdf.set_font('Arial', '', 7)
+            pdf.set_fill_color(220, 220, 220)
+            pdf.cell(18, 4.5, 'Date', 1, 0, 'C', 1)
+            for wd in week_days:
+                pdf.cell(cell_width, 4.5, wd.split()[0], 1, 0, 'C', 1)
+            pdf.ln()
+
+            pdf.cell(18, 4.5, 'Shift', 1, 0, 'C', 1)
+            for day in week_days:
+                shift = ""
+                if day in track_data and track_data[day]:
+                    shift = track_data[day]
+                elif preassignments and day in preassignments and preassignments[day]:
+                    shift = preassignments[day]
+
+                if shift == "D":
+                    pdf.set_fill_color(212, 237, 218)
+                    pdf.cell(cell_width, 4.5, 'D', 1, 0, 'C', 1)
+                elif shift == "N":
+                    pdf.set_fill_color(204, 229, 255)
+                    pdf.cell(cell_width, 4.5, 'N', 1, 0, 'C', 1)
+                elif shift == "AT":
+                    pdf.set_fill_color(255, 243, 205)
+                    pdf.cell(cell_width, 4.5, 'AT', 1, 0, 'C', 1)
+                else:
+                    pdf.set_fill_color(255, 255, 255)
+                    pdf.cell(cell_width, 4.5, '-', 1, 0, 'C', 1)
+            pdf.ln(5)
+
+    try:
+        pdf_bytes = pdf.output(dest='S')
+        if isinstance(pdf_bytes, bytearray):
+            pdf_bytes = bytes(pdf_bytes)
+        if isinstance(pdf_bytes, str):
+            pdf_bytes = pdf_bytes.encode('latin-1')
+    except Exception as e:
+        try:
+            pdf_output = pdf.output()
+            if isinstance(pdf_output, str):
+                pdf_bytes = pdf_output.encode('latin-1')
+            elif isinstance(pdf_output, bytearray):
+                pdf_bytes = bytes(pdf_output)
+            else:
+                pdf_bytes = pdf_output
+        except Exception as e2:
+            raise Exception(f"Error generating PDF: {e}, {e2}")
+
+    safe_name = ''.join(c if c.isalnum() else '_' for c in staff_name)
+    filename = f"{safe_name}_bid_summary_v{version}_{datetime.now(_eastern_tz).strftime('%Y%m%d%H%M%S')}.pdf"
+
     return pdf_bytes, filename
