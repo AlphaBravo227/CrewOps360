@@ -121,11 +121,19 @@ def _load_bidding_data_files():
     staff_names = sorted(preferences_df[staff_col_prefs].dropna().unique().tolist())
 
     role_mapping = {}
-    if role_col:
-        for _, row in preferences_df.iterrows():
-            name = row.get(staff_col_prefs)
-            if pd.notna(name):
-                role_mapping[str(name).strip()] = row.get(role_col, 'Unknown')
+    seniority_mapping = {}
+    for _, row in preferences_df.iterrows():
+        name = row.get(staff_col_prefs)
+        if pd.notna(name):
+            name = str(name).strip()
+            if role_col:
+                role_mapping[name] = row.get(role_col, 'Unknown')
+            if seniority_col:
+                seniority_val = row.get(seniority_col)
+                try:
+                    seniority_mapping[name] = int(seniority_val)
+                except (TypeError, ValueError):
+                    seniority_mapping[name] = seniority_val
 
     return {
         'preferences_df': preferences_df,
@@ -141,6 +149,7 @@ def _load_bidding_data_files():
         'seniority_col': seniority_col,
         'staff_names': staff_names,
         'role_mapping': role_mapping,
+        'seniority_mapping': seniority_mapping,
     }, None
 
 
@@ -455,6 +464,7 @@ def display_bidding_admin_interface():
             else:
                 staff_names = ctx['staff_names']
                 role_mapping = ctx['role_mapping']
+                seniority_mapping = ctx['seniority_mapping']
                 access_configs = get_all_bid_access_configs(access_track)
                 ok, bids = get_all_bid_tracks(access_track)
                 bids_lookup = {b['staff_name']: b for b in bids} if ok else {}
@@ -462,11 +472,13 @@ def display_bidding_admin_interface():
                 staff_data = []
                 for staff_name in staff_names:
                     role = role_mapping.get(staff_name, 'Unknown')
+                    seniority = seniority_mapping.get(staff_name, '')
                     access = access_configs.get(staff_name, False)
                     bid = bids_lookup.get(staff_name)
                     staff_data.append({
                         'Staff Name': staff_name,
                         'Role': role,
+                        'Seniority': seniority,
                         'Bid Access': '✅' if access else '❌',
                         'Has Bid': '✅' if bid else '❌',
                         'Version': bid['version'] if bid else '',
