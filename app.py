@@ -208,7 +208,32 @@ def display_module_selection():
     with col2:
         st.markdown("### 🎯 Select Module")
         st.markdown("---")
-        
+
+        # Track Bidding Module
+        st.markdown("""
+        <div class="module-card" style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border: 2px solid #FF9800;">
+            <div style="text-align: center;">
+                <h2 style="color: #E65100; margin-bottom: 1rem;">🗳️ Track Bidding</h2>
+                <p style="color: #333; font-size: 1.1rem; margin-bottom: 1.5rem; line-height: 1.6;">
+                    Bid on your preferred shifts for the upcoming track cycle.
+                    Review availability, select your schedule, and submit your bid.
+                </p>
+                <ul style="text-align: left; color: #555; margin-bottom: 2rem;">
+                    <li>🔄 Select shifts for the next bidding cycle</li>
+                    <li>📊 View real-time staffing availability</li>
+                    <li>🔍 Validate your bid against requirements</li>
+                    <li>📤 Submit your bid</li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("🗳️ Enter Track Bidding", use_container_width=True, key="track_bidding_btn"):
+            st.session_state.selected_module = "track_bidding"
+            st.rerun()
+
+        st.markdown("<br>", unsafe_allow_html=True)
+                
         # Clinical Track Hub Module
         _landing_active_cfg = get_active_track_config()
         _landing_active_label = _landing_active_cfg['track_name'] if _landing_active_cfg else "FY26"
@@ -237,30 +262,7 @@ def display_module_selection():
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Track Bidding Module
-        st.markdown("""
-        <div class="module-card" style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border: 2px solid #FF9800;">
-            <div style="text-align: center;">
-                <h2 style="color: #E65100; margin-bottom: 1rem;">🗳️ Track Bidding</h2>
-                <p style="color: #333; font-size: 1.1rem; margin-bottom: 1.5rem; line-height: 1.6;">
-                    Bid on your preferred shifts for the upcoming track cycle.
-                    Review availability, select your schedule, and submit your bid.
-                </p>
-                <ul style="text-align: left; color: #555; margin-bottom: 2rem;">
-                    <li>🔄 Select shifts for the next bidding cycle</li>
-                    <li>📊 View real-time staffing availability</li>
-                    <li>🔍 Validate your bid against requirements</li>
-                    <li>📤 Submit your bid</li>
-                </ul>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
 
-        if st.button("🗳️ Enter Track Bidding", use_container_width=True, key="track_bidding_btn"):
-            st.session_state.selected_module = "track_bidding"
-            st.rerun()
-
-        st.markdown("<br>", unsafe_allow_html=True)
 
         # Training & Events Registration Module
         training_status = "Available" if TRAINING_MODULES_AVAILABLE else "Setup Required"
