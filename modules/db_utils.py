@@ -392,6 +392,19 @@ def initialize_database():
         )
         ''')
 
+        # NEW: Create track_bid_access table for per-staff bidding access, scoped
+        # per track_name (bidding cycle) so access doesn't carry over between cycles.
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS track_bid_access (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            staff_name TEXT NOT NULL,
+            track_name TEXT NOT NULL,
+            bid_access INTEGER DEFAULT 0,
+            modified_date TEXT NOT NULL,
+            UNIQUE(staff_name, track_name)
+        )
+        ''')
+
         # Commit changes
         conn.commit()
         
@@ -2296,6 +2309,122 @@ def wipe_all_bids(track_name):
         return True, f"Wiped {len(track_ids)} bid(s) for {track_name}"
     except Exception as e:
         return False, f"Error wiping bids: {e}"
+
+
+# ============================================================================
+# TRACK BID ACCESS DATABASE FUNCTIONS (per-staff bidding access, per cycle)
+# ============================================================================
+
+def get_bid_access(staff_name, track_name):
+    """
+    Get bidding access status for a staff member for a specific bid track.
+
+    Args:
+        staff_name (str): Name of staff member
+        track_name (str): Name of the bid track (cycle)
+
+    Returns:
+        bool: True if bidding access is open for this staff member, False otherwise
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT bid_access FROM track_bid_access
+            WHERE staff_name = ? AND track_name = ?
+        """, (staff_name, track_name))
+
+        result = cursor.fetchone()
+
+        if result:
+            return bool(result[0])
+        else:
+            # Default to False if no config exists
+            return False
+
+    except Exception as e:
+        print(f"Error getting bid access for {staff_name}: {str(e)}")
+        return False
+
+def set_bid_access(staff_name, track_name, access_open):
+    """
+    Set bidding access status for a staff member for a specific bid track.
+
+    Args:
+        staff_name (str): Name of staff member
+        track_name (str): Name of the bid track (cycle)
+        access_open (bool): Whether bidding access is open for this staff member
+
+    Returns:
+        tuple: (success, message)
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        modified_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+        access_int = 1 if access_open else 0
+
+        cursor.execute("SELECT id FROM track_bid_access WHERE staff_name = ? AND track_name = ?",
+                       (staff_name, track_name))
+        existing = cursor.fetchone()
+
+        if existing:
+            cursor.execute("""
+                UPDATE track_bid_access
+                SET bid_access = ?, modified_date = ?
+                WHERE staff_name = ? AND track_name = ?
+            """, (access_int, modified_date, staff_name, track_name))
+        else:
+            cursor.execute("""
+                INSERT INTO track_bid_access (staff_name, track_name, bid_access, modified_date)
+                VALUES (?, ?, ?, ?)
+            """, (staff_name, track_name, access_int, modified_date))
+
+        conn.commit()
+        status = "enabled" if access_open else "disabled"
+        return (True, f"Bid access {status} for {staff_name}")
+
+    except Exception as e:
+        error_msg = f"Error setting bid access: {str(e)}"
+        print(error_msg)
+        return (False, error_msg)
+
+def get_all_bid_access_configs(track_name):
+    """
+    Get all bidding access configurations for a given bid track, for admin view.
+
+    Args:
+        track_name (str): Name of the bid track (cycle)
+
+    Returns:
+        dict: Dictionary mapping staff_name to bid_access status
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT staff_name, bid_access
+            FROM track_bid_access
+            WHERE track_name = ?
+        """, (track_name,))
+
+        results = cursor.fetchall()
+
+        configs = {}
+        for row in results:
+            configs[row[0]] = bool(row[1])
+
+        return configs
+
+    except Exception as e:
+        print(f"Error getting all bid access configs: {str(e)}")
+        return {}
 
 
 # Clean up connections when the module is unloaded
