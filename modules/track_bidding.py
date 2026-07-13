@@ -46,6 +46,25 @@ from modules.shift_definitions import day_shifts, night_shifts
 # Shared data loading (staff roster + Excel files used by the bidding editor)
 # ──────────────────────────────────────────────
 
+def _get_preassignment_day_columns(path):
+    """
+    Read the ordered list of day-pattern columns (e.g. "Sun A 1" ... "Sat C 6")
+    straight from the preassignments file's header row.
+
+    Read independently of load_preassignments() (which may collapse the file into
+    a plain dict when duplicate staff names are present) so the day schema is
+    always derived directly from the file's own columns, never from Tracks.xlsx.
+    """
+    header_df = pd.read_excel(path, nrows=0)
+    cols = list(header_df.columns)
+    staff_col = cols[0]
+    for col in cols:
+        if isinstance(col, str) and "name" in col.lower() and "staff" in col.lower():
+            staff_col = col
+            break
+    return [c for c in cols if c != staff_col]
+
+
 def _load_bidding_data_files():
     """
     Load and column-map the Excel data files used by the bidding interface
@@ -88,6 +107,9 @@ def _load_bidding_data_files():
     if not excel_files['current_tracks']:
         return None, "Current tracks file not found in 'upload files' folder."
 
+    if not excel_files['preassignments']:
+        return None, "Preassignments file not found in 'upload files' folder."
+
     def load_excel(path):
         return pd.read_excel(path) if path else None
 
@@ -99,7 +121,7 @@ def _load_bidding_data_files():
     # load_excel() — get_staff_preassignments() looks staff up via
     # preassignment_df.loc[staff_name], which requires the staff-name index (and
     # duplicate-row handling) that only load_preassignments() sets up.
-    preassignment_df = load_preassignments() if excel_files['preassignments'] else None
+    preassignment_df = load_preassignments()
 
     if preferences_df is None:
         return None, "Could not load preferences file."
@@ -110,7 +132,11 @@ def _load_bidding_data_files():
     staff_col_prefs = mappings['staff_col_prefs']
     staff_col_tracks = mappings.get('staff_col_tracks')
     role_col = mappings['role_col']
-    days = list(current_tracks_df.columns[1:43])  # 6 weeks = 42 days (mirrors run_clinical_track_hub)
+    # The bid cycle's day schema comes from Preassignments.xlsx (the file authored
+    # per bid cycle), not from Tracks.xlsx (last cycle's active roster) — Tracks.xlsx
+    # is still used below only as reference data (capacity/options + "Your Active
+    # Track" comparison), never as the source of which day columns exist.
+    days = _get_preassignment_day_columns(excel_files['preassignments'])
     no_matrix_col = mappings.get('no_matrix_col')
     reduced_rest_col = mappings.get('reduced_rest_col')
     seniority_col = mappings.get('seniority_col')

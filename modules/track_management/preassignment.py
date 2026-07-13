@@ -8,6 +8,26 @@ import pandas as pd
 import os
 import glob
 
+_WEEKDAY_ORDER = {"Sun": 0, "Mon": 1, "Tue": 2, "Wed": 3, "Thu": 4, "Fri": 5, "Sat": 6}
+
+
+def _pattern_day_sort_key(day):
+    """
+    Chronological sort key for pattern-day labels like "Mon B 3" (weekday, block
+    letter, week number). A plain alphabetical sort puts "Mon B 3" before "Tue A 2"
+    even though week 2 (A2) comes before week 3 (B3) — this reorders them to match
+    the left-to-right week sequence staff see in the source spreadsheet.
+    """
+    parts = str(day).split()
+    if len(parts) >= 3:
+        weekday, week_num = parts[0], parts[2]
+        try:
+            return (int(week_num), _WEEKDAY_ORDER.get(weekday, 7))
+        except ValueError:
+            pass
+    return (999, str(day))
+
+
 def load_preassignments():
     """
     Load preassignments from Excel file in 'upload files' directory
@@ -178,7 +198,7 @@ def display_preassignments(staff_name, preassignments):
     
     # Create dataframe for display
     data = []
-    for day, activity in sorted(preassignments.items()):
+    for day, activity in sorted(preassignments.items(), key=lambda item: _pattern_day_sort_key(item[0])):
         data.append({
             "Day": day,
             "Activity": activity,
