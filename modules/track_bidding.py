@@ -845,7 +845,7 @@ def _display_bidding_staff_interface(
         }
         st.success("Cleared your in-progress selections below. If you already submitted a bid, it is unchanged until you submit again.")
         st.rerun()
-    st.caption("Clears your working selections below — does not delete a bid you've already submitted unless you resubmit afterward.")
+    st.caption("Clears your working selections below — does not delete a bid you've already submitted.")
 
     # Initialize session state for bidding track changes
     if bid_changes_key not in st.session_state:
