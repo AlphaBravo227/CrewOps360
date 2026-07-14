@@ -188,6 +188,152 @@ def _load_bidding_data_files():
 
 
 # ──────────────────────────────────────────────
+# Automatic Bid Access & Notification — when enabled for a track cycle, submitting a
+# bid grants bid access to the next staff member in seniority rank order (same role)
+# and emails them that their bid is now open, instead of an admin doing it by hand.
+# ──────────────────────────────────────────────
+
+def _load_requirements_map(requirements_df):
+    """
+    Parse Requirements.xlsx into {staff_name: {shifts_per_pay_period, night_minimum,
+    weekend_minimum, weekend_group, email}}.
+
+    Column layout is positional (STAFF NAME, SHIFTS PER PAY PERIOD, NIGHT MINIMUM,
+    WEEKEND MINIMUM, WEEKEND GROUP, EMAIL), matching the per-staff parsing in
+    _display_bidding_staff_interface. Staff with a blank SHIFTS PER PAY PERIOD are
+    management who don't bid on tracks — shifts_per_pay_period stays None for them,
+    which is what callers use to exclude them from the bidding roster.
+    """
+    result = {}
+    if requirements_df is None or requirements_df.empty:
+        return result
+
+    cols = requirements_df.columns
+    name_col = cols[0]
+    for _, row in requirements_df.iterrows():
+        name = row.get(name_col)
+        if pd.isna(name):
+            continue
+        name = str(name).strip()
+
+        entry = {
+            'shifts_per_pay_period': None,
+            'night_minimum': None,
+            'weekend_minimum': None,
+            'weekend_group': None,
+            'email': None,
+        }
+        if len(cols) >= 2 and pd.notna(row.iloc[1]):
+            entry['shifts_per_pay_period'] = int(float(row.iloc[1]))
+        if len(cols) >= 3 and pd.notna(row.iloc[2]):
+            entry['night_minimum'] = int(float(row.iloc[2]))
+        if len(cols) >= 4 and pd.notna(row.iloc[3]):
+            entry['weekend_minimum'] = int(float(row.iloc[3]))
+        if len(cols) >= 5 and pd.notna(row.iloc[4]):
+            wg = str(row.iloc[4]).strip().upper()
+            if wg in ['A', 'B', 'C', 'D', 'E']:
+                entry['weekend_group'] = wg
+        if len(cols) >= 6 and pd.notna(row.iloc[5]):
+            email = str(row.iloc[5]).strip()
+            if email:
+                entry['email'] = email
+
+        result[name] = entry
+    return result
+
+
+def _bidding_role_bucket(role):
+    """Collapse a raw role string to 'medic' or 'nurse' (nurse bucket includes dual) —
+    mirrors the Nurse/Medic split used by the Manage Bid Access tables."""
+    return 'medic' if str(role).strip().lower() == 'medic' else 'nurse'
+
+
+def _ordered_bidding_roster(staff_names, role_mapping, seniority_mapping, requirements_map, bucket):
+    """
+    Seniority-ascending (most senior first) list of staff in one role bucket ('nurse'
+    or 'medic'), excluding anyone with no SHIFTS PER PAY PERIOD on file in
+    Requirements.xlsx — those are management/non-bidding staff and are skipped.
+    """
+    def _seniority_key(name):
+        try:
+            return (0, float(seniority_mapping.get(name)))
+        except (TypeError, ValueError):
+            return (1, 0)
+
+    eligible = [
+        name for name in staff_names
+        if _bidding_role_bucket(role_mapping.get(name, '')) == bucket
+        and requirements_map.get(name, {}).get('shifts_per_pay_period') is not None
+    ]
+    return sorted(eligible, key=_seniority_key)
+
+
+def _next_staff_in_rank(staff_name, staff_names, role_mapping, seniority_mapping, requirements_map):
+    """Return the next staff member after staff_name in seniority rank order within
+    staff_name's own role bucket (nurse incl. dual, or medic), or None if staff_name
+    is last in that bucket, isn't in it (e.g. management), or the bucket is empty."""
+    bucket = _bidding_role_bucket(role_mapping.get(staff_name, ''))
+    roster = _ordered_bidding_roster(staff_names, role_mapping, seniority_mapping, requirements_map, bucket)
+    if staff_name not in roster:
+        return None
+    idx = roster.index(staff_name)
+    if idx + 1 < len(roster):
+        return roster[idx + 1]
+    return None
+
+
+def _run_auto_bid_progression(staff_name, bid_track_name):
+    """
+    After staff_name's bid is saved, if automatic bid access & notification is turned
+    on for bid_track_name: find the next staff member in seniority rank order (same
+    role bucket), grant them bid access, and email them (+ admins) that their bid is
+    open. If that staff member has no email on file, access is left untouched and the
+    admins are emailed to enable/notify manually instead.
+
+    Returns:
+        tuple (level, message) for display next to the existing bid-submission notice
+        — level is one of 'success', 'warning', 'info' — or None if the feature is off.
+    """
+    cfg = get_track_config_by_name(bid_track_name)
+    if not cfg or not cfg.get('auto_bid_progression'):
+        return None
+
+    ctx, roster_error = _load_bidding_data_files()
+    if ctx is None:
+        return ("warning", f"Automatic bid progression could not load roster data: {roster_error}")
+
+    requirements_map = _load_requirements_map(ctx['requirements_df'])
+    next_staff = _next_staff_in_rank(
+        staff_name, ctx['staff_names'], ctx['role_mapping'], ctx['seniority_mapping'], requirements_map
+    )
+    if not next_staff:
+        return ("info", f"{staff_name} is last in seniority rank order — no next staff member to advance to.")
+
+    next_requirements = requirements_map.get(next_staff, {})
+    next_email = next_requirements.get('email')
+
+    from modules.email_notifications import send_bid_access_opened_notification, send_missing_bidder_email_alert
+
+    if not next_email:
+        alert_ok, alert_msg = send_missing_bidder_email_alert(next_staff, bid_track_name)
+        note = ("Admins have been emailed to enable access and notify them manually."
+                if alert_ok else f"The admin alert email also failed to send: {alert_msg}")
+        return ("warning",
+                f"{next_staff} is next in rank, but has no email on file in Requirements.xlsx — "
+                f"bid access was NOT automatically enabled. {note}")
+
+    ok, _ = set_bid_access(next_staff, bid_track_name, True)
+    if not ok:
+        return ("warning", f"{next_staff} is next in rank, but enabling their bid access failed.")
+
+    sent_ok, sent_msg = send_bid_access_opened_notification(next_staff, next_email, bid_track_name, next_requirements)
+    if sent_ok:
+        return ("success", f"Bid access enabled for {next_staff} (next in rank) and notified at {next_email}.")
+    else:
+        return ("warning", f"Bid access enabled for {next_staff}, but the notification email failed: {sent_msg}")
+
+
+# ──────────────────────────────────────────────
 # Bid Analysis tab — per-day Nurse/Medic/Dual/Senior demand from submitted bids,
 # mirroring the FY26 Track Analysis workbook's manual roll-up.
 # ──────────────────────────────────────────────
@@ -794,6 +940,24 @@ def display_bidding_admin_interface():
                     st.dataframe(
                         pd.DataFrame(medic_data, columns=display_cols),
                         use_container_width=True, hide_index=True)
+
+                st.markdown("---")
+                st.markdown("### Automatic Bid Access & Notification")
+                st.caption(
+                    "When enabled, submitting a bid automatically grants bid access to the next "
+                    "staff member in seniority rank order (same role — Nurse/Dual or Medic) and "
+                    "emails them that their bid is now open, along with the admins. Staff with a "
+                    "blank **SHIFTS PER PAY PERIOD** in Requirements.xlsx are management, not "
+                    "bidding on tracks, and are skipped."
+                )
+                track_cfg = get_track_config_by_name(access_track)
+                auto_progression_on = bool(track_cfg.get('auto_bid_progression')) if track_cfg else False
+                new_auto_progression_on = st.checkbox(
+                    f"Enable automatic bid access & notification for {access_track}",
+                    value=auto_progression_on, key=f"auto_progression_{access_track}")
+                if new_auto_progression_on != auto_progression_on:
+                    update_track_config(access_track, auto_bid_progression=1 if new_auto_progression_on else 0)
+                    st.rerun()
 
                 st.markdown("---")
                 st.markdown("### Toggle Access")
@@ -1457,7 +1621,19 @@ def _display_bid_submission(
     has_existing_bid = existing[0]
 
     admin_notice_key = f'bid_admin_notice_{bid_track_name}_{selected_staff}'
+    progression_notice_key = f'bid_progression_notice_{bid_track_name}_{selected_staff}'
     email_result_key = f'bid_email_result_{bid_track_name}_{selected_staff}'
+
+    # Shown regardless of admin/staff path or lock state, so both a staff member
+    # submitting their own bid and an admin submitting on their behalf see the
+    # outcome of the admin notification and the automatic bid-progression attempt.
+    _notice_fn = {"success": st.success, "warning": st.warning, "info": st.info}
+    if admin_notice_key in st.session_state:
+        notice_type, notice_msg = st.session_state[admin_notice_key]
+        _notice_fn.get(notice_type, st.warning)(notice_msg)
+    if progression_notice_key in st.session_state:
+        notice_type, notice_msg = st.session_state[progression_notice_key]
+        _notice_fn.get(notice_type, st.warning)(notice_msg)
 
     if has_existing_bid and not is_admin:
         # Locked: staff can't resubmit once a bid is on file for this cycle.
@@ -1467,10 +1643,6 @@ def _display_bid_submission(
             f"(version {saved_bid['version']}, submitted {saved_bid['submission_date']})."
         )
         st.info("This bid is locked. Please contact your supervisor if you need to make changes.")
-
-        if admin_notice_key in st.session_state:
-            notice_type, notice_msg = st.session_state[admin_notice_key]
-            (st.success if notice_type == "success" else st.warning)(notice_msg)
 
         weekend_group = st.session_state.get('weekend_group')
         validation_result = validate_track_comprehensive(
@@ -1600,6 +1772,17 @@ def _display_bid_submission(
                         st.session_state[admin_notice_key] = ("success", admin_msg) if admin_ok else ("warning", admin_msg)
                 except Exception as e:
                     st.session_state[admin_notice_key] = ("warning", f"Admin notification failed: {e}")
+
+                # Automatic bid access & notification: hand bid access to the next
+                # staff member in seniority rank order, if the feature is turned on.
+                try:
+                    progression_result = _run_auto_bid_progression(selected_staff, bid_track_name)
+                    if progression_result:
+                        st.session_state[progression_notice_key] = progression_result
+                    else:
+                        st.session_state.pop(progression_notice_key, None)
+                except Exception as e:
+                    st.session_state[progression_notice_key] = ("warning", f"Automatic bid progression failed: {e}")
 
                 st.success(f"Bid saved successfully! {msg}")
                 if not is_admin:

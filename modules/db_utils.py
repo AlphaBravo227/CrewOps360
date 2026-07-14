@@ -252,6 +252,7 @@ def initialize_database():
             night_kbed INTEGER DEFAULT 2,
             night_kpym INTEGER DEFAULT 2,
             use_weekday_capacity INTEGER DEFAULT 0,
+            auto_bid_progression INTEGER DEFAULT 0,
             created_date TEXT NOT NULL,
             modified_date TEXT NOT NULL
         )
@@ -307,6 +308,8 @@ def initialize_database():
             cursor.execute('ALTER TABLE track_configs ADD COLUMN night_kpym INTEGER DEFAULT 2')
         if 'use_weekday_capacity' not in tc_columns:
             cursor.execute('ALTER TABLE track_configs ADD COLUMN use_weekday_capacity INTEGER DEFAULT 0')
+        if 'auto_bid_progression' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN auto_bid_progression INTEGER DEFAULT 0')
 
         # Check if we need to add the new columns to existing tracks table
         cursor.execute("PRAGMA table_info(tracks)")
@@ -1907,7 +1910,8 @@ def update_track_config(track_name, **kwargs):
                     'day_vehicles', 'night_vehicles', 'day_leave_slots', 'night_leave_slots',
                     'min_day_staff', 'min_night_staff',
                     'day_kmht', 'day_klwm', 'day_kbed', 'day_1b9', 'day_kpym',
-                    'night_klwm', 'night_kbed', 'night_kpym', 'use_weekday_capacity'}
+                    'night_klwm', 'night_kbed', 'night_kpym', 'use_weekday_capacity',
+                    'auto_bid_progression'}
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return False, "No valid fields to update"
