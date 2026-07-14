@@ -351,6 +351,42 @@ def _run_auto_bid_progression(staff_name, bid_track_name):
         return _log(None, "warning", f"Automatic bid progression failed unexpectedly: {e}")
 
 
+def _send_manual_bid_notification(staff_name, manual_email, bid_track_name):
+    """
+    Admin-triggered "your bid is open" notification, for the fallback case where
+    automatic progression couldn't send one itself (no email on file) or an admin
+    otherwise wants to notify someone by hand.
+
+    Unlike the automatic cascade, the recipient address is whatever the admin types
+    in — never looked up from Requirements.xlsx — and bid access is left untouched
+    (use Toggle Access below for that). Always logged, with trigger_type='manual' so
+    it's distinguishable from automatic events in the notification log.
+
+    Returns:
+        tuple (level, message) — level is 'success' or 'warning'.
+    """
+    manual_email = (manual_email or "").strip()
+    if not manual_email:
+        return ("warning", "Enter an email address before sending.")
+
+    ctx, _ = _load_bidding_data_files()
+    requirements = {}
+    if ctx is not None:
+        requirements = _load_requirements_map(ctx['requirements_df']).get(staff_name, {})
+
+    from modules.email_notifications import send_bid_access_opened_notification
+    sent_ok, sent_msg = send_bid_access_opened_notification(staff_name, manual_email, bid_track_name, requirements)
+
+    level = "success" if sent_ok else "warning"
+    message = (f"Manually notified {staff_name} at {manual_email}."
+               if sent_ok else f"Manual notification to {staff_name} at {manual_email} failed: {sent_msg}")
+    log_bid_progression_event(
+        bid_track_name, "Manual Send", staff_name, level, message,
+        notified_email=manual_email if sent_ok else None, trigger_type='manual'
+    )
+    return (level, message)
+
+
 # ──────────────────────────────────────────────
 # Bid Analysis tab — per-day Nurse/Medic/Dual/Senior demand from submitted bids,
 # mirroring the FY26 Track Analysis workbook's manual roll-up.
@@ -977,14 +1013,36 @@ def display_bidding_admin_interface():
                     update_track_config(access_track, auto_bid_progression=1 if new_auto_progression_on else 0)
                     st.rerun()
 
+                st.markdown("##### Manually Send Bid Notification")
+                st.caption(
+                    "Send the \"your bid is open\" notification to a specific staff member right "
+                    "now, using an email address you enter below (not looked up from "
+                    "Requirements.xlsx). This does not change their bid access — use "
+                    "**Toggle Access** below for that."
+                )
+                manual_col1, manual_col2 = st.columns(2)
+                with manual_col1:
+                    manual_notify_staff = st.selectbox(
+                        "Staff Member:", staff_names, key=f"manual_notify_staff_{access_track}")
+                with manual_col2:
+                    manual_notify_email = st.text_input(
+                        "Send to email:", key=f"manual_notify_email_{access_track}",
+                        placeholder="name@example.com")
+                if st.button("Send Notification", key=f"manual_notify_send_{access_track}"):
+                    level, message = _send_manual_bid_notification(
+                        manual_notify_staff, manual_notify_email, access_track)
+                    (st.success if level == "success" else st.warning)(message)
+
                 st.markdown("##### Notification Log")
                 progression_log = get_bid_progression_log(access_track, limit=100)
                 if not progression_log:
-                    st.caption(f"No automatic bid-progression events yet for {access_track}.")
+                    st.caption(f"No bid-progression events yet for {access_track}.")
                 else:
                     level_icon = {'success': '✅', 'warning': '⚠️', 'info': 'ℹ️'}
+                    trigger_label = {'auto': 'Auto', 'manual': 'Manual'}
                     log_rows = [{
                         'Date/Time': entry['event_date'],
+                        'Trigger': trigger_label.get(entry.get('trigger_type'), 'Auto'),
                         'Status': f"{level_icon.get(entry['level'], '')} {entry['level'].title()}".strip(),
                         'Submitted By': entry['submitted_by'],
                         'Next Staff': entry['next_staff'] or '—',
