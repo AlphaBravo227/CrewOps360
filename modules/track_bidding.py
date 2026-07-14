@@ -7,6 +7,7 @@ bid access, add/update/remove bids on staff members' behalf, promote to active.
 
 import streamlit as st
 import pandas as pd
+import altair as alt
 from datetime import datetime
 import pytz
 import json
@@ -148,6 +149,7 @@ def _load_bidding_data_files():
 
     role_mapping = {}
     seniority_mapping = {}
+    no_matrix_mapping = {}
     for _, row in preferences_df.iterrows():
         name = row.get(staff_col_prefs)
         if pd.notna(name):
@@ -160,6 +162,11 @@ def _load_bidding_data_files():
                     seniority_mapping[name] = int(seniority_val)
                 except (TypeError, ValueError):
                     seniority_mapping[name] = seniority_val
+            if no_matrix_col:
+                try:
+                    no_matrix_mapping[name] = int(row.get(no_matrix_col)) == 1
+                except (TypeError, ValueError):
+                    no_matrix_mapping[name] = False
 
     return {
         'preferences_df': preferences_df,
@@ -176,7 +183,257 @@ def _load_bidding_data_files():
         'staff_names': staff_names,
         'role_mapping': role_mapping,
         'seniority_mapping': seniority_mapping,
+        'no_matrix_mapping': no_matrix_mapping,
     }, None
+
+
+# ──────────────────────────────────────────────
+# Bid Analysis tab — per-day Nurse/Medic/Dual/Senior demand from submitted bids,
+# mirroring the FY26 Track Analysis workbook's manual roll-up.
+# ──────────────────────────────────────────────
+
+# Categorical hues validated with the dataviz skill's palette checker
+# (node scripts/validate_palette.js) — keep any new series color in that set.
+_ROLE_COLORS = {'Nurse': '#2a78d6', 'Medic': '#1baf7a', 'Dual': '#eda100'}
+_PERIOD_COLORS = {'Day': '#2a78d6', 'Night': '#4a3aa7'}
+_SHIFT_COLORS = {'D': '#2a78d6', 'N': '#4a3aa7', 'AT': '#898781', 'Off': '#f0efec'}
+
+
+def _bid_role_and_senior(bid, role_mapping, no_matrix_mapping):
+    """Resolve (effective role string, is_senior bool) for one submitted bid."""
+    name = bid['staff_name']
+    role = role_mapping.get(name)
+    if not role or str(role).strip().lower() == 'unknown':
+        role = (bid.get('metadata') or {}).get('original_role') or 'nurse'
+    role = str(role).strip().lower()
+    is_senior = bool(no_matrix_mapping.get(name))
+    return role, is_senior
+
+
+def _max_possible_shifts(nurse_n, medic_n, dual_n, senior_n):
+    """
+    Largest number of complete Nurse+Medic crews that day's bidders could staff.
+
+    Dual-credentialed staff (already counted in nurse_n) can flex to the medic
+    side; this tries every split and keeps the best pairing, then caps the
+    result at how many no-matrix/senior staff bid that day. Direct translation
+    of the LET() formula in rows 99/104 of the FY26 Track Analysis workbook.
+    """
+    best = max(min(nurse_n - x, medic_n + x) for x in range(dual_n + 1))
+    return max(0, min(senior_n, best))
+
+
+def _compute_bid_day_stats(days, bids, role_mapping, no_matrix_mapping):
+    """One row per bid day with Nurse/Medic/Dual/Senior counts and Max Shifts, Day and Night."""
+    resolved = [(_bid_role_and_senior(b, role_mapping, no_matrix_mapping), b) for b in bids]
+
+    rows = []
+    for i, day in enumerate(days, start=1):
+        counts = {'day_label': day, 'day_index': i, 'weekday': day.split(' ')[0]}
+        for period, code in (('day', 'D'), ('night', 'N')):
+            nurse = medic = dual = senior = 0
+            for (role, is_senior), b in resolved:
+                if (b['track_data'] or {}).get(day) != code:
+                    continue
+                if role == 'medic':
+                    medic += 1
+                else:
+                    nurse += 1
+                    if role == 'dual':
+                        dual += 1
+                if is_senior:
+                    senior += 1
+            counts[f'{period}_nurse'] = nurse
+            counts[f'{period}_medic'] = medic
+            counts[f'{period}_dual'] = dual
+            counts[f'{period}_senior'] = senior
+            counts[f'{period}_max_shifts'] = _max_possible_shifts(nurse, medic, dual, senior)
+        rows.append(counts)
+    return pd.DataFrame(rows)
+
+
+def _build_bid_heatmap(days, bids, role_mapping, no_matrix_mapping):
+    """Staff x day grid (nurses A-Z, then medics A-Z) colored by submitted shift code."""
+    role_of = {}
+    for b in bids:
+        role, _ = _bid_role_and_senior(b, role_mapping, no_matrix_mapping)
+        role_of[b['staff_name']] = role
+    staff_order = sorted(role_of.keys(), key=lambda n: (0 if role_of[n] != 'medic' else 1, n))
+
+    rows = []
+    for b in bids:
+        name = b['staff_name']
+        td = b['track_data'] or {}
+        for day in days:
+            code = td.get(day) or ''
+            code = code if code in ('D', 'N', 'AT') else 'Off'
+            rows.append({'staff': name, 'role': role_of[name], 'day_label': day, 'shift': code})
+    df = pd.DataFrame(rows)
+
+    color_scale = alt.Scale(domain=list(_SHIFT_COLORS.keys()), range=list(_SHIFT_COLORS.values()))
+    return alt.Chart(df).mark_rect().encode(
+        x=alt.X('day_label:N', sort=days, title=None,
+                axis=alt.Axis(labelAngle=-90, labelFontSize=8, labelOverlap=False)),
+        y=alt.Y('staff:N', sort=staff_order, title=None, axis=alt.Axis(labelFontSize=9)),
+        color=alt.Color('shift:N', scale=color_scale, legend=alt.Legend(title='Shift')),
+        tooltip=[alt.Tooltip('staff:N', title='Staff'), alt.Tooltip('role:N', title='Role'),
+                 alt.Tooltip('day_label:N', title='Day'), alt.Tooltip('shift:N', title='Shift')],
+    ).properties(height=max(300, 15 * len(staff_order)))
+
+
+def _build_composition_chart(day_stats, period):
+    """Stacked bar of Nurse(non-dual)/Dual/Medic bid counts across the 42 days, one shift period."""
+    prefix = 'day_' if period == 'Day' else 'night_'
+    df = day_stats[['day_label', f'{prefix}nurse', f'{prefix}dual', f'{prefix}medic']].copy()
+    df['Nurse'] = df[f'{prefix}nurse'] - df[f'{prefix}dual']
+    df['Dual'] = df[f'{prefix}dual']
+    df['Medic'] = df[f'{prefix}medic']
+    long_df = df.melt(id_vars=['day_label'], value_vars=['Nurse', 'Dual', 'Medic'],
+                       var_name='Category', value_name='Count')
+
+    color_scale = alt.Scale(domain=list(_ROLE_COLORS.keys()), range=list(_ROLE_COLORS.values()))
+    order = day_stats['day_label'].tolist()
+    return alt.Chart(long_df).mark_bar().encode(
+        x=alt.X('day_label:N', sort=order, title=None,
+                axis=alt.Axis(labelAngle=-90, labelFontSize=8, labelOverlap=False)),
+        y=alt.Y('Count:Q', title='Staff bidding'),
+        color=alt.Color('Category:N', scale=color_scale, legend=alt.Legend(title=None)),
+        order=alt.Order('Category:N'),
+        tooltip=['day_label:N', 'Category:N', 'Count:Q'],
+    ).properties(title=f'{period} Shift — Bid Composition', height=220)
+
+
+def _build_demand_vs_cap_chart(day_stats, period, role):
+    """One role's bid count vs. its configured cap, across the 42 days."""
+    prefix = 'day_' if period == 'Day' else 'night_'
+    cap_prefix = 'day_cap_' if period == 'Day' else 'night_cap_'
+    field, cap_field = f'{prefix}{role.lower()}', f'{cap_prefix}{role.lower()}'
+    hue = _ROLE_COLORS[role]
+    order = day_stats['day_label'].tolist()
+    df = day_stats[['day_label', field, cap_field]].rename(columns={field: 'Bids', cap_field: 'Cap'})
+
+    bars = alt.Chart(df).mark_bar(color=hue).encode(
+        x=alt.X('day_label:N', sort=order, title=None,
+                axis=alt.Axis(labelAngle=-90, labelFontSize=7, labelOverlap=True)),
+        y=alt.Y('Bids:Q', title='Staff bidding'),
+        tooltip=[alt.Tooltip('day_label:N', title='Day'), alt.Tooltip('Bids:Q', title='Bids'),
+                 alt.Tooltip('Cap:Q', title='Cap')],
+    )
+    cap_line = alt.Chart(df).mark_line(strokeDash=[4, 3], strokeWidth=2, color=hue).encode(
+        x=alt.X('day_label:N', sort=order), y='Cap:Q',
+    )
+    return (bars + cap_line).properties(title=f'{period} · {role} (dashed = cap)', height=180)
+
+
+def _build_max_shifts_chart(day_stats):
+    """Max achievable Day/Night crews (see _max_possible_shifts) across the 42 days."""
+    long_df = day_stats.melt(id_vars=['day_label'], value_vars=['day_max_shifts', 'night_max_shifts'],
+                              var_name='Period', value_name='Max Crews')
+    long_df['Period'] = long_df['Period'].map({'day_max_shifts': 'Day', 'night_max_shifts': 'Night'})
+
+    color_scale = alt.Scale(domain=list(_PERIOD_COLORS.keys()), range=list(_PERIOD_COLORS.values()))
+    order = day_stats['day_label'].tolist()
+    return alt.Chart(long_df).mark_line(strokeWidth=2, point=True).encode(
+        x=alt.X('day_label:N', sort=order, title=None,
+                axis=alt.Axis(labelAngle=-90, labelFontSize=8, labelOverlap=False)),
+        y=alt.Y('Max Crews:Q'),
+        color=alt.Color('Period:N', scale=color_scale, legend=alt.Legend(title=None)),
+        tooltip=['day_label:N', 'Period:N', 'Max Crews:Q'],
+    ).properties(height=240)
+
+
+def _build_bid_summary_table(day_stats):
+    """Wide Max Shifts/Senior/Nurse/Dual/Medic x Day/Night table, days as columns (Excel-replica)."""
+    idx = day_stats.set_index('day_label')
+    row_order = [
+        ('Max DAY Shifts', idx['day_max_shifts']),
+        ('Day — Senior', idx['day_senior']),
+        ('Day — Nurse', idx['day_nurse']),
+        ('Day — Dual (counts as RN)', idx['day_dual']),
+        ('Day — Medic', idx['day_medic']),
+        ('Max NIGHT Shifts', idx['night_max_shifts']),
+        ('Night — Senior', idx['night_senior']),
+        ('Night — Nurse', idx['night_nurse']),
+        ('Night — Dual (counts as RN)', idx['night_dual']),
+        ('Night — Medic', idx['night_medic']),
+    ]
+    table = pd.DataFrame({label: series for label, series in row_order}).T
+    table = table.reindex(columns=day_stats['day_label'].tolist())
+    table.index.name = None
+    return table
+
+
+def _render_bid_analysis_tab(config_names, default_track_index):
+    """Visual + tabular breakdown of submitted bids across the 42-day cycle, for tuning bid caps."""
+    st.markdown("### Bid Analysis")
+
+    if not config_names:
+        st.info("No track cycles exist yet. Create one in the Track Configs tab.")
+        return
+
+    analysis_track = st.selectbox(
+        "Track Cycle:", config_names, index=default_track_index, key="analysis_track_select")
+
+    ctx, roster_error = _load_bidding_data_files()
+    if ctx is None:
+        st.error(roster_error)
+        return
+
+    ok, bids_raw = get_all_bid_tracks(analysis_track)
+    bids = bids_raw if ok else []
+    if not bids:
+        st.info(f"No bids submitted yet for {analysis_track}.")
+        return
+
+    days = ctx['days']
+    role_mapping = ctx['role_mapping']
+    no_matrix_mapping = ctx['no_matrix_mapping']
+    staff_names = ctx['staff_names']
+
+    submitted_names = {b['staff_name'] for b in bids}
+    missing = sorted(n for n in staff_names if n not in submitted_names)
+    m1, m2 = st.columns(2)
+    m1.metric("Bids Submitted", f"{len(bids)} / {len(staff_names)}")
+    m2.metric("Roster Staff Missing a Bid", len(missing))
+    if missing:
+        with st.expander(f"{len(missing)} staff without a submitted bid"):
+            st.write(", ".join(missing))
+    st.caption("Figures below reflect submitted bids only, and will shift as more staff submit.")
+
+    day_stats = _compute_bid_day_stats(days, bids, role_mapping, no_matrix_mapping)
+    weekday_caps = get_track_capacity_by_weekday(analysis_track)
+    for period, cap_key_prefix in (('day', 'max_day_'), ('night', 'max_night_')):
+        for role in ('nurse', 'medic'):
+            # get_track_capacity_by_weekday() keys are plural: max_day_nurses/max_day_medics/...
+            day_stats[f'{period}_cap_{role}'] = day_stats['weekday'].map(
+                lambda w: weekday_caps.get(w, {}).get(f'{cap_key_prefix}{role}s', 0))
+
+    st.markdown("#### Where Staff Are Bidding")
+    st.caption("One row per staff member (nurses A–Z, then medics A–Z), one column per bid day.")
+    st.altair_chart(_build_bid_heatmap(days, bids, role_mapping, no_matrix_mapping), use_container_width=True)
+
+    st.markdown("#### Bid Composition by Day")
+    st.altair_chart(_build_composition_chart(day_stats, 'Day'), use_container_width=True)
+    st.altair_chart(_build_composition_chart(day_stats, 'Night'), use_container_width=True)
+
+    st.markdown("#### Bid Demand vs. Configured Cap")
+    st.caption("Solid bars are submitted bids; the dashed line is the current cap. "
+               "A bar above the dashed line means more staff bid than there's room for.")
+    dcol1, dcol2 = st.columns(2)
+    with dcol1:
+        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Day', 'Nurse'), use_container_width=True)
+        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Night', 'Nurse'), use_container_width=True)
+    with dcol2:
+        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Day', 'Medic'), use_container_width=True)
+        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Night', 'Medic'), use_container_width=True)
+
+    st.markdown("#### Maximum Achievable Crews per Day")
+    st.caption("The most complete Nurse+Medic crews that day's bidders could staff — letting dual-credentialed "
+               "staff flex to whichever side is short, capped by how many no-matrix/senior staff bid that day.")
+    st.altair_chart(_build_max_shifts_chart(day_stats), use_container_width=True)
+
+    with st.expander("Full Day/Night breakdown table (Max Shifts / Senior / Nurse / Dual / Medic)"):
+        st.dataframe(_build_bid_summary_table(day_stats), use_container_width=True)
 
 
 # ──────────────────────────────────────────────
@@ -217,8 +474,8 @@ def display_bidding_admin_interface():
         if bid_cfg and bid_cfg['track_name'] in config_names else 0
     )
 
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Overview", "🛠️ Track Configs", "👥 Manage Bid Access", "➕ Add/Remove Selection"
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📊 Overview", "🛠️ Track Configs", "👥 Manage Bid Access", "➕ Add/Remove Selection", "📈 Bid Analysis"
     ])
 
     # ── Tab 1: Overview ──
@@ -659,6 +916,10 @@ def display_bidding_admin_interface():
                             ctx['no_matrix_col'], ctx['reduced_rest_col'], ctx['seniority_col'],
                             ctx['preassignment_df'], sel_track, cap_for_track, is_admin=True
                         )
+
+    # ── Tab 5: Bid Analysis ──
+    with tab5:
+        _render_bid_analysis_tab(config_names, default_track_index)
 
 
 # ──────────────────────────────────────────────
