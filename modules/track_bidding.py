@@ -767,7 +767,33 @@ def display_bidding_admin_interface():
                         'Version': bid['version'] if bid else '',
                         'Submitted': bid['submission_date'] if bid else '',
                     })
-                st.dataframe(pd.DataFrame(staff_data), use_container_width=True, hide_index=True)
+
+                def _seniority_key(row):
+                    # Most-senior-first; blank/non-numeric seniority sorts last.
+                    try:
+                        return (0, float(row['Seniority']))
+                    except (TypeError, ValueError):
+                        return (1, 0)
+
+                display_cols = ['Staff Name', 'Seniority', 'Bid Access', 'Has Bid', 'Version', 'Submitted']
+                nurse_data = sorted(
+                    (d for d in staff_data if str(d['Role']).strip().lower() != 'medic'),
+                    key=_seniority_key)
+                medic_data = sorted(
+                    (d for d in staff_data if str(d['Role']).strip().lower() == 'medic'),
+                    key=_seniority_key)
+
+                col_nurse, col_medic = st.columns(2)
+                with col_nurse:
+                    st.markdown(f"##### Nurses ({len(nurse_data)})")
+                    st.dataframe(
+                        pd.DataFrame(nurse_data, columns=display_cols),
+                        use_container_width=True, hide_index=True)
+                with col_medic:
+                    st.markdown(f"##### Medics ({len(medic_data)})")
+                    st.dataframe(
+                        pd.DataFrame(medic_data, columns=display_cols),
+                        use_container_width=True, hide_index=True)
 
                 st.markdown("---")
                 st.markdown("### Toggle Access")
