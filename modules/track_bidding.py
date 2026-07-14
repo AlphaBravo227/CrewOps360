@@ -1151,6 +1151,49 @@ def display_bidding_admin_interface():
 # Main bidding page (staff-facing)
 # ──────────────────────────────────────────────
 
+def _render_bidding_instructions():
+    """
+    Full step-by-step bidding walkthrough, shown at the top of the staff-facing
+    Track Bidding page. This is the page the "bid access opened" notification
+    email points to ("Detailed instructions are found linked at the top in the
+    Track Bidding module.") — keep the tab names/emoji below in sync with the
+    tab_labels in _display_bidding_staff_interface if those ever change.
+    """
+    with st.expander("📖 **Bidding Instructions — click to view the full step-by-step guide**"):
+        st.markdown("""
+1. **Select your name** from the dropdown to begin. The page will show the maximum staffing capacities (per day/night), your individual shift requirements based on years of service per the CBA, and a snapshot of your current active track for reference.
+
+2. **Make sure your base preferences (rankings) are up to date before bidding.** No preferences entered means the system doesn't know where you want to work.
+   - Check your **⚙️ Preferences** tab and, if needed, update them in **🛠️ Edit Preferences**.
+   - Each base gets a 1-5 ranking for DAYS and a 1-3 ranking for NIGHTS (1 = first choice, most desired).
+   - Confirm your current Zip Code (where you commute from), and choose whether to enroll in:
+     - **Reduced Rest OK** — pre-approve getting scheduled for 10 hours between shifts when needed, to increase the likelihood of a shift at your preferred base.
+     - **N to D Flex** — when drafting a schedule, do you want to be flexed to a DAY shift on the same date instead of a track NIGHT shift when staffing needs allow it? Includes a "Maybe" option where schedulers will ask first, but this might limit availability.
+
+3. **Go to 🔄 Track Selection to begin bidding.**
+   - The schedule tracks follow a 6-week rotation, with 3 pay periods (Blocks A, B, C) and corresponding week numbers (e.g. "Wed B4" = Block B, the second Wednesday of that pay period, which is the 4th week of the 6-week track).
+   - If your role gets AT days, those are already pre-assigned to align with your position's scheduling needs and are built into your track as day shifts. Unlike a Night shift, which needs 2 days off before another day shift, only 1 day off is required after a Night → AT.
+
+4. **Fill in Track Selection, one block/week at a time.**
+   - Days highlighted in green are where your role is currently needed; a "Day Need" or "Night Need" count and a hypothetical base assignment appear under each day as a preview.
+   - Select **"🔍 Validate and Save Block"** before moving on to the next block — this is important. This button sits between week 1 and week 2 of every block and stores your selections.
+
+5. **Scheduler logic.** Under every day in Track Selection, and in full on the **🔮 Hypothetical Schedule** tab, CrewOps360 runs a live simulation of the upcoming competition: it sorts everyone bidding a given day/shift by seniority (nurses and medics separately — dual-trained staff compete as nurses), then hands out base seats one person at a time, most senior first, with each person getting their highest-ranked base that still has room.
+   - **Choices disappear once a shift is full.** Each day/shift combination has a cap, shown in the header above. Once enough people have bid that shift to hit the cap, the D or N button for that day is dropped as an option.
+   - **"Need exists but all named shifts are filled"** means all the named shifts are spoken for (ex. there are only 4 night shifts but the bid cap = 6). You can still take that D or N, but your location can't be accurately calculated — the beauty of the bid: do you value LOCATION or SCHEDULE?
+
+6. **🔍 Validation tab.** Once all three blocks are filled, open Validation for a full pass against every rule, all in one place. Anything unmet is called out individually so you know exactly what to fix and where.
+
+7. **📤 Submission.** Review the full six-week preview, then select **Submit Bid**. You'll have the option to download and/or email a PDF of your Bid Summary for your records — you can always come back and do this later.
+
+8. **Communications.** We'll send a text message to notify you when it's your turn to bid, but we kindly ask that all schedule-related questions be sent via email to Matt, Aaron, and Jen. This helps consolidate responses, provide consistent information, and better manage communications when we're away from work.
+
+Happy bidding!
+
+~Charlie, Jen, Matt & Aaron
+""")
+
+
 def display_track_bidding():
     """Main entry point for the Track Bidding section."""
     st.markdown("")
@@ -1168,6 +1211,8 @@ def display_track_bidding():
     if st.session_state.get('track_bidding_admin_mode'):
         display_bidding_admin_interface()
         return
+
+    _render_bidding_instructions()
 
     # Check if there is an open bidding track
     bid_cfg = get_bidding_track_config()
