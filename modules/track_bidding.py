@@ -38,6 +38,8 @@ from modules.db_utils import (
     get_bid_access,
     set_bid_access,
     get_all_bid_access_configs,
+    log_bid_progression_event,
+    get_bid_progression_log,
 )
 from modules.security import check_admin_access
 from modules.shift_definitions import day_shifts, night_shifts
@@ -290,6 +292,10 @@ def _run_auto_bid_progression(staff_name, bid_track_name):
     open. If that staff member has no email on file, access is left untouched and the
     admins are emailed to enable/notify manually instead.
 
+    Every outcome reached after the feature-enabled check is written to the
+    bid_progression_log table (Manage Bid Access tab's notification log), whether or
+    not an email actually went out.
+
     Returns:
         tuple (level, message) for display next to the existing bid-submission notice
         — level is one of 'success', 'warning', 'info' — or None if the feature is off.
@@ -298,39 +304,51 @@ def _run_auto_bid_progression(staff_name, bid_track_name):
     if not cfg or not cfg.get('auto_bid_progression'):
         return None
 
-    ctx, roster_error = _load_bidding_data_files()
-    if ctx is None:
-        return ("warning", f"Automatic bid progression could not load roster data: {roster_error}")
+    def _log(next_staff, level, message, notified_email=None):
+        log_bid_progression_event(bid_track_name, staff_name, next_staff, level, message, notified_email)
+        return (level, message)
 
-    requirements_map = _load_requirements_map(ctx['requirements_df'])
-    next_staff = _next_staff_in_rank(
-        staff_name, ctx['staff_names'], ctx['role_mapping'], ctx['seniority_mapping'], requirements_map
-    )
-    if not next_staff:
-        return ("info", f"{staff_name} is last in seniority rank order — no next staff member to advance to.")
+    try:
+        ctx, roster_error = _load_bidding_data_files()
+        if ctx is None:
+            return _log(None, "warning", f"Automatic bid progression could not load roster data: {roster_error}")
 
-    next_requirements = requirements_map.get(next_staff, {})
-    next_email = next_requirements.get('email')
+        requirements_map = _load_requirements_map(ctx['requirements_df'])
+        next_staff = _next_staff_in_rank(
+            staff_name, ctx['staff_names'], ctx['role_mapping'], ctx['seniority_mapping'], requirements_map
+        )
+        if not next_staff:
+            return _log(None, "info",
+                        f"{staff_name} is last in seniority rank order — no next staff member to advance to.")
 
-    from modules.email_notifications import send_bid_access_opened_notification, send_missing_bidder_email_alert
+        next_requirements = requirements_map.get(next_staff, {})
+        next_email = next_requirements.get('email')
 
-    if not next_email:
-        alert_ok, alert_msg = send_missing_bidder_email_alert(next_staff, bid_track_name)
-        note = ("Admins have been emailed to enable access and notify them manually."
-                if alert_ok else f"The admin alert email also failed to send: {alert_msg}")
-        return ("warning",
-                f"{next_staff} is next in rank, but has no email on file in Requirements.xlsx — "
-                f"bid access was NOT automatically enabled. {note}")
+        from modules.email_notifications import send_bid_access_opened_notification, send_missing_bidder_email_alert
 
-    ok, _ = set_bid_access(next_staff, bid_track_name, True)
-    if not ok:
-        return ("warning", f"{next_staff} is next in rank, but enabling their bid access failed.")
+        if not next_email:
+            alert_ok, alert_msg = send_missing_bidder_email_alert(next_staff, bid_track_name)
+            note = ("Admins have been emailed to enable access and notify them manually."
+                    if alert_ok else f"The admin alert email also failed to send: {alert_msg}")
+            return _log(next_staff, "warning",
+                        f"{next_staff} is next in rank, but has no email on file in Requirements.xlsx — "
+                        f"bid access was NOT automatically enabled. {note}")
 
-    sent_ok, sent_msg = send_bid_access_opened_notification(next_staff, next_email, bid_track_name, next_requirements)
-    if sent_ok:
-        return ("success", f"Bid access enabled for {next_staff} (next in rank) and notified at {next_email}.")
-    else:
-        return ("warning", f"Bid access enabled for {next_staff}, but the notification email failed: {sent_msg}")
+        ok, _ = set_bid_access(next_staff, bid_track_name, True)
+        if not ok:
+            return _log(next_staff, "warning", f"{next_staff} is next in rank, but enabling their bid access failed.")
+
+        sent_ok, sent_msg = send_bid_access_opened_notification(
+            next_staff, next_email, bid_track_name, next_requirements)
+        if sent_ok:
+            return _log(next_staff, "success",
+                        f"Bid access enabled for {next_staff} (next in rank) and notified at {next_email}.",
+                        notified_email=next_email)
+        else:
+            return _log(next_staff, "warning",
+                        f"Bid access enabled for {next_staff}, but the notification email failed: {sent_msg}")
+    except Exception as e:
+        return _log(None, "warning", f"Automatic bid progression failed unexpectedly: {e}")
 
 
 # ──────────────────────────────────────────────
@@ -958,6 +976,23 @@ def display_bidding_admin_interface():
                 if new_auto_progression_on != auto_progression_on:
                     update_track_config(access_track, auto_bid_progression=1 if new_auto_progression_on else 0)
                     st.rerun()
+
+                st.markdown("##### Notification Log")
+                progression_log = get_bid_progression_log(access_track, limit=100)
+                if not progression_log:
+                    st.caption(f"No automatic bid-progression events yet for {access_track}.")
+                else:
+                    level_icon = {'success': '✅', 'warning': '⚠️', 'info': 'ℹ️'}
+                    log_rows = [{
+                        'Date/Time': entry['event_date'],
+                        'Status': f"{level_icon.get(entry['level'], '')} {entry['level'].title()}".strip(),
+                        'Submitted By': entry['submitted_by'],
+                        'Next Staff': entry['next_staff'] or '—',
+                        'Notified Email': entry['notified_email'] or '—',
+                        'Details': entry['message'],
+                    } for entry in progression_log]
+                    st.dataframe(pd.DataFrame(log_rows), use_container_width=True, hide_index=True)
+                    st.caption(f"Showing the {len(progression_log)} most recent event(s) for {access_track}.")
 
                 st.markdown("---")
                 st.markdown("### Toggle Access")

@@ -408,6 +408,22 @@ def initialize_database():
         )
         ''')
 
+        # NEW: Audit log of automatic bid-progression attempts (one row per bid
+        # submission while the feature is on), so admins can see what was — or
+        # wasn't — sent, and when.
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bid_progression_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_name TEXT NOT NULL,
+            submitted_by TEXT NOT NULL,
+            next_staff TEXT,
+            level TEXT NOT NULL,
+            message TEXT NOT NULL,
+            notified_email TEXT,
+            event_date TEXT NOT NULL
+        )
+        ''')
+
         # Commit changes
         conn.commit()
         
@@ -2429,6 +2445,70 @@ def get_all_bid_access_configs(track_name):
     except Exception as e:
         print(f"Error getting all bid access configs: {str(e)}")
         return {}
+
+
+def log_bid_progression_event(track_name, submitted_by, next_staff, level, message, notified_email=None):
+    """
+    Record one automatic bid-progression attempt (sent or not sent) for the audit log
+    shown in the Manage Bid Access tab.
+
+    Args:
+        track_name (str): Bid track/cycle name
+        submitted_by (str): Staff member whose bid submission triggered this attempt
+        next_staff (str or None): Staff member advanced to (None if there was none)
+        level (str): 'success', 'warning', or 'info'
+        message (str): Human-readable description of what happened
+        notified_email (str, optional): Email address actually notified, if any
+
+    Returns:
+        bool: True if the event was recorded, False otherwise
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        event_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("""
+            INSERT INTO bid_progression_log
+            (track_name, submitted_by, next_staff, level, message, notified_email, event_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (track_name, submitted_by, next_staff, level, message, notified_email, event_date))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error logging bid progression event: {str(e)}")
+        return False
+
+
+def get_bid_progression_log(track_name, limit=100):
+    """
+    Get recent automatic bid-progression log entries for a track, newest first.
+
+    Args:
+        track_name (str): Bid track/cycle name
+        limit (int): Maximum number of entries to return
+
+    Returns:
+        list: List of dicts with event_date, submitted_by, next_staff, level,
+        message, notified_email
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT event_date, submitted_by, next_staff, level, message, notified_email
+            FROM bid_progression_log
+            WHERE track_name = ?
+            ORDER BY id DESC
+            LIMIT ?
+        """, (track_name, limit))
+        rows = cursor.fetchall()
+        cols = ['event_date', 'submitted_by', 'next_staff', 'level', 'message', 'notified_email']
+        return [dict(zip(cols, row)) for row in rows]
+    except Exception as e:
+        print(f"Error getting bid progression log: {str(e)}")
+        return []
 
 
 # Clean up connections when the module is unloaded
