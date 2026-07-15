@@ -1,7 +1,7 @@
 # modules/email_notifications.py
 """
 Module for sending email notifications when tracks are submitted
-Secure Gmail integration with OAuth2 and App Password support
+Sends via Resend's SMTP relay using a verified crewops360.com domain
 """
 
 import smtplib
@@ -26,9 +26,11 @@ class EmailNotifier:
     """Handle email notifications for track submissions"""
     
     def __init__(self):
-        self.smtp_server = "smtp.gmail.com"
+        self.smtp_server = "smtp.resend.com"
         self.smtp_port = 587
-        self.sender_email = "aaron.e.bell@gmail.com"
+        self.smtp_username = "resend"
+        self.sender_email = "notifications@crewops360.com"
+        self.reply_to = "aaron.e.bell@gmail.com"
 
         # Load email configuration from environment or secrets
         self.load_email_config()
@@ -38,7 +40,7 @@ class EmailNotifier:
         try:
             # Try Streamlit secrets first (recommended for deployment)
             if hasattr(st, 'secrets') and 'email' in st.secrets:
-                self.app_password = st.secrets.email.app_password
+                self.api_key = st.secrets.email.resend_api_key
                 # Fix: Handle both string and list formats for notification_recipients
                 recipients = st.secrets.email.get('notification_recipients', [])
                 if isinstance(recipients, str):
@@ -50,14 +52,14 @@ class EmailNotifier:
                 self.admin_email = st.secrets.email.get('admin_email', 'aaron.e.bell@gmail.com')
             else:
                 # Fallback to environment variables
-                self.app_password = os.getenv('GMAIL_APP_PASSWORD')
+                self.api_key = os.getenv('RESEND_API_KEY')
                 recipients_str = os.getenv('EMAIL_NOTIFICATION_RECIPIENTS', '')
                 self.notification_recipients = [email.strip() for email in recipients_str.split(',') if email.strip()]
                 self.admin_email = os.getenv('ADMIN_EMAIL', 'aaron.e.bell@gmail.com')
-            
+
             # Validate configuration
-            if not self.app_password:
-                st.warning("⚠️ Email notifications not configured. Please set up Gmail App Password.")
+            if not self.api_key:
+                st.warning("⚠️ Email notifications not configured. Please set up the Resend API key.")
                 self.configured = False
             else:
                 self.configured = True
@@ -187,13 +189,13 @@ class EmailNotifier:
     
     def send_email(self, recipients, subject, body):
         """
-        Send email using Gmail SMTP
-        
+        Send email using Resend's SMTP relay
+
         Args:
             recipients (list): List of recipient email addresses
             subject (str): Email subject
             body (str): Email body
-            
+
         Returns:
             bool: True if successful, False otherwise
         """
@@ -201,6 +203,7 @@ class EmailNotifier:
             # Create message
             message = MIMEMultipart()
             message["From"] = f"CrewOps360 Notifications <{self.sender_email}>"
+            message["Reply-To"] = self.reply_to
             message["To"] = ", ".join(recipients)
             message["Subject"] = subject
 
@@ -209,18 +212,18 @@ class EmailNotifier:
 
             # Create secure connection and send email
             context = ssl.create_default_context()
-            
+
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                 server.starttls(context=context)
-                server.login(self.sender_email, self.app_password)
-                
+                server.login(self.smtp_username, self.api_key)
+
                 text = message.as_string()
                 server.sendmail(self.sender_email, recipients, text)
-            
+
             return True
-            
+
         except smtplib.SMTPAuthenticationError:
-            st.error("Email authentication failed. Please check Gmail App Password.")
+            st.error("Email authentication failed. Please check the Resend API key.")
             return False
         except smtplib.SMTPException as e:
             st.error(f"SMTP error occurred: {str(e)}")
@@ -231,7 +234,7 @@ class EmailNotifier:
 
     def send_email_with_attachment(self, recipients, subject, body, attachment_bytes, attachment_filename):
         """
-        Send email using Gmail SMTP with a single binary attachment (e.g. a PDF)
+        Send email using Resend's SMTP relay with a single binary attachment (e.g. a PDF)
 
         Args:
             recipients (list): List of recipient email addresses
@@ -246,6 +249,7 @@ class EmailNotifier:
         try:
             message = MIMEMultipart()
             message["From"] = f"CrewOps360 Notifications <{self.sender_email}>"
+            message["Reply-To"] = self.reply_to
             message["To"] = ", ".join(recipients)
             message["Subject"] = subject
 
@@ -263,7 +267,7 @@ class EmailNotifier:
 
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                 server.starttls(context=context)
-                server.login(self.sender_email, self.app_password)
+                server.login(self.smtp_username, self.api_key)
 
                 text = message.as_string()
                 server.sendmail(self.sender_email, recipients, text)
@@ -271,7 +275,7 @@ class EmailNotifier:
             return True
 
         except smtplib.SMTPAuthenticationError:
-            st.error("Email authentication failed. Please check Gmail App Password.")
+            st.error("Email authentication failed. Please check the Resend API key.")
             return False
         except smtplib.SMTPException as e:
             st.error(f"SMTP error occurred: {str(e)}")

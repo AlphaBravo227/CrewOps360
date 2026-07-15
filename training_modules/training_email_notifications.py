@@ -19,9 +19,11 @@ class TrainingEmailNotifier:
     """Handle email notifications for training event enrollments and cancellations"""
     
     def __init__(self):
-        self.smtp_server = "smtp.gmail.com"
+        self.smtp_server = "smtp.resend.com"
         self.smtp_port = 587
-        self.sender_email = "aaron.e.bell@gmail.com"
+        self.smtp_username = "resend"
+        self.sender_email = "notifications@crewops360.com"
+        self.reply_to = "aaron.e.bell@gmail.com"
 
         # Load email configuration from environment or secrets
         self.load_email_config()
@@ -31,21 +33,23 @@ class TrainingEmailNotifier:
         try:
             # Try Streamlit secrets first (recommended for deployment)
             if hasattr(st, 'secrets') and 'email' in st.secrets:
-                self.app_password = st.secrets.email.app_password
+                self.api_key = st.secrets.email.resend_api_key
                 # Handle both string and list formats for notification_recipients
                 recipients = st.secrets.email.get('notification_recipients', [])
                 if isinstance(recipients, str):
                     # If it's a string, split by comma and strip whitespace
                     self.notification_recipients = [email.strip() for email in recipients.split(',') if email.strip()]
+                else:
+                    self.notification_recipients = recipients
             else:
                 # Fallback to environment variables
-                self.app_password = os.getenv('GMAIL_APP_PASSWORD')
+                self.api_key = os.getenv('RESEND_API_KEY')
                 recipients_str = os.getenv('EMAIL_NOTIFICATION_RECIPIENTS', '')
                 self.notification_recipients = [email.strip() for email in recipients_str.split(',') if email.strip()]
             
             # Validate configuration
-            if not self.app_password:
-                st.warning("âš ï¸ Email notifications not configured. Please set up Gmail App Password.")
+            if not self.api_key:
+                st.warning("âš ï¸ Email notifications not configured. Please set up the Resend API key.")
                 self.configured = False
             else:
                 self.configured = True
@@ -233,27 +237,25 @@ To review enrollments, please access the Training & Events admin interface.
             # Create message
             message = MIMEMultipart()
             message["From"] = f"CrewOps360 Notifications <{self.sender_email}>"
+            message["Reply-To"] = self.reply_to
             message["To"] = ", ".join(recipients)
             message["Subject"] = subject
-            
+
             # Add body to email
             message.attach(MIMEText(body, "plain"))
-            
-            # Create secure connection with more lenient SSL settings
+
+            # Create secure connection and send email
             context = ssl.create_default_context()
-            # Allow legacy server connections
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-            
+
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                 server.starttls(context=context)
-                server.login(self.sender_email, self.app_password)
-                
+                server.login(self.smtp_username, self.api_key)
+
                 text = message.as_string()
                 server.sendmail(self.sender_email, recipients, text)
-            
+
             return True
-            
+
         except smtplib.SMTPAuthenticationError as e:
             print(f"Email authentication failed: {str(e)}")
             # Don't show error to user in UI to avoid cluttering success messages
