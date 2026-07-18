@@ -1219,6 +1219,8 @@ def _render_bidding_instructions():
     """
     with st.expander("📖 **Bidding Instructions — click to view the full step-by-step guide**"):
         st.markdown("""
+Fiscal Year Info - First Sunday of Block A = Sept 27, 2026
+
 1. **Select your name** from the dropdown to begin. The page will show the maximum staffing capacities (per day/night), your individual shift requirements based on years of service per the CBA, and a snapshot of your current active track for reference.
 
 2. **Make sure your base preferences (rankings) are up to date before bidding.** No preferences entered means the system doesn't know where you want to work.
