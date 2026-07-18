@@ -137,3 +137,4 @@ $RECYCLE.BIN/
 data/*
 !data/.gitkeep
 training/upload/~$MASTER Education Classes Roster.xlsx
+.DS_Store
