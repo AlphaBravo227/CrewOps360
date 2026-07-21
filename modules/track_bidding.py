@@ -1252,7 +1252,7 @@ Fiscal Year Info - First Sunday of Block A = Sept 27, 2026
 
 4. **Fill in Track Selection, one block/week at a time.**
    - Days highlighted in green are where your role is currently needed; a "Day Need" or "Night Need" count and a hypothetical base assignment appear under each day as a preview.
-   - Select **"🔍 Validate and Save Block"** before moving on to the next block — this is important. This button sits between week 1 and week 2 of every block and stores your selections.
+   - Select **"🔍 Validate and Save Block"** before moving on to the next block — this is important. This button sits at the top of each block, above week 1, and stores your selections.
 
 5. **Scheduler logic.** Under every day in Track Selection, and in full on the **🔮 Hypothetical Schedule** tab, CrewOps360 runs a live simulation of the upcoming competition: it sorts everyone bidding a given day/shift by seniority (nurses and medics separately — dual-trained staff compete as nurses), then hands out base seats one person at a time, most senior first, with each person getting their highest-ranked base that still has room.
    - **Choices disappear once a shift is full.** Each day/shift combination has a cap, shown in the header above. Once enough people have bid that shift to hit the cap, the D or N button for that day is dropped as an option.

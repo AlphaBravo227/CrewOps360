@@ -298,8 +298,21 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
             start_idx = block_idx * days_per_block
             end_idx = min(start_idx + days_per_block, len(days))
             block_days = days[start_idx:end_idx]
-            
-            # Split into weeks with validation buttons between
+
+            # Validate Block button, above Week 1 for this block
+            validate_col1, validate_col2, validate_col3 = st.columns([1, 2, 1])
+            with validate_col2:
+                if st.button(f"🔍 Validate and Save Block {blocks[block_idx]}",
+                           key=f"validate_block_{blocks[block_idx]}_{selected_staff}",
+                           use_container_width=True):
+                    # Validate just this block's portion of the track
+                    block_track = build_validation_track(selected_staff, block_days, preassignments)
+                    st.success(f"Block {blocks[block_idx]} validation complete! Check the dashboard above for results.")
+                    if st.session_state.get('track_valid', False):
+                        st.balloons()
+            st.markdown("---")
+
+            # Split into weeks
             for week_idx in range(2):
                 week_start = week_idx * 7
                 week_end = min(week_start + 7, len(block_days))
@@ -569,21 +582,6 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                     </div>
                                     """, unsafe_allow_html=True)
                 
-                # Add Validate Block button between Week 1 and Week 2 of each block
-                if week_idx == 0:  # After displaying Week 1, before Week 2
-                    st.markdown("---")
-                    validate_col1, validate_col2, validate_col3 = st.columns([1, 2, 1])
-                    with validate_col2:
-                        if st.button(f"🔍 Validate and Save Block {blocks[block_idx]}", 
-                                   key=f"validate_block_{blocks[block_idx]}_{selected_staff}", 
-                                   use_container_width=True):
-                            # Validate just this block's portion of the track
-                            block_track = build_validation_track(selected_staff, block_days, preassignments)
-                            st.success(f"Block {blocks[block_idx]} validation complete! Check the dashboard above for results.")
-                            if st.session_state.get('track_valid', False):
-                                st.balloons()
-                    st.markdown("---")
-                    
                 st.markdown("---")  # Separator between weeks
 
 def get_weekend_group_highlighting_info_fixed(weekend_group, days):
