@@ -292,6 +292,13 @@ def _run_auto_bid_progression(staff_name, bid_track_name):
     open. If that staff member has no email on file, access is left untouched and the
     admins are emailed to enable/notify manually instead.
 
+    If the next staff member already has bid access enabled for this track — e.g. an
+    admin revised an earlier (more senior) staff member's bid after the cascade had
+    already advanced past them — they're skipped entirely: no re-enabling access, and
+    no duplicate "your bid is open" email. This only guards the next-staff cascade;
+    the admin submission notice for the revision itself is sent unconditionally by
+    the caller regardless of what happens here.
+
     Every outcome reached after the feature-enabled check is written to the
     bid_progression_log table (Manage Bid Access tab's notification log), whether or
     not an email actually went out.
@@ -320,6 +327,11 @@ def _run_auto_bid_progression(staff_name, bid_track_name):
         if not next_staff:
             return _log(None, "info",
                         f"{staff_name} is last in seniority rank order — no next staff member to advance to.")
+
+        if get_bid_access(next_staff, bid_track_name):
+            return _log(next_staff, "info",
+                        f"{next_staff} is next in rank, but already has bid access enabled for "
+                        f"{bid_track_name} — skipped re-enabling access and did not send a duplicate notification.")
 
         next_requirements = requirements_map.get(next_staff, {})
         next_email = next_requirements.get('email')
@@ -1002,7 +1014,11 @@ def display_bidding_admin_interface():
                     "staff member in seniority rank order (same role — Nurse/Dual or Medic) and "
                     "emails them that their bid is now open, along with the admins. Staff with a "
                     "blank **SHIFTS PER PAY PERIOD** in Requirements.xlsx are management, not "
-                    "bidding on tracks, and are skipped."
+                    "bidding on tracks, and are skipped. If that next staff member already has bid "
+                    "access enabled (e.g. a revision to an earlier/more senior staff member's bid "
+                    "after the cascade already passed them), they're skipped — no duplicate "
+                    "notification is sent. The admin notice for the bid submission/revision itself "
+                    "is always sent regardless."
                 )
                 track_cfg = get_track_config_by_name(access_track)
                 auto_progression_on = bool(track_cfg.get('auto_bid_progression')) if track_cfg else False
