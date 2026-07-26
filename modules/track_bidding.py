@@ -648,6 +648,110 @@ def _render_bid_analysis_tab(config_names, default_track_index):
         st.dataframe(_build_bid_summary_table(day_stats), use_container_width=True)
 
 
+def _compute_bid_roster_table(analysis_track, ctx, bids):
+    """
+    One row per submitted bid: Staff/Role/Seniority, then one column per bid day
+    holding "D (BASE)" / "N (BASE)" / "AT" / "" (empty for non-working days).
+
+    Expected base reuses calculate_hypothetical_assignment — the same seniority
+    competition simulation shown to a bidder for their own hypothetical schedule —
+    scored against this cycle's submitted bids (bid_track_name=analysis_track), so
+    the base shown here always matches what the bidder saw when they picked that day.
+    """
+    from modules.hypothetical_scheduler_new import calculate_hypothetical_assignment, _load_all_base_preferences
+    from modules.db_utils import get_base_shift_counts
+
+    days = ctx['days']
+    all_base_prefs = _load_all_base_preferences()
+    base_shift_counts = get_base_shift_counts(analysis_track)
+
+    rows = []
+    for b in bids:
+        name = b['staff_name']
+        track_data = b['track_data'] or {}
+        raw_role, _ = _bid_role_and_senior(b, ctx['role_mapping'], ctx['no_matrix_mapping'])
+        row = {
+            'Staff': name,
+            'Role': raw_role.title(),
+            '_role_bucket': _bidding_role_bucket(raw_role),
+            'Seniority': ctx['seniority_mapping'].get(name),
+        }
+        for day in days:
+            code = track_data.get(day)
+            if code in ('D', 'N'):
+                result = calculate_hypothetical_assignment(
+                    name, day, 'day' if code == 'D' else 'night',
+                    ctx['preferences_df'], ctx['current_tracks_df'],
+                    ctx['staff_col_prefs'], ctx['staff_col_tracks'], ctx['role_col'], ctx['seniority_col'],
+                    use_database_logic=True, all_base_prefs=all_base_prefs,
+                    bid_track_name=analysis_track, base_shift_counts=base_shift_counts,
+                )
+                base = result.get('assignment')
+                row[day] = f"{code} ({base})" if base else code
+            elif code == 'AT':
+                row[day] = 'AT'
+            else:
+                row[day] = ''
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _seniority_sort_key(series):
+    """Sort key for a 'Seniority' column: numeric ascending (most senior first), missing/non-numeric last."""
+    def conv(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return float('inf')
+    return series.map(conv)
+
+
+def _render_bid_roster_tab(config_names, default_track_index):
+    """Wide staff x day roster of submitted bids, with shift + expected base per day."""
+    st.markdown("### Bid Roster")
+    st.caption("One row per submitted bid, one column per bid day. D/N cells show the expected base "
+               "computed the same way the bidder saw it; AT cells have no base; non-working days are blank.")
+
+    if not config_names:
+        st.info("No track cycles exist yet. Create one in the Track Configs tab.")
+        return
+
+    roster_track = st.selectbox(
+        "Track Cycle:", config_names, index=default_track_index, key="roster_track_select")
+
+    ctx, roster_error = _load_bidding_data_files()
+    if ctx is None:
+        st.error(roster_error)
+        return
+
+    ok, bids_raw = get_all_bid_tracks(roster_track)
+    bids = bids_raw if ok else []
+    if not bids:
+        st.info(f"No bids submitted yet for {roster_track}.")
+        return
+
+    view = st.radio(
+        "View:", ["All Staff (sorted by seniority)", "Split by Role (Nurse / Medic)"],
+        horizontal=True, key="roster_view_mode")
+
+    with st.spinner("Computing expected base assignments..."):
+        table = _compute_bid_roster_table(roster_track, ctx, bids)
+
+    display_cols = ['Staff', 'Role', 'Seniority'] + ctx['days']
+
+    if view == "All Staff (sorted by seniority)":
+        sorted_table = table.sort_values(by='Seniority', key=_seniority_sort_key)
+        st.dataframe(sorted_table[display_cols], use_container_width=True, hide_index=True)
+    else:
+        for bucket_label, bucket in [("Nurses", "nurse"), ("Medics", "medic")]:
+            st.markdown(f"#### {bucket_label}")
+            sub = table[table['_role_bucket'] == bucket].sort_values(by='Seniority', key=_seniority_sort_key)
+            if sub.empty:
+                st.caption("No bids yet.")
+            else:
+                st.dataframe(sub[display_cols], use_container_width=True, hide_index=True)
+
+
 # ──────────────────────────────────────────────
 # Admin mode toggle (small sidebar gate) + full-page admin dashboard
 # ──────────────────────────────────────────────
@@ -686,8 +790,9 @@ def display_bidding_admin_interface():
         if bid_cfg and bid_cfg['track_name'] in config_names else 0
     )
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📊 Overview", "🛠️ Track Configs", "👥 Manage Bid Access", "➕ Add/Remove Selection", "📈 Bid Analysis"
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📊 Overview", "🛠️ Track Configs", "👥 Manage Bid Access", "➕ Add/Remove Selection", "📈 Bid Analysis",
+        "📋 Bid Roster"
     ])
 
     # ── Tab 1: Overview ──
@@ -1219,6 +1324,10 @@ def display_bidding_admin_interface():
     # ── Tab 5: Bid Analysis ──
     with tab5:
         _render_bid_analysis_tab(config_names, default_track_index)
+
+    # ── Tab 6: Bid Roster ──
+    with tab6:
+        _render_bid_roster_tab(config_names, default_track_index)
 
 
 # ──────────────────────────────────────────────
