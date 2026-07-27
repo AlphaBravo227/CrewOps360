@@ -763,6 +763,7 @@ _BASE_FULL_NAMES = {
     'KMHT': 'Manchester',
     '1B9': 'Mansfield',
 }
+_ALL_BASE_CODES = ['KMHT', 'KLWM', 'KBED', '1B9', 'KPYM']
 
 
 def _compute_base_analysis_table(analysis_track, ctx, role_bucket):
@@ -798,6 +799,7 @@ def _compute_base_analysis_table(analysis_track, ctx, role_bucket):
             slot_num = slot.split('#')[1]
             row = {
                 'Base': f"{_BASE_FULL_NAMES.get(base, base)} ({base})",
+                '_base_code': base,
                 'Shift': shift_label,
                 'Slot': f"#{slot_num}",
             }
@@ -811,9 +813,10 @@ def _compute_base_analysis_table(analysis_track, ctx, role_bucket):
 def _render_base_analysis_tab(config_names, default_track_index):
     """Per-base, per-slot fill-status grid: green = filled (shows who), red = still open."""
     st.markdown("### Base Analysis")
-    st.caption("Every base's individual shift slots, one row each, across the 42 bid days. "
-               "Green cells show who currently wins that slot in the seniority competition; "
-               "red cells are still unfilled.")
+    st.caption("Every base's individual shift slots, one row each, split into Blocks A/B/C "
+               "(14 days each) so it's not one long horizontal scroll. Green cells show who "
+               "currently wins that slot in the seniority competition; red cells are still "
+               "unfilled. Filters below apply to all three blocks.")
 
     if not config_names:
         st.info("No track cycles exist yet. Create one in the Track Configs tab.")
@@ -830,18 +833,36 @@ def _render_base_analysis_tab(config_names, default_track_index):
     role_choice = st.radio("Role:", ["Nurses", "Medics"], horizontal=True, key="base_analysis_role")
     role_bucket = 'nurse' if role_choice == "Nurses" else 'medic'
 
+    base_options = [f"{_BASE_FULL_NAMES.get(b, b)} ({b})" for b in _ALL_BASE_CODES]
+    base_code_by_option = dict(zip(base_options, _ALL_BASE_CODES))
+    selected_base_options = st.multiselect(
+        "Base:", base_options, default=base_options, key="base_analysis_base_filter")
+    selected_bases = {base_code_by_option[o] for o in selected_base_options}
+
+    selected_shifts = st.multiselect(
+        "Shift Type:", ["Day", "Night"], default=["Day", "Night"], key="base_analysis_shift_filter")
+
     with st.spinner("Computing base fill status..."):
         table = _compute_base_analysis_table(analysis_track, ctx, role_bucket)
 
-    display_cols = ['Base', 'Shift', 'Slot'] + ctx['days']
+    filtered = table[table['_base_code'].isin(selected_bases) & table['Shift'].isin(selected_shifts)]
+
+    if filtered.empty:
+        st.info("No base/shift combinations match the current filters.")
+        return
 
     def _highlight_fill(val):
         return 'background-color: #d4edda' if val else 'background-color: #f8d7da'
 
-    st.dataframe(
-        table[display_cols].style.map(_highlight_fill, subset=ctx['days']),
-        use_container_width=True, hide_index=True
-    )
+    days = ctx['days']
+    blocks = [("A", days[0:14]), ("B", days[14:28]), ("C", days[28:42])]
+    for block_letter, block_days in blocks:
+        st.markdown(f"#### Block {block_letter}")
+        display_cols = ['Base', 'Shift', 'Slot'] + block_days
+        st.dataframe(
+            filtered[display_cols].style.map(_highlight_fill, subset=block_days),
+            use_container_width=True, hide_index=True
+        )
 
 
 # ──────────────────────────────────────────────
