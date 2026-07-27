@@ -345,6 +345,71 @@ def get_staff_role_for_counting(staff_name, preferences_df, staff_col_prefs, rol
     except:
         return "nurse"
 
+def simulate_full_shift_roster(
+    day, shift_type, role_bucket, preferences_df, staff_col_prefs, role_col, seniority_col,
+    all_base_prefs=None, bid_track_name=None, base_shift_counts=None
+):
+    """
+    Same seniority-competition simulation as calculate_hypothetical_assignment, but
+    scoped to one role bucket as a whole ('nurse' or 'medic') and returning who won
+    every slot, instead of just one selected staff member's result. Used by Base
+    Analysis to show fill status per base/slot rather than per bidder.
+
+    Always scored against submitted bids for bid_track_name (bid-cycle only; no
+    Excel-source fallback, unlike calculate_hypothetical_assignment).
+
+    Returns: {slot: {'staff': name, 'preference': rank_or_None}} for filled slots only.
+    """
+    staff_on_shift = get_staff_on_shift_from_database(
+        day, "D" if shift_type == "day" else "N", preferences_df, staff_col_prefs, role_col,
+        bid_track_name=bid_track_name
+    )
+    staff_same_role = [
+        s for s in staff_on_shift
+        if get_staff_role_for_counting(s, preferences_df, staff_col_prefs, role_col) == role_bucket
+    ]
+    staff_with_seniority = sorted(
+        [(s, get_staff_seniority_rank(s, preferences_df, staff_col_prefs, seniority_col)) for s in staff_same_role],
+        key=lambda x: x[1]
+    )
+
+    if shift_type == "day":
+        available_shifts, shift_to_base = _build_available_slots("day", base_shift_counts)
+        location_key = 'day_locations'
+        max_rank = 5
+    else:
+        available_shifts, shift_to_base = _build_available_slots("night", base_shift_counts)
+        location_key = 'night_locations'
+        max_rank = 3
+
+    assigned = {}
+    for staff, _seniority in staff_with_seniority:
+        if not available_shifts:
+            break
+
+        staff_base_data = (all_base_prefs or {}).get(staff)
+        best_shift = None
+        preference_rank = None
+        if staff_base_data:
+            locations = staff_base_data.get(location_key, {})
+            shift_scores = {
+                shift: (max_rank + 1 - locations[shift_to_base[shift]])
+                for shift in available_shifts
+                if shift_to_base.get(shift) in locations and locations.get(shift_to_base.get(shift)) is not None
+            }
+            if shift_scores:
+                best_shift = max(shift_scores.items(), key=lambda x: x[1])[0]
+                preference_rank = locations.get(shift_to_base[best_shift])
+
+        if best_shift is None:
+            best_shift = available_shifts[0]
+
+        assigned[best_shift] = {'staff': staff, 'preference': preference_rank}
+        available_shifts.remove(best_shift)
+
+    return assigned
+
+
 def calculate_hypothetical_assignment(
     selected_staff, day, shift_type, preferences_df, current_tracks_df,
     staff_col_prefs, staff_col_tracks, role_col, seniority_col, use_database_logic,

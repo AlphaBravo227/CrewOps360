@@ -753,6 +753,98 @@ def _render_bid_roster_tab(config_names, default_track_index):
 
 
 # ──────────────────────────────────────────────
+# Base Analysis: per-base, per-slot fill status across the 42-day cycle
+# ──────────────────────────────────────────────
+
+_BASE_FULL_NAMES = {
+    'KBED': 'Bedford',
+    'KPYM': 'Plymouth',
+    'KLWM': 'Lawrence',
+    'KMHT': 'Manchester',
+    '1B9': 'Mansfield',
+}
+
+
+def _compute_base_analysis_table(analysis_track, ctx, role_bucket):
+    """
+    One row per individual base/shift-type slot (e.g. "Bedford (KBED) Day #1"),
+    one column per bid day, showing who currently wins that slot in the seniority
+    competition — same simulate_full_shift_roster() used elsewhere, run once per
+    (day, shift type) and reused across every slot at that shift type.
+    """
+    from modules.hypothetical_scheduler_new import (
+        simulate_full_shift_roster, _load_all_base_preferences, _build_available_slots
+    )
+    from modules.db_utils import get_base_shift_counts
+
+    days = ctx['days']
+    all_base_prefs = _load_all_base_preferences()
+    base_shift_counts = get_base_shift_counts(analysis_track)
+
+    sim_cache = {}
+    for shift_type in ('day', 'night'):
+        for day in days:
+            sim_cache[(day, shift_type)] = simulate_full_shift_roster(
+                day, shift_type, role_bucket, ctx['preferences_df'], ctx['staff_col_prefs'],
+                ctx['role_col'], ctx['seniority_col'], all_base_prefs=all_base_prefs,
+                bid_track_name=analysis_track, base_shift_counts=base_shift_counts,
+            )
+
+    rows = []
+    for shift_type, shift_label in (('day', 'Day'), ('night', 'Night')):
+        available_shifts, shift_to_base = _build_available_slots(shift_type, base_shift_counts)
+        for slot in available_shifts:
+            base = shift_to_base[slot]
+            slot_num = slot.split('#')[1]
+            row = {
+                'Base': f"{_BASE_FULL_NAMES.get(base, base)} ({base})",
+                'Shift': shift_label,
+                'Slot': f"#{slot_num}",
+            }
+            for day in days:
+                winner = sim_cache[(day, shift_type)].get(slot)
+                row[day] = winner['staff'] if winner else ''
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _render_base_analysis_tab(config_names, default_track_index):
+    """Per-base, per-slot fill-status grid: green = filled (shows who), red = still open."""
+    st.markdown("### Base Analysis")
+    st.caption("Every base's individual shift slots, one row each, across the 42 bid days. "
+               "Green cells show who currently wins that slot in the seniority competition; "
+               "red cells are still unfilled.")
+
+    if not config_names:
+        st.info("No track cycles exist yet. Create one in the Track Configs tab.")
+        return
+
+    analysis_track = st.selectbox(
+        "Track Cycle:", config_names, index=default_track_index, key="base_analysis_track_select")
+
+    ctx, roster_error = _load_bidding_data_files()
+    if ctx is None:
+        st.error(roster_error)
+        return
+
+    role_choice = st.radio("Role:", ["Nurses", "Medics"], horizontal=True, key="base_analysis_role")
+    role_bucket = 'nurse' if role_choice == "Nurses" else 'medic'
+
+    with st.spinner("Computing base fill status..."):
+        table = _compute_base_analysis_table(analysis_track, ctx, role_bucket)
+
+    display_cols = ['Base', 'Shift', 'Slot'] + ctx['days']
+
+    def _highlight_fill(val):
+        return 'background-color: #d4edda' if val else 'background-color: #f8d7da'
+
+    st.dataframe(
+        table[display_cols].style.map(_highlight_fill, subset=ctx['days']),
+        use_container_width=True, hide_index=True
+    )
+
+
+# ──────────────────────────────────────────────
 # Admin mode toggle (small sidebar gate) + full-page admin dashboard
 # ──────────────────────────────────────────────
 
@@ -790,9 +882,9 @@ def display_bidding_admin_interface():
         if bid_cfg and bid_cfg['track_name'] in config_names else 0
     )
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "📊 Overview", "🛠️ Track Configs", "👥 Manage Bid Access", "➕ Add/Remove Selection", "📈 Bid Analysis",
-        "📋 Bid Roster"
+        "📋 Bid Roster", "🏢 Base Analysis"
     ])
 
     # ── Tab 1: Overview ──
@@ -1328,6 +1420,10 @@ def display_bidding_admin_interface():
     # ── Tab 6: Bid Roster ──
     with tab6:
         _render_bid_roster_tab(config_names, default_track_index)
+
+    # ── Tab 7: Base Analysis ──
+    with tab7:
+        _render_base_analysis_tab(config_names, default_track_index)
 
 
 # ──────────────────────────────────────────────
