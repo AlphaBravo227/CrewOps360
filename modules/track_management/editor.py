@@ -324,42 +324,40 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                 week_num = block_idx * 2 + week_idx + 1
                 
                 st.markdown(f"#### Week {week_num}")
-                
-                # Create table data
+                st.caption("**Top row:** Current Active Track  ·  **Bottom row:** Proposed Track")
+
+                # Create table data — column headers use the full day-pattern label (e.g.
+                # "Wed A 1") rather than just the weekday name, and the two rows carry no
+                # Row Type label column, so this grid's columns line up exactly with the
+                # day-selector radio buttons below it (row 0 = active, row 1 = proposed).
                 week_data = []
-                day_headers = []
-                
-                for day_idx, day in enumerate(week_days):
-                    day_parts = day.split()
-                    day_name = day_parts[0] if day_parts else "Unknown"
-                    day_headers.append(day_name)
-                
+                day_headers = list(week_days)
+
                 # Reference track row — this is always the staff member's active track, shown for comparison
-                reference_row = {"Row Type": "Your Active Track"}
+                reference_row = {}
                 for idx, day in enumerate(week_days):
                     reference_assignment = reference_track.get(day, "")
                     reference_row[day_headers[idx]] = reference_assignment if reference_assignment else "Off"
-                
+
                 week_data.append(reference_row)
-                
+
                 # Modified track row
-                editable_row = {"Row Type": "Proposed Track"}
+                editable_row = {}
                 for idx, day in enumerate(week_days):
                     is_preassigned = preassignments and day in preassignments
-                    
+
                     if is_preassigned:
                         preassign_value = preassignments[day]
                         editable_row[day_headers[idx]] = f"Pre: {preassign_value}"
                     else:
                         current_value = st.session_state.track_changes[selected_staff].get(day, "")
                         editable_row[day_headers[idx]] = current_value if current_value else "Off"
-                
+
                 week_data.append(editable_row)
-                
+
                 # Create and display dataframe
                 df = pd.DataFrame(week_data)
-                df = df.set_index("Row Type")
-                
+
                 # Custom styling with weekend group highlighting
                 def highlight_cells(df):
                     styles = pd.DataFrame('', index=df.index, columns=df.columns)
@@ -374,18 +372,18 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                 styles.loc[idx, col] = 'background-color: #cce5ff'
                             elif "Pre:" in str(val):
                                 styles.loc[idx, col] = 'background-color: #e2e3e5; font-weight: bold'
-                    # Highlight changes in Current Track Changes mode
-                    if not use_database_logic and "Your Active Track" in df.index and "Proposed Track" in df.index:
+                    # Highlight changes in Current Track Changes mode (row 0 = active, row 1 = proposed)
+                    if not use_database_logic:
                         for col in df.columns:
-                            ref_val = str(df.loc["Your Active Track", col]).replace("Off", "")
-                            mod_val = str(df.loc["Proposed Track", col]).replace("Off", "")
+                            ref_val = str(df.iloc[0][col]).replace("Off", "")
+                            mod_val = str(df.iloc[1][col]).replace("Off", "")
                             if "Pre:" in ref_val or "Pre:" in mod_val:
                                 continue
                             if ref_val != mod_val:
-                                styles.loc["Proposed Track", col] += '; border: 2px solid #ffc107'
+                                styles.loc[1, col] += '; border: 2px solid #ffc107'
                     return styles
-                
-                st.dataframe(df.style.apply(highlight_cells, axis=None), use_container_width=True)
+
+                st.dataframe(df.style.apply(highlight_cells, axis=None), use_container_width=True, hide_index=True)
                 
                 # Create radio button selectors with ENHANCED hypothetical scheduler display
                 cols = st.columns(len(week_days))
