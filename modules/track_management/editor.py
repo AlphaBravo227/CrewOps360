@@ -334,18 +334,18 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                 week_num = block_idx * 2 + week_idx + 1
                 
                 st.markdown(f"#### Week {week_num}")
-                st.caption("**Top row:** Current Active Track")
-                st.caption("**Bottom row:** Proposed Track")
 
                 # Create table data — column headers use the full day-pattern label (e.g.
-                # "Wed A 1") rather than just the weekday name, and the two rows carry no
-                # Row Type label column, so this grid's columns line up exactly with the
-                # day-selector radio buttons below it (row 0 = active, row 1 = proposed).
+                # "Wed A 1") rather than just the weekday name. A leading label column
+                # identifies each row ("Current Track" / "Proposed Track"); the selector
+                # row below adds a matching placeholder column so the day columns in both
+                # grids line up.
                 week_data = []
                 day_headers = list(week_days)
+                LABEL_COL = ""
 
                 # Reference track row — this is always the staff member's active track, shown for comparison
-                reference_row = {}
+                reference_row = {LABEL_COL: "Current Track"}
                 for idx, day in enumerate(week_days):
                     reference_assignment = reference_track.get(day, "")
                     reference_row[day_headers[idx]] = reference_assignment if reference_assignment else "Off"
@@ -353,7 +353,7 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                 week_data.append(reference_row)
 
                 # Modified track row
-                editable_row = {}
+                editable_row = {LABEL_COL: "Proposed Track"}
                 for idx, day in enumerate(week_days):
                     is_preassigned = preassignments and day in preassignments
 
@@ -374,6 +374,8 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                     styles = pd.DataFrame('', index=df.index, columns=df.columns)
                     for idx, row in df.iterrows():
                         for col_idx, col in enumerate(df.columns):
+                            if col == LABEL_COL:
+                                continue
                             val = row[col]
                             # day = week_days[col_idx] if col_idx < len(week_days) else None
                             # Apply regular shift highlighting
@@ -386,6 +388,8 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                     # Highlight changes in Current Track Changes mode (row 0 = active, row 1 = proposed)
                     if not use_database_logic:
                         for col in df.columns:
+                            if col == LABEL_COL:
+                                continue
                             ref_val = str(df.iloc[0][col]).replace("Off", "")
                             mod_val = str(df.iloc[1][col]).replace("Off", "")
                             if "Pre:" in ref_val or "Pre:" in mod_val:
@@ -395,19 +399,37 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                     return styles
 
                 st.dataframe(df.style.apply(highlight_cells, axis=None), use_container_width=True, hide_index=True)
-                
-                # Create radio button selectors with ENHANCED hypothetical scheduler display
-                cols = st.columns(len(week_days))
-                
+
+                # Render the radios, Day Shifts boxes, and Night Shifts boxes as three
+                # SEPARATE st.columns() rows rather than stacking all of it inside one
+                # column per day. Each new st.columns() call starts a fresh row whose
+                # columns all begin at the same Y position — so a day with 4 radio options
+                # (e.g. an AT preassignment) or a wrapped label can never push that day's
+                # boxes out of line with its neighbors, regardless of content height above.
+                day_states = {}
+
+                # --- Row 1: radio selectors ---
+                radio_cols = st.columns([1.3] + [1] * len(week_days))
+                with radio_cols[0]:
+                    st.markdown("&nbsp;")
+
                 for idx, day in enumerate(week_days):
-                    with cols[idx]:
+                    with radio_cols[idx + 1]:
                         is_preassigned = preassignments and day in preassignments
                         is_weekend_group_day = day in weekend_highlight_days
-                        
+
+                        # Compact label for the radio widget only (e.g. "Sun A1" instead of
+                        # "Sun A 1") so it never wraps to a second line.
+                        day_name_parts = day.split()
+                        if len(day_name_parts) == 3:
+                            compact_day_label = f"{day_name_parts[0]} {day_name_parts[1]}{day_name_parts[2]}"
+                        else:
+                            compact_day_label = day
+
                         if is_preassigned:
                             # Handle preassignments (existing logic)
                             preassign_value = preassignments[day]
-                            
+
                             radio_options = ["Off", "D", "N"]
                             if preassign_value == "AT":
                                 radio_options = ["Off", "D", "N", "AT"]
@@ -418,179 +440,241 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                 selected_option = "N"
                             else:
                                 selected_option = "D"
-                            
+
                             try:
                                 preselected_index = radio_options.index(selected_option)
                             except ValueError:
                                 preselected_index = 0
-                            
+
                             # Disabled radio for preassignments
                             st.radio(
-                                f"Select for {day}",
+                                f"Select for {compact_day_label}",
                                 options=radio_options,
                                 index=preselected_index,
-                                horizontal=True,
+                                horizontal=False,
                                 disabled=True,
                                 key=f"select_preassign_{selected_staff}_{day}".replace(" ", "_").replace("/", "_")
                             )
-                            
+
                             # Force preassigned value
                             st.session_state.track_changes[selected_staff][day] = selected_option
                             st.session_state.modified_track['track'][day] = selected_option
-                            
-                            # Show preassignment indicator with FIXED weekend group info
-                            preassign_style = "background-color: #e2e3e5; padding: 5px; border-radius: 3px; text-align: center; margin-top: 5px;"
-                            if is_weekend_group_day:
-                                preassign_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center; margin-top: 5px;"
-                            
-                            weekend_display = ""
-                            if is_weekend_group_day:
-                                weekend_display = f'🟡 Weekend Group {weekend_group}'
-                            
-                            st.markdown(f"""
-                            <div style="{preassign_style}">
-                                <strong>🔒 Preassigned: {preassign_value}</strong>
-                                {weekend_display}
-                            </div>
-                            """, unsafe_allow_html=True)
-                            
+
+                            day_states[day] = {
+                                'has_options': True,
+                                'is_preassigned': True,
+                                'preassign_value': preassign_value,
+                                'is_weekend_group_day': is_weekend_group_day,
+                            }
+
                         else:
                             # Regular day selection with ENHANCED hypothetical scheduler display
                             reference_value = reference_track.get(day, "")
                             current_value = st.session_state.track_changes[selected_staff].get(day, "")
-                            
+
                             # Get availability info
                             day_info = options_by_day[day]
                             day_available = day_info["day_shift"]["is_needed"]
                             night_available = day_info["night_shift"]["is_needed"]
-                            
+
                             # Build options list using enhanced logic
                             available_options = build_available_options(
                                 day_info, reference_value, current_value, use_database_logic
                             )
-                            
+
                             if not available_options:
                                 st.markdown('''
                                 <div style="background-color: #f8f9fa; padding: 10px; border-radius: 5px; text-align: center;">
                                     <strong>No shifts available</strong>
                                 </div>
                                 ''', unsafe_allow_html=True)
-                                continue                            
-                            
+                                day_states[day] = {'has_options': False}
+                                continue
+
                             # Default selection using enhanced logic
                             default_idx = get_default_selection_index(available_options, current_value)
-                            
+
                             # Create radio selector with unique key that causes automatic rerun when changed
                             selection = st.radio(
-                                f"Select for {day}",
+                                f"Select for {compact_day_label}",
                                 options=available_options,
                                 index=default_idx,
-                                horizontal=True,
+                                horizontal=False,
                                 key=f"select_{selected_staff}_{day}".replace(" ", "_").replace("/", "_")
                             )
-                            
+
                             # Update track changes using enhanced logic
                             update_track_selection(selected_staff, day, selection, current_value)
-                            
-                            # ENHANCED: Show availability indicators with hypothetical scheduler results
-                            if day_available:
-                                # Get enhanced information from hypothetical scheduler
-                                day_needs_count = day_info["day_shift"].get("needs_count", 0)
-                                day_pref = day_info["day_shift"].get("preference_score", None)
-                                day_shift_name = ""
-                                
-                                # Get hypothetical shift assignment if available
-                                if day_assignments and day in day_assignments:
-                                    day_shift_name = day_assignments[day]
-                                
-                                # Check if this is a Friday (day shifts on Friday don't count as weekend)
-                                day_parts = day.split()
-                                is_friday = len(day_parts) > 0 and day_parts[0] == "Fri"
-                                
-                                # Don't highlight Friday day shifts yellow (only Friday nights count as weekend)
-                                if is_weekend_group_day and not is_friday:
-                                    indicator_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center; margin-bottom: 5px;"
-                                    weekend_indicator = f'Weekend Group {weekend_group}'
-                                else:
-                                    indicator_style = _need_indicator_style(day_pref) + " margin-bottom: 5px;"
-                                    weekend_indicator = ''
-                                
-                                # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
-                                pref_display = f'<br>Rank: {day_pref}' if day_pref else ''
-                                shift_display = f'<br>Hypothetical: {day_shift_name}' if day_shift_name else ''
-                                weekend_display = f'🟡 {weekend_indicator}' if weekend_indicator else ''
-                                
-                                # If there is a need but no assignment, show asterisk and description
-                                if day_needs_count > 0 and not day_shift_name:
-                                    day_shift_name = "* <span style='font-size:smaller;'>(Need exists but all named shifts are filled)</span>"
-                                
-                                st.markdown(f"""
-                                <div style="{indicator_style}">
-                                    <strong>Day Need ({day_needs_count})</strong>
-                                    {shift_display}
-                                    {pref_display}
-                                    {weekend_display}
-                                </div>
-                                """, unsafe_allow_html=True)
-                            
-                            if night_available:
-                                # Get enhanced information from hypothetical scheduler
-                                night_needs_count = day_info["night_shift"].get("needs_count", 0)
-                                night_pref = day_info["night_shift"].get("preference_score", None)
-                                night_shift_name = ""
-                                
-                                # Get hypothetical shift assignment if available
-                                if night_assignments and day in night_assignments:
-                                    night_shift_name = night_assignments[day]
-                                
-                                # If there is a need but no assignment, show asterisk and description
-                                if night_needs_count > 0 and not night_shift_name:
-                                    night_shift_name = "* <span style='font-size:smaller;'>(Need exists but all named shifts are filled)</span>"
-                                
-                                # Night shifts always count as weekend (including Friday nights)
-                                if is_weekend_group_day:
-                                    indicator_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center;"
-                                    weekend_indicator = f'Weekend Group {weekend_group}'
-                                else:
-                                    indicator_style = _need_indicator_style(night_pref)
-                                    weekend_indicator = ''
-                                
-                                # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
-                                pref_display = f'<br>Rank: {night_pref}' if night_pref else ''
-                                shift_display = f'<br>Hypothetical: {night_shift_name}' if night_shift_name else ''
-                                weekend_display = f'🟡 {weekend_indicator}' if weekend_indicator else ''
-                                
-                                st.markdown(f"""
-                                <div style="{indicator_style}">
-                                    <strong>Night Need ({night_needs_count})</strong>
-                                    {shift_display}
-                                    {pref_display}
-                                    {weekend_display}
-                                </div>
-                                """, unsafe_allow_html=True)
-                            
+
+                            day_states[day] = {
+                                'has_options': True,
+                                'is_preassigned': False,
+                                'is_weekend_group_day': is_weekend_group_day,
+                                'day_available': day_available,
+                                'night_available': night_available,
+                                'day_info': day_info,
+                            }
+
+                # --- Row 2: Day Shifts boxes (or the preassignment lock box) ---
+                day_cols = st.columns([1.3] + [1] * len(week_days))
+                with day_cols[0]:
+                    st.markdown("""
+                    <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 5px; border-radius: 3px; text-align: center;">
+                        <strong>Day Shifts</strong>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                for idx, day in enumerate(week_days):
+                    with day_cols[idx + 1]:
+                        state = day_states.get(day, {})
+                        if not state.get('has_options'):
+                            continue
+
+                        is_weekend_group_day = state['is_weekend_group_day']
+
+                        if state['is_preassigned']:
+                            preassign_value = state['preassign_value']
+
+                            preassign_style = "background-color: #e2e3e5; padding: 5px; border-radius: 3px; text-align: center;"
+                            if is_weekend_group_day:
+                                preassign_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center;"
+
+                            weekend_display = f'🟡 Weekend Group {weekend_group}' if is_weekend_group_day else ""
+
+                            st.markdown(f"""
+                            <div style="{preassign_style}">
+                                <strong>🔒 Preassigned: {preassign_value}</strong>
+                                {weekend_display}
+                            </div>
+                            """, unsafe_allow_html=True)
+                            continue
+
+                        if not state['day_available']:
+                            continue
+
+                        day_info = state['day_info']
+
+                        # Get enhanced information from hypothetical scheduler
+                        day_needs_count = day_info["day_shift"].get("needs_count", 0)
+                        day_pref = day_info["day_shift"].get("preference_score", None)
+                        day_shift_name = ""
+
+                        # Get hypothetical shift assignment if available
+                        if day_assignments and day in day_assignments:
+                            day_shift_name = day_assignments[day]
+
+                        # Check if this is a Friday (day shifts on Friday don't count as weekend)
+                        day_parts = day.split()
+                        is_friday = len(day_parts) > 0 and day_parts[0] == "Fri"
+
+                        # Don't highlight Friday day shifts yellow (only Friday nights count as weekend)
+                        if is_weekend_group_day and not is_friday:
+                            indicator_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center;"
+                            weekend_indicator = f'Weekend Group {weekend_group}'
+                        else:
+                            indicator_style = _need_indicator_style(day_pref)
+                            weekend_indicator = ''
+
+                        # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
+                        pref_display = f'<br>Rank: {day_pref}' if day_pref else ''
+                        shift_display = f'<br>Hypothetical: {day_shift_name}' if day_shift_name else ''
+                        weekend_display = f'🟡 {weekend_indicator}' if weekend_indicator else ''
+
+                        # If there is a need but no assignment, show asterisk and description
+                        if day_needs_count > 0 and not day_shift_name:
+                            day_shift_name = "* <span style='font-size:smaller;'>(Need exists but all named shifts are filled)</span>"
+
+                        st.markdown(f"""
+                        <div style="{indicator_style}">
+                            <strong>Day Need ({day_needs_count})</strong>
+                            {shift_display}
+                            {pref_display}
+                            {weekend_display}
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                # Blank spacer row so the Day Shifts and Night Shifts boxes don't read as
+                # one solid green block.
+                st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
+
+                # --- Row 3: Night Shifts boxes ---
+                night_cols = st.columns([1.3] + [1] * len(week_days))
+                with night_cols[0]:
+                    st.markdown("""
+                    <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 5px; border-radius: 3px; text-align: center;">
+                        <strong>Night Shifts</strong>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                for idx, day in enumerate(week_days):
+                    with night_cols[idx + 1]:
+                        state = day_states.get(day, {})
+                        if not state.get('has_options') or state.get('is_preassigned'):
+                            continue
+
+                        is_weekend_group_day = state['is_weekend_group_day']
+                        day_available = state['day_available']
+                        night_available = state['night_available']
+
+                        if night_available:
+                            day_info = state['day_info']
+
+                            # Get enhanced information from hypothetical scheduler
+                            night_needs_count = day_info["night_shift"].get("needs_count", 0)
+                            night_pref = day_info["night_shift"].get("preference_score", None)
+                            night_shift_name = ""
+
+                            # Get hypothetical shift assignment if available
+                            if night_assignments and day in night_assignments:
+                                night_shift_name = night_assignments[day]
+
+                            # If there is a need but no assignment, show asterisk and description
+                            if night_needs_count > 0 and not night_shift_name:
+                                night_shift_name = "* <span style='font-size:smaller;'>(Need exists but all named shifts are filled)</span>"
+
+                            # Night shifts always count as weekend (including Friday nights)
+                            if is_weekend_group_day:
+                                indicator_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center;"
+                                weekend_indicator = f'Weekend Group {weekend_group}'
+                            else:
+                                indicator_style = _need_indicator_style(night_pref)
+                                weekend_indicator = ''
+
+                            # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
+                            pref_display = f'<br>Rank: {night_pref}' if night_pref else ''
+                            shift_display = f'<br>Hypothetical: {night_shift_name}' if night_shift_name else ''
+                            weekend_display = f'🟡 {weekend_indicator}' if weekend_indicator else ''
+
+                            st.markdown(f"""
+                            <div style="{indicator_style}">
+                                <strong>Night Need ({night_needs_count})</strong>
+                                {shift_display}
+                                {pref_display}
+                                {weekend_display}
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                        elif is_weekend_group_day and not day_available and not night_available:
                             # Show weekend group indicator even if no shifts are needed
-                            if is_weekend_group_day and not day_available and not night_available:
-                                # Check if this is a Friday (day shifts on Friday don't count as weekend)
-                                day_parts = day.split()
-                                is_friday = len(day_parts) > 0 and day_parts[0] == "Fri"
-                                
-                                # Only show weekend group indicator for non-Friday days, or Friday with note about night shifts
-                                if not is_friday:
-                                    st.markdown(f"""
-                                    <div style="background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center; margin-top: 5px;">
-                                        <strong>🟡 Weekend Group {weekend_group}</strong>
-                                        <br>This day is part of your weekend requirements
-                                    </div>
-                                    """, unsafe_allow_html=True)
-                                else:
-                                    st.markdown(f"""
-                                    <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 5px; border-radius: 3px; text-align: center; margin-top: 5px;">
-                                        <strong>Weekend Group {weekend_group}</strong>
-                                        <br><small>Only Friday <em>night</em> shifts count as weekend</small>
-                                    </div>
-                                    """, unsafe_allow_html=True)
-                
+                            day_parts = day.split()
+                            is_friday = len(day_parts) > 0 and day_parts[0] == "Fri"
+
+                            # Only show weekend group indicator for non-Friday days, or Friday with note about night shifts
+                            if not is_friday:
+                                st.markdown(f"""
+                                <div style="background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center;">
+                                    <strong>🟡 Weekend Group {weekend_group}</strong>
+                                    <br>This day is part of your weekend requirements
+                                </div>
+                                """, unsafe_allow_html=True)
+                            else:
+                                st.markdown(f"""
+                                <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 5px; border-radius: 3px; text-align: center;">
+                                    <strong>Weekend Group {weekend_group}</strong>
+                                    <br><small>Only Friday <em>night</em> shifts count as weekend</small>
+                                </div>
+                                """, unsafe_allow_html=True)
+
                 st.markdown("---")  # Separator between weeks
 
 def get_weekend_group_highlighting_info_fixed(weekend_group, days):
