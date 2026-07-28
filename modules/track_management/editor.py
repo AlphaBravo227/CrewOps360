@@ -324,7 +324,8 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                 week_num = block_idx * 2 + week_idx + 1
                 
                 st.markdown(f"#### Week {week_num}")
-                st.caption("**Top row:** Current Active Track  ·  **Bottom row:** Proposed Track")
+                st.caption("**Top row:** Current Active Track")
+                st.caption("**Bottom row:** Proposed Track")
 
                 # Create table data — column headers use the full day-pattern label (e.g.
                 # "Wed A 1") rather than just the weekday name, and the two rows carry no
