@@ -228,6 +228,16 @@ def modify_track_enhanced(
         else:
             st.error("Your track does not meet all requirements. Please review the issues above and make adjustments.")
 
+def _need_indicator_style(rank):
+    """
+    Green background for a Day/Night Need indicator card, shaded by preference rank:
+    full-strength green for rank 1 (first choice), a lighter tint for rank 2+ or when
+    there's no preference data at all (rank is None).
+    """
+    opacity = 0.3 if rank == 1 else 0.12
+    return f"background-color: rgba(40, 167, 69, {opacity}); padding: 5px; border-radius: 3px; text-align: center;"
+
+
 def display_track_modification_interface_enhanced(selected_staff, options_by_day, reference_track, days, preassignments, use_database_logic, has_db_track, staff_role, weekend_group=None, day_assignments=None, night_assignments=None, assignment_details=None):
     """
     UPDATED: Display the track modification interface with enhanced hypothetical scheduler display and fixed weekend group highlighting
@@ -502,7 +512,7 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                     indicator_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center; margin-bottom: 5px;"
                                     weekend_indicator = f'Weekend Group {weekend_group}'
                                 else:
-                                    indicator_style = "background-color: rgba(40, 167, 69, 0.3); padding: 5px; border-radius: 3px; text-align: center; margin-bottom: 5px;"
+                                    indicator_style = _need_indicator_style(day_pref) + " margin-bottom: 5px;"
                                     weekend_indicator = ''
                                 
                                 # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
@@ -542,7 +552,7 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                     indicator_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center;"
                                     weekend_indicator = f'Weekend Group {weekend_group}'
                                 else:
-                                    indicator_style = "background-color: rgba(40, 167, 69, 0.3); padding: 5px; border-radius: 3px; text-align: center;"
+                                    indicator_style = _need_indicator_style(night_pref)
                                     weekend_indicator = ''
                                 
                                 # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
