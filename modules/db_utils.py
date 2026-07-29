@@ -175,7 +175,21 @@ def initialize_database():
             FOREIGN KEY (track_id) REFERENCES tracks(id)
         )
         ''')
-        
+
+        # Create bid_drafts table for in-progress (not yet submitted) bid selections.
+        # Kept separate from `tracks` so saving progress never creates a row that the
+        # submission lock (a row existing in `tracks`) would mistake for a real submission.
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bid_drafts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            staff_name TEXT NOT NULL,
+            track_name TEXT NOT NULL,
+            track_data TEXT NOT NULL,
+            saved_date TEXT NOT NULL,
+            UNIQUE(staff_name, track_name)
+        )
+        ''')
+
         # Create preassignments table
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS preassignments (
@@ -2227,6 +2241,62 @@ def get_bid_track_from_db(staff_name, track_name):
         return False, f"No bid found for {staff_name} in {track_name}"
     except Exception as e:
         return False, f"Error getting bid track: {e}"
+
+
+def save_bid_draft(staff_name, track_name, track_data):
+    """Save (upsert) a staff member's in-progress, not-yet-submitted bid selections."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        track_json = json.dumps(track_data)
+        saved_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+        cursor.execute("SELECT id FROM bid_drafts WHERE staff_name = ? AND track_name = ?",
+                       (staff_name, track_name))
+        existing = cursor.fetchone()
+        if existing:
+            cursor.execute("UPDATE bid_drafts SET track_data = ?, saved_date = ? WHERE id = ?",
+                           (track_json, saved_date, existing[0]))
+        else:
+            cursor.execute("""INSERT INTO bid_drafts (staff_name, track_name, track_data, saved_date)
+                              VALUES (?, ?, ?, ?)""",
+                           (staff_name, track_name, track_json, saved_date))
+        conn.commit()
+        return True, saved_date
+    except Exception as e:
+        return False, f"Error saving progress: {e}"
+
+
+def get_bid_draft(staff_name, track_name):
+    """Get a staff member's saved in-progress bid draft, if any."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""SELECT track_data, saved_date FROM bid_drafts
+                          WHERE staff_name = ? AND track_name = ?""",
+                       (staff_name, track_name))
+        result = cursor.fetchone()
+        if result:
+            return True, {'track_data': json.loads(result[0]), 'saved_date': result[1]}
+        return False, f"No saved progress for {staff_name} in {track_name}"
+    except Exception as e:
+        return False, f"Error getting saved progress: {e}"
+
+
+def delete_bid_draft(staff_name, track_name):
+    """Delete a staff member's saved in-progress bid draft (e.g. once they submit for real)."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM bid_drafts WHERE staff_name = ? AND track_name = ?",
+                       (staff_name, track_name))
+        conn.commit()
+        return True, "Deleted"
+    except Exception as e:
+        return False, f"Error deleting saved progress: {e}"
 
 
 def get_all_bid_tracks(track_name):

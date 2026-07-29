@@ -30,6 +30,9 @@ from modules.db_utils import (
     promote_bid_to_active,
     save_bid_track_to_db,
     get_bid_track_from_db,
+    save_bid_draft,
+    get_bid_draft,
+    delete_bid_draft,
     get_all_bid_tracks,
     get_track_from_db,
     delete_track_config,
@@ -1479,6 +1482,7 @@ Fiscal Year Info - First Sunday of Block A = Sept 27, 2026
 4. **Fill in Track Selection, one block/week at a time.**
    - Days highlighted in green are where your role is currently needed; a "Day Need" or "Night Need" count and a hypothetical base assignment appear under each day as a preview.
    - Select **"🔍 Validate and Save Block"** before moving on to the next block — this is important. This button sits between the block tabs and the weeks and stores your selections.
+   - Not going to finish in one sitting? Click **"💾 Save Progress"** — it sits just above the block tabs — at any point. It saves everything you've entered so far across all three blocks and brings it back automatically the next time you sign in, even if you haven't submitted yet.
 
 5. **Scheduler logic.** Under every day in Track Selection, and in full on the **🔮 Hypothetical Schedule** tab, CrewOps360 runs a live simulation of the upcoming competition: it sorts everyone bidding a given day/shift by seniority (nurses and medics separately — dual-trained staff compete as nurses), then hands out base seats one person at a time, most senior first, with each person getting their highest-ranked base that still has room.
    - **Choices disappear once a shift is full.** Each day/shift combination has a cap, shown in the header above. Once enough people have bid that shift to hit the cap, the D or N button for that day is dropped as an option.
@@ -1681,12 +1685,16 @@ def _display_bidding_staff_interface(
     active_result = get_track_from_db(selected_staff, active_track_name)
     has_active = active_result[0]
 
-    # Determine starting point for the bid editor: existing bid > blank
+    # Determine starting point for the bid editor: existing bid > saved draft > blank
     # (never the active track — a fresh bid should start empty, not a copy of last cycle's track)
     if has_bid:
         current_track_data = bid_result[1]['track_data']
     else:
-        current_track_data = {day: "" for day in days}
+        draft_result = get_bid_draft(selected_staff, bid_track_name)
+        if draft_result[0]:
+            current_track_data = draft_result[1]['track_data']
+        else:
+            current_track_data = {day: "" for day in days}
 
     # Apply preassignments
     if staff_preassignments:
@@ -1885,6 +1893,8 @@ def _display_track_selection_tab(
     # Reference track: always the active track — shown for comparison only, never edited
     bid_result = get_bid_track_from_db(selected_staff, bid_track_name)
     has_bid = bid_result[0]
+    draft_result = get_bid_draft(selected_staff, bid_track_name)
+    has_draft = draft_result[0]
     active_cfg = get_active_track_config()
     active_name = active_cfg['track_name'] if active_cfg else 'FY26'
     active_result = get_track_from_db(selected_staff, active_name)
@@ -1901,10 +1911,12 @@ def _display_track_selection_tab(
     else:
         reference_track = {day: "" for day in days}
 
-    # Initialize track changes: existing bid > blank — never a copy of the reference track
+    # Initialize track changes: existing bid > saved draft > blank — never a copy of the reference track
     if selected_staff not in st.session_state.track_changes:
         if has_bid:
             track_data = bid_result[1]['track_data'].copy()
+        elif has_draft:
+            track_data = draft_result[1]['track_data'].copy()
         else:
             track_data = {day: "" for day in days}
         if preassignments:
@@ -1930,12 +1942,29 @@ def _display_track_selection_tab(
     2. Use **"Validate Block"** buttons to check individual 2-week blocks
     3. Preassignments (if any) are shown as selected and locked
     4. Days where your role is needed are highlighted in green
-    5. Go to the **Validation tab** to check your complete bid, then proceed to Submission
+    5. Not ready to finish in one sitting? Click **Save Progress** below at any time — your selections are stored under your name and reappear automatically the next time you come back, no submission required
+    6. Go to the **Validation tab** to check your complete bid, then proceed to Submission
     """)
 
     if preassignments:
         from modules.track_management.preassignment import display_preassignments
         display_preassignments(selected_staff, preassignments)
+
+    # Save progress: persists the whole in-progress bid (all three blocks) as a draft,
+    # kept separate from the final submitted bid so staff can leave and resume freely
+    # before Submission without triggering the "bid already submitted" lock.
+    save_col1, save_col2, save_col3 = st.columns([1, 2, 1])
+    with save_col2:
+        if st.button("💾 Save Progress", key=f"save_bid_progress_{bid_track_name}_{selected_staff}",
+                     use_container_width=True):
+            ok, result = save_bid_draft(selected_staff, bid_track_name, st.session_state.track_changes[selected_staff])
+            if ok:
+                st.success(f"✅ Progress saved at {result}. Come back anytime before Submission to pick up where you left off.")
+            else:
+                st.error(f"Error saving progress: {result}")
+        elif has_draft:
+            st.caption(f"💾 Progress last saved {draft_result[1]['saved_date']}")
+    st.markdown("---")
 
     # Use database logic
     use_database_logic = True
@@ -2136,6 +2165,9 @@ def _display_bid_submission(
 
             ok, msg, tid = save_bid_track_to_db(selected_staff, track_to_save, bid_track_name, meta)
             if ok:
+                # Bid is now officially submitted — clear any saved in-progress draft
+                delete_bid_draft(selected_staff, bid_track_name)
+
                 # Notify the admin recipients with bid summary statistics (sent from the admin account)
                 try:
                     bid_result = get_bid_track_from_db(selected_staff, bid_track_name)
