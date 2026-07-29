@@ -418,9 +418,16 @@ def initialize_database():
             track_name TEXT NOT NULL,
             bid_access INTEGER DEFAULT 0,
             modified_date TEXT NOT NULL,
+            access_opened_date TEXT,
             UNIQUE(staff_name, track_name)
         )
         ''')
+
+        # Add access_opened_date to track_bid_access if it doesn't exist (migration)
+        cursor.execute("PRAGMA table_info(track_bid_access)")
+        tba_columns = [column[1] for column in cursor.fetchall()]
+        if 'access_opened_date' not in tba_columns:
+            cursor.execute('ALTER TABLE track_bid_access ADD COLUMN access_opened_date TEXT')
 
         # NEW: Audit log of automatic bid-progression attempts (one row per bid
         # submission while the feature is on) plus manual bid-notification sends,
@@ -2470,16 +2477,27 @@ def set_bid_access(staff_name, track_name, access_open):
         existing = cursor.fetchone()
 
         if existing:
-            cursor.execute("""
-                UPDATE track_bid_access
-                SET bid_access = ?, modified_date = ?
-                WHERE staff_name = ? AND track_name = ?
-            """, (access_int, modified_date, staff_name, track_name))
+            if access_open:
+                # Record when access was opened - this is the "bid open notification sent"
+                # moment, whether triggered by the auto-progression email or an admin
+                # manually toggling access. Left untouched when access is later disabled,
+                # so the most recent notification time stays visible either way.
+                cursor.execute("""
+                    UPDATE track_bid_access
+                    SET bid_access = ?, modified_date = ?, access_opened_date = ?
+                    WHERE staff_name = ? AND track_name = ?
+                """, (access_int, modified_date, modified_date, staff_name, track_name))
+            else:
+                cursor.execute("""
+                    UPDATE track_bid_access
+                    SET bid_access = ?, modified_date = ?
+                    WHERE staff_name = ? AND track_name = ?
+                """, (access_int, modified_date, staff_name, track_name))
         else:
             cursor.execute("""
-                INSERT INTO track_bid_access (staff_name, track_name, bid_access, modified_date)
-                VALUES (?, ?, ?, ?)
-            """, (staff_name, track_name, access_int, modified_date))
+                INSERT INTO track_bid_access (staff_name, track_name, bid_access, modified_date, access_opened_date)
+                VALUES (?, ?, ?, ?, ?)
+            """, (staff_name, track_name, access_int, modified_date, modified_date if access_open else None))
 
         conn.commit()
         status = "enabled" if access_open else "disabled"
@@ -2521,6 +2539,39 @@ def get_all_bid_access_configs(track_name):
 
     except Exception as e:
         print(f"Error getting all bid access configs: {str(e)}")
+        return {}
+
+
+def get_all_bid_access_details(track_name):
+    """
+    Get all bidding access configs for a track, including when access was opened
+    (the "bid open notification sent" timestamp - set whether access was opened by
+    the auto-progression email or an admin manually toggling it on).
+
+    Args:
+        track_name (str): Name of the bid track (cycle)
+
+    Returns:
+        dict: staff_name -> {'access': bool, 'access_opened_date': str or None}
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT staff_name, bid_access, access_opened_date
+            FROM track_bid_access
+            WHERE track_name = ?
+        """, (track_name,))
+
+        return {
+            row[0]: {'access': bool(row[1]), 'access_opened_date': row[2]}
+            for row in cursor.fetchall()
+        }
+
+    except Exception as e:
+        print(f"Error getting bid access details: {str(e)}")
         return {}
 
 

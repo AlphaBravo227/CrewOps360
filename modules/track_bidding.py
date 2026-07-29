@@ -41,6 +41,7 @@ from modules.db_utils import (
     get_bid_access,
     set_bid_access,
     get_all_bid_access_configs,
+    get_all_bid_access_details,
     log_bid_progression_event,
     get_bid_progression_log,
 )
@@ -1181,7 +1182,7 @@ def display_bidding_admin_interface():
                 staff_names = ctx['staff_names']
                 role_mapping = ctx['role_mapping']
                 seniority_mapping = ctx['seniority_mapping']
-                access_configs = get_all_bid_access_configs(access_track)
+                access_details = get_all_bid_access_details(access_track)
                 ok, bids = get_all_bid_tracks(access_track)
                 bids_lookup = {b['staff_name']: b for b in bids} if ok else {}
 
@@ -1189,13 +1190,15 @@ def display_bidding_admin_interface():
                 for staff_name in staff_names:
                     role = role_mapping.get(staff_name, 'Unknown')
                     seniority = seniority_mapping.get(staff_name, '')
-                    access = access_configs.get(staff_name, False)
+                    detail = access_details.get(staff_name, {})
+                    access = detail.get('access', False)
                     bid = bids_lookup.get(staff_name)
                     staff_data.append({
                         'Staff Name': staff_name,
                         'Role': role,
                         'Seniority': seniority,
                         'Bid Access': '✅' if access else '❌',
+                        'Notification Sent': detail.get('access_opened_date') or '',
                         'Has Bid': '✅' if bid else '❌',
                         'Version': bid['version'] if bid else '',
                         'Submitted': bid['submission_date'] if bid else '',
@@ -1208,7 +1211,7 @@ def display_bidding_admin_interface():
                     except (TypeError, ValueError):
                         return (1, 0)
 
-                display_cols = ['Staff Name', 'Seniority', 'Bid Access', 'Has Bid', 'Version', 'Submitted']
+                display_cols = ['Staff Name', 'Seniority', 'Bid Access', 'Notification Sent', 'Has Bid', 'Version', 'Submitted']
                 nurse_data = sorted(
                     (d for d in staff_data if str(d['Role']).strip().lower() != 'medic'),
                     key=_seniority_key)
@@ -1296,7 +1299,7 @@ def display_bidding_admin_interface():
                     "Select Staff Member:", staff_names, key="toggle_access_staff")
 
                 if selected_staff_access:
-                    current_status = access_configs.get(selected_staff_access, False)
+                    current_status = access_details.get(selected_staff_access, {}).get('access', False)
                     staff_role = role_mapping.get(selected_staff_access, 'Unknown')
 
                     st.info(f"**{selected_staff_access}** ({staff_role}) - Bid Access: "
