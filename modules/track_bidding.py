@@ -2037,6 +2037,7 @@ def _display_bid_submission(
     admin_notice_key = f'bid_admin_notice_{bid_track_name}_{selected_staff}'
     progression_notice_key = f'bid_progression_notice_{bid_track_name}_{selected_staff}'
     email_result_key = f'bid_email_result_{bid_track_name}_{selected_staff}'
+    staff_confirmation_key = f'bid_staff_confirmation_{bid_track_name}_{selected_staff}'
 
     # Shown regardless of admin/staff path or lock state, so both a staff member
     # submitting their own bid and an admin submitting on their behalf see the
@@ -2057,6 +2058,13 @@ def _display_bid_submission(
             f"(version {saved_bid['version']}, submitted {saved_bid['submission_date']})."
         )
         st.info("This bid is locked. Please contact your supervisor if you need to make changes.")
+
+        if st.session_state.get(staff_confirmation_key, False):
+            st.info(
+                "📧 A confirmation email with your bid summary PDF was sent to the email "
+                "address on file for you. If you don't see it in your inbox shortly, please "
+                "check your Junk/Spam folder."
+            )
 
         weekend_group = st.session_state.get('weekend_group')
         validation_result = validate_track_comprehensive(
@@ -2171,7 +2179,9 @@ def _display_bid_submission(
                 # Bid is now officially submitted — clear any saved in-progress draft
                 delete_bid_draft(selected_staff, bid_track_name)
 
-                # Notify the admin recipients with bid summary statistics (sent from the admin account)
+                # Notify the admin recipients with bid summary statistics (sent from the admin
+                # account), also including the submitting staff member - with their bid summary
+                # PDF attached - when their email is on file in Requirements.xlsx.
                 try:
                     bid_result = get_bid_track_from_db(selected_staff, bid_track_name)
                     if bid_result[0]:
@@ -2182,11 +2192,27 @@ def _display_bid_submission(
                             weekend_minimum, preassignments, days, weekend_group,
                             staff_name=selected_staff
                         )
+
+                        staff_email = None
+                        req_ctx, _ = _load_bidding_data_files()
+                        if req_ctx is not None:
+                            staff_email = _load_requirements_map(req_ctx['requirements_df']).get(
+                                selected_staff, {}).get('email')
+
+                        notice_pdf_bytes, notice_pdf_filename = generate_bid_summary_pdf(
+                            selected_staff, saved_bid['track_data'], days, bid_track_name,
+                            saved_bid['version'], saved_bid['submission_date'],
+                            shifts_per_pay_period, night_minimum, weekend_minimum,
+                            preassignments, validation_result, weekend_group
+                        )
+
                         admin_ok, admin_msg = send_bid_submission_notification(
                             selected_staff, bid_track_name, saved_bid['track_data'],
-                            saved_bid['version'], saved_bid['submission_date'], validation_result
+                            saved_bid['version'], saved_bid['submission_date'], validation_result,
+                            staff_email=staff_email, pdf_bytes=notice_pdf_bytes, pdf_filename=notice_pdf_filename
                         )
                         st.session_state[admin_notice_key] = ("success", admin_msg) if admin_ok else ("warning", admin_msg)
+                        st.session_state[staff_confirmation_key] = bool(staff_email) and admin_ok
                 except Exception as e:
                     st.session_state[admin_notice_key] = ("warning", f"Admin notification failed: {e}")
 

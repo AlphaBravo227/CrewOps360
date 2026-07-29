@@ -426,9 +426,13 @@ To review bids, please access the Track Bidding admin interface.
 
         return subject, body
 
-    def send_bid_submission_notification(self, staff_name, track_name, track_data, version, submission_date, validation_result=None):
+    def send_bid_submission_notification(self, staff_name, track_name, track_data, version, submission_date,
+                                          validation_result=None, staff_email=None, pdf_bytes=None, pdf_filename=None):
         """
-        Send an admin notification email with summary statistics when a track bid is submitted
+        Send an admin notification email with summary statistics when a track bid is submitted.
+        When the submitting staff member's email is on file, they're added as a recipient
+        too - so this one email doubles as their own submission confirmation - with the
+        bid summary PDF attached when provided.
 
         Args:
             staff_name (str): Name of staff member who submitted the bid
@@ -437,6 +441,9 @@ To review bids, please access the Track Bidding admin interface.
             version (int): Bid version number
             submission_date (str): Timestamp string as stored in the database
             validation_result (dict, optional): Result of validate_track_comprehensive()
+            staff_email (str, optional): Submitting staff member's email, from Requirements.xlsx
+            pdf_bytes (bytes, optional): Bid summary PDF to attach
+            pdf_filename (str, optional): Filename for the attached PDF
 
         Returns:
             tuple: (success, message)
@@ -457,13 +464,23 @@ To review bids, please access the Track Bidding admin interface.
                     if email not in recipients:
                         recipients.append(email)
 
+            staff_email = (staff_email or "").strip()
+            staff_included = bool(staff_email) and bool(_EMAIL_RE.match(staff_email)) and staff_email not in recipients
+            if staff_included:
+                recipients.append(staff_email)
+
             if not recipients:
                 return (False, "No email recipients configured")
 
-            success = self.send_email(recipients, subject, body)
+            if pdf_bytes and pdf_filename:
+                body += f"\nA PDF of {staff_name}'s full bid summary is attached.\n"
+                success = self.send_email_with_attachment(recipients, subject, body, pdf_bytes, pdf_filename)
+            else:
+                success = self.send_email(recipients, subject, body)
 
             if success:
-                return (True, "Bid submission notification sent successfully.")
+                note = f" {staff_name} was included at {staff_email}." if staff_included else ""
+                return (True, f"Bid submission notification sent successfully.{note}")
             else:
                 return (False, "Failed to send bid submission notification")
 
@@ -734,7 +751,8 @@ def send_location_preference_notification(staff_name, day_locations, night_locat
         staff_name, day_locations, night_locations, zip_code, reduced_rest_ok, n_to_d_flex
     )
 
-def send_bid_submission_notification(staff_name, track_name, track_data, version, submission_date, validation_result=None):
+def send_bid_submission_notification(staff_name, track_name, track_data, version, submission_date,
+                                      validation_result=None, staff_email=None, pdf_bytes=None, pdf_filename=None):
     """
     Convenient function to send the admin track-bid submission notification
 
@@ -745,12 +763,16 @@ def send_bid_submission_notification(staff_name, track_name, track_data, version
         version (int): Bid version number
         submission_date (str): Timestamp string as stored in the database
         validation_result (dict, optional): Result of validate_track_comprehensive()
+        staff_email (str, optional): Submitting staff member's email, from Requirements.xlsx
+        pdf_bytes (bytes, optional): Bid summary PDF to attach
+        pdf_filename (str, optional): Filename for the attached PDF
 
     Returns:
         tuple: (success, message)
     """
     return email_notifier.send_bid_submission_notification(
-        staff_name, track_name, track_data, version, submission_date, validation_result
+        staff_name, track_name, track_data, version, submission_date, validation_result,
+        staff_email, pdf_bytes, pdf_filename
     )
 
 def send_bid_summary_email(recipient_email, staff_name, track_name, pdf_bytes, filename):
