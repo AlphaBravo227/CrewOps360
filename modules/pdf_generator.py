@@ -715,42 +715,38 @@ def generate_bid_summary_pdf(staff_name, track_data, days, track_name, version, 
         pdf.set_font('Arial', 'B', 8)
         pdf.cell(0, 5, f'Block {block}', 0, 1)
 
-        for week_idx in range(2):
-            week_start = week_idx * 7
-            week_end = min(week_start + 7, len(block_days))
-            week_days = block_days[week_start:week_end]
-            if not week_days:
-                continue
+        # Both weeks of the block as one 14-day span rather than two separate
+        # full-width week rows.
+        cell_width = 172 / len(block_days)
+        pdf.set_font('Arial', '', 6.5)
+        pdf.set_fill_color(220, 220, 220)
+        pdf.cell(18, 4.5, 'Date', 1, 0, 'C', 1)
+        for wd in block_days:
+            pdf.cell(cell_width, 4.5, wd.split()[0], 1, 0, 'C', 1)
+        pdf.ln()
 
-            cell_width = 172 / len(week_days)
-            pdf.set_font('Arial', '', 7)
-            pdf.set_fill_color(220, 220, 220)
-            pdf.cell(18, 4.5, 'Date', 1, 0, 'C', 1)
-            for wd in week_days:
-                pdf.cell(cell_width, 4.5, wd.split()[0], 1, 0, 'C', 1)
-            pdf.ln()
+        pdf.set_font('Arial', '', 7)
+        pdf.cell(18, 4.5, 'Shift', 1, 0, 'C', 1)
+        for day in block_days:
+            shift = ""
+            if day in track_data and track_data[day]:
+                shift = track_data[day]
+            elif preassignments and day in preassignments and preassignments[day]:
+                shift = preassignments[day]
 
-            pdf.cell(18, 4.5, 'Shift', 1, 0, 'C', 1)
-            for day in week_days:
-                shift = ""
-                if day in track_data and track_data[day]:
-                    shift = track_data[day]
-                elif preassignments and day in preassignments and preassignments[day]:
-                    shift = preassignments[day]
-
-                if shift == "D":
-                    pdf.set_fill_color(212, 237, 218)
-                    pdf.cell(cell_width, 4.5, 'D', 1, 0, 'C', 1)
-                elif shift == "N":
-                    pdf.set_fill_color(204, 229, 255)
-                    pdf.cell(cell_width, 4.5, 'N', 1, 0, 'C', 1)
-                elif shift == "AT":
-                    pdf.set_fill_color(255, 243, 205)
-                    pdf.cell(cell_width, 4.5, 'AT', 1, 0, 'C', 1)
-                else:
-                    pdf.set_fill_color(255, 255, 255)
-                    pdf.cell(cell_width, 4.5, '-', 1, 0, 'C', 1)
-            pdf.ln(5)
+            if shift == "D":
+                pdf.set_fill_color(212, 237, 218)
+                pdf.cell(cell_width, 4.5, 'D', 1, 0, 'C', 1)
+            elif shift == "N":
+                pdf.set_fill_color(204, 229, 255)
+                pdf.cell(cell_width, 4.5, 'N', 1, 0, 'C', 1)
+            elif shift == "AT":
+                pdf.set_fill_color(255, 243, 205)
+                pdf.cell(cell_width, 4.5, 'AT', 1, 0, 'C', 1)
+            else:
+                pdf.set_fill_color(255, 255, 255)
+                pdf.cell(cell_width, 4.5, '-', 1, 0, 'C', 1)
+        pdf.ln(5)
 
     try:
         pdf_bytes = pdf.output(dest='S')
