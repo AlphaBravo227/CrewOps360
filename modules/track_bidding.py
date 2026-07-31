@@ -1835,7 +1835,8 @@ def _display_bidding_staff_interface(
         _display_bid_hypothetical(
             selected_staff, preferences_df, current_tracks_df, days,
             staff_col_prefs, staff_col_tracks, role_col, no_matrix_col,
-            reduced_rest_col, seniority_col, capacity, bid_track_name
+            reduced_rest_col, seniority_col, capacity, bid_track_name,
+            has_bid, bid_result, staff_preassignments
         )
 
     # Write back bidding-specific state
@@ -2238,13 +2239,29 @@ def _display_bid_submission(
 def _display_bid_hypothetical(
     selected_staff, preferences_df, current_tracks_df, days,
     staff_col_prefs, staff_col_tracks, role_col, no_matrix_col,
-    reduced_rest_col, seniority_col, capacity, bid_track_name
+    reduced_rest_col, seniority_col, capacity, bid_track_name,
+    has_bid, bid_result, staff_preassignments
 ):
-    """Hypothetical schedule for bidding — uses bid pool for counts."""
+    """Hypothetical schedule for bidding — shows expected assignments only for the
+    days/nights actually present (as D or N) in the staff member's submitted bid,
+    not every day the role has an opening."""
     from modules.track_modification_core import calculate_all_modification_options
     from modules.db_utils import get_location_preferences_from_db
 
     st.subheader(f"Hypothetical Schedule for {selected_staff}")
+
+    if not has_bid:
+        st.info(
+            f"You have not submitted a bid for **{bid_track_name}** yet. "
+            "Submit your bid from the **Submission** tab to see your expected "
+            "shift assignments here."
+        )
+        return
+
+    submitted_track = bid_result[1]['track_data']
+    # Only the days the staff actually bid a working shift on — excludes Off days
+    # and AT (preassigned days that aren't a D/N shift are covered on their own).
+    bid_work_days = {day: shift for day, shift in submitted_track.items() if shift in ("D", "N")}
 
     max_dn = capacity['max_day_nurses']
     max_dm = capacity['max_day_medics']
@@ -2276,8 +2293,14 @@ def _display_bid_hypothetical(
         st.warning("No base preferences found. Set them in Edit Preferences for better results.")
 
     st.markdown("### Hypothetical Schedule")
-    total_day = sum(1 for a in day_assignments.values() if a)
-    total_night = sum(1 for a in night_assignments.values() if a)
+    st.caption(
+        f"Expected assignments for the days you bid a shift on your submitted "
+        f"**{bid_track_name}** bid (version {bid_result[1]['version']}, "
+        f"submitted {bid_result[1]['submission_date']})."
+    )
+
+    total_day = sum(1 for day, shift in bid_work_days.items() if shift == "D" and day_assignments.get(day))
+    total_night = sum(1 for day, shift in bid_work_days.items() if shift == "N" and night_assignments.get(day))
     sc = st.columns(3)
     sc[0].metric("Total Shifts", total_day + total_night)
     sc[1].metric("Day Shifts", total_day)
@@ -2289,23 +2312,29 @@ def _display_bid_hypothetical(
         with bt:
             start = bi * 14
             end = start + 14
-            block_days = days[start:end]
+            block_days = [d for d in days[start:end] if d in bid_work_days]
+
+            if not block_days:
+                st.caption("No shifts bid in this block.")
+                continue
+
             table = []
             for day in block_days:
-                da = day_assignments.get(day)
-                na = night_assignments.get(day)
-                dd = assignment_details.get(day, {}).get('day', {})
-                nd = assignment_details.get(day, {}).get('night', {})
+                shift = bid_work_days[day]
+                if shift == "D":
+                    assignment = day_assignments.get(day)
+                    detail = assignment_details.get(day, {}).get('day', {})
+                else:
+                    assignment = night_assignments.get(day)
+                    detail = assignment_details.get(day, {}).get('night', {})
 
-                day_info = "No assignment"
-                if da:
-                    pref = dd.get('preference_score')
-                    day_info = f"{da} (Rank {pref})" if pref else f"{da}"
+                if assignment:
+                    pref = detail.get('preference_score')
+                    expected_base = f"{assignment} (Rank {pref})" if pref else f"{assignment}"
+                elif staff_preassignments and staff_preassignments.get(day) == shift:
+                    expected_base = "Preassigned"
+                else:
+                    expected_base = "No assignment"
 
-                night_info = "No assignment"
-                if na:
-                    pref = nd.get('preference_score')
-                    night_info = f"{na} (Rank {pref})" if pref else f"{na}"
-
-                table.append({"Day": day, "Day Shift": day_info, "Night Shift": night_info})
+                table.append({"Day": day, "Shift": shift, "Expected Base": expected_base})
             st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
