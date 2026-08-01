@@ -4,6 +4,7 @@ UPDATED: Track editor with enhanced hypothetical scheduler display and fixed wee
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 from modules.enhanced_track_validator import validate_track_comprehensive
 from modules.enhanced_validation_display import display_comprehensive_validation, create_validation_summary_card, get_weekend_group_highlighting_info
@@ -311,34 +312,52 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
     if weekend_group:
         st.info(f"🟡 **Weekend Group {weekend_group}:** Days highlighted in yellow are part of your weekend group requirements.")
     
-    # Create tabs for blocks — scoped CSS (via the container's key) makes just these
-    # tab buttons larger/bolder without affecting any other st.tabs on the page.
+    # Create tabs for blocks. Styled via a small injected script rather than CSS
+    # scoped to st.container(key=...)'s generated class name — that class name's
+    # exact format isn't guaranteed stable across Streamlit versions, and this app
+    # only pins a wide range (see requirements.txt), so a selector tied to it can
+    # silently stop matching on whatever version is actually deployed. Finding the
+    # tabs by their own visible text and the standard role="tab" attribute instead
+    # only depends on Streamlit continuing to render tabs accessibly, which is far
+    # more stable than any particular version's internal class naming.
     blocks = ["A", "B", "C"]  # Use simple letters
-    with st.container(key="block_tabs_container"):
-        st.markdown("""
-        <style>
-        div[class*="st-key-block_tabs_container"] div[role="tab"] {
-            font-size: 1.05rem !important;
-            font-weight: 700 !important;
-            padding: 10px 22px !important;
-            height: auto !important;
-            border: 1px solid rgba(49, 51, 63, 0.2) !important;
-            border-radius: 0.5rem !important;
-            margin: 0 6px 6px 0 !important;
+    block_tabs = st.tabs([f"Block {block}" for block in blocks])
+    components.html("""
+    <script>
+    (function() {
+        var labels = ["Block A", "Block B", "Block C"];
+        function styleBlockTabs() {
+            try {
+                var doc = window.parent.document;
+                var tabs = doc.querySelectorAll('[role="tab"]');
+                for (var i = 0; i < tabs.length; i++) {
+                    var tab = tabs[i];
+                    var text = (tab.textContent || "").trim();
+                    if (labels.indexOf(text) === -1) continue;
+                    tab.style.fontSize = "1.05rem";
+                    tab.style.fontWeight = "700";
+                    tab.style.padding = "10px 22px";
+                    tab.style.height = "auto";
+                    tab.style.borderRadius = "0.5rem";
+                    tab.style.margin = "0 6px 6px 0";
+                    if (tab.getAttribute("aria-selected") === "true") {
+                        tab.style.border = "1px solid #ff4b4b";
+                        tab.style.backgroundColor = "rgba(255, 75, 75, 0.06)";
+                    } else {
+                        tab.style.border = "1px solid rgba(49, 51, 63, 0.2)";
+                        tab.style.backgroundColor = "";
+                    }
+                }
+            } catch (e) {}
         }
-        div[class*="st-key-block_tabs_container"] div[role="tab"] p {
-            font-size: 1.05rem !important;
+        styleBlockTabs();
+        var target = window.parent.document.body;
+        if (target) {
+            new MutationObserver(styleBlockTabs).observe(target, {childList: true, subtree: true});
         }
-        div[class*="st-key-block_tabs_container"] div[role="tab"][aria-selected="true"] {
-            border-color: #ff4b4b !important;
-            background-color: rgba(255, 75, 75, 0.06) !important;
-        }
-        div[class*="st-key-block_tabs_container"] div[data-baseweb="tab-highlight"] {
-            display: none !important;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-        block_tabs = st.tabs([f"Block {block}" for block in blocks])
+    })();
+    </script>
+    """, height=0)
     
     # Process each block
     days_per_block = 14
