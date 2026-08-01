@@ -232,22 +232,15 @@ def modify_track_enhanced(
 
 def _need_indicator_style(rank, is_week_best=False):
     """
-    Green background for a Day/Night Need indicator card, shaded in three tiers:
-    - Rank 1 (first choice) always gets the darkest, reserved shade.
+    Green background for a Day/Night Need indicator card, shaded in two tiers:
     - is_week_best marks the best rank actually available that week for that
-      shift type (Day or Night) even when it isn't a 1 — e.g. if the best a
-      staff member can get some week is their 3rd choice, those rank-3 boxes
-      still get called out as the best option on screen, one shade lighter
-      than a true rank 1.
-    - Everything else (a worse rank, or no preference data at all) gets the
-      lightest tint.
+      shift type (Day or Night), whatever it happens to be — a true rank 1 if
+      one's available, otherwise whatever rank IS the best on offer (e.g. a
+      3rd choice some week with no better option). That gets the top shade.
+    - Everything else (a worse rank than the week's best, or no preference
+      data at all) gets the lighter tint.
     """
-    if rank == 1:
-        color = "#64c587"
-    elif is_week_best:
-        color = "#9de2ba"
-    else:
-        color = "#d1fae5"
+    color = "#9de2ba" if is_week_best else "#d1fae5"
     return f"background-color: {color}; color: #000000; padding: 5px; border-radius: 3px; text-align: center;"
 
 
@@ -265,7 +258,6 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
         ('<span class="legend-box" style="background-color: #d4edda;"></span>', 'Day Shift'),
         ('<span class="legend-box" style="background-color: #cce5ff;"></span>', 'Night Shift'),
         ('<span class="legend-box" style="background-color: #e2e3e5;"></span>', 'Preassignment (Locked)'),
-        ('<span class="legend-box" style="background-color: #64c587;"></span>', 'Rank 1 (top choice)'),
         ('<span class="legend-box" style="background-color: #9de2ba;"></span>', 'Best rank available this week'),
         ('<span class="legend-box" style="background-color: #d1fae5;"></span>', 'Lower rank / no preference data'),
         ('<span style="font-weight: bold">*</span>', 'No Preference Data')
@@ -697,7 +689,8 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                             day_shift_name = "* <span style='font-size:smaller;'>(Need exists but all named shifts are filled)</span>"
 
                         # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
-                        pref_display = f'<br>Rank: {day_pref}' if day_pref else ''
+                        day_star = ' ⭐' if day_pref == 1 else ''
+                        pref_display = f'<br>Rank: {day_pref}{day_star}' if day_pref else ''
                         shift_display = f'<br>Hypothetical: {day_shift_name}' if day_shift_name else ''
                         weekend_display = f'🟡 {weekend_indicator}' if weekend_indicator else ''
 
@@ -764,7 +757,8 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                 indicator_style += ' outline: 3px solid #000000; outline-offset: -1px;'
 
                             # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
-                            pref_display = f'<br>Rank: {night_pref}' if night_pref else ''
+                            night_star = ' ⭐' if night_pref == 1 else ''
+                            pref_display = f'<br>Rank: {night_pref}{night_star}' if night_pref else ''
                             shift_display = f'<br>Hypothetical: {night_shift_name}' if night_shift_name else ''
                             weekend_display = f'🟡 {weekend_indicator}' if weekend_indicator else ''
 
