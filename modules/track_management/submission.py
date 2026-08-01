@@ -831,9 +831,12 @@ def submit_track(selected_staff, staff_track, days, shifts_per_pay_period, night
                                 # Update has_db_track flag
                                 st.session_state['has_db_track'] = True
                                 
-                                # Show balloons effect
-                                st.balloons()
-                                
+                                # Balloons are fired on the next render (see the "Track has
+                                # been submitted" branch below) instead of here — calling
+                                # st.balloons() on the same run as the st.rerun() right below
+                                # cuts the animation off before the front end can play it.
+                                st.session_state['just_submitted_track'] = True
+
                                 # Force a rerun to show the results
                                 st.rerun()
                                 
@@ -850,7 +853,12 @@ def submit_track(selected_staff, staff_track, days, shifts_per_pay_period, night
         
         else:
             # Track has been submitted - show persistent notifications and PDF download button
-            
+
+            # Fire the balloons animation here, one render after the submit handler set
+            # this flag and reran — see the comment there for why.
+            if st.session_state.pop('just_submitted_track', False):
+                st.balloons()
+
             # Display persistent success messages
             if 'submission_success' in st.session_state:
                 st.success(st.session_state['submission_success'])
