@@ -2040,6 +2040,7 @@ def _display_bid_submission(
     progression_notice_key = f'bid_progression_notice_{bid_track_name}_{selected_staff}'
     email_result_key = f'bid_email_result_{bid_track_name}_{selected_staff}'
     staff_confirmation_key = f'bid_staff_confirmation_{bid_track_name}_{selected_staff}'
+    just_submitted_key = f'bid_just_submitted_{bid_track_name}_{selected_staff}'
 
     # Shown regardless of admin/staff path or lock state, so both a staff member
     # submitting their own bid and an admin submitting on their behalf see the
@@ -2055,6 +2056,14 @@ def _display_bid_submission(
     if has_existing_bid and not is_admin:
         # Locked: staff can't resubmit once a bid is on file for this cycle.
         saved_bid = existing[1]
+
+        # The balloons animation is fired by the front end on this render — calling
+        # st.balloons() on the same run as the st.rerun() that got us here doesn't
+        # give it time to actually play, so the submit handler below just sets this
+        # flag and reruns; we pop it and celebrate here on the render right after.
+        if st.session_state.pop(just_submitted_key, False):
+            st.balloons()
+
         st.success(
             f"Your bid for **{bid_track_name}** has been submitted "
             f"(version {saved_bid['version']}, submitted {saved_bid['submission_date']})."
@@ -2231,7 +2240,7 @@ def _display_bid_submission(
 
                 st.success(f"Bid saved successfully! {msg}")
                 if not is_admin:
-                    st.balloons()
+                    st.session_state[just_submitted_key] = True
                 st.rerun()
             else:
                 st.error(f"Error: {msg}")
