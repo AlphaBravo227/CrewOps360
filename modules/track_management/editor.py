@@ -285,7 +285,7 @@ def _render_six_week_overview(selected_staff, days, reference_track, preassignme
         elif value == "N":
             base += " background-color: #cce5ff;"
         elif value:
-            base += " background-color: #e2e3e5; font-weight: bold;"
+            base += " background-color: #e2e3e5;"
         return base + extra
 
     header_cell_base = (
