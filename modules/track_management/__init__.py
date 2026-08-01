@@ -756,9 +756,11 @@ def modify_track_enhanced_without_validation(
     1. Select days where you want to work by clicking on the radio buttons
     2. Use **"Validate Block"** buttons to check and lock in individual 2-week blocks before proceeding to next block
     3. Preassignments (if any) are shown as selected and locked radio buttons
-    4. Days where your role is needed are highlighted in green
+    4. Days where your role is needed are highlighted in green — dark green means it's the highest ranked hypothetical shift based on your preferences
     5. **Weekend group days are highlighted in yellow** (if assigned to a weekend group)
     6. Go to the **Validation tab** to check your complete track, then proceed to Submission when ready
+
+    **Note:** Hypothetical shifts are not guaranteed base assignments — your submitted track only designates a "D" or "N" for each day. The hypothetical base shown is a preview based on today's competition, not a lock-in.
     """)
     
     # Show preassignments if any

@@ -173,9 +173,11 @@ def modify_track_enhanced(
     1. Select days where you want to work by clicking on the radio buttons
     2. Use **"Validate Block"** buttons to check and lock in individual 2-week blocks before proceeding to next block
     3. Preassignments (if any) are shown as selected and locked radio buttons
-    4. Days where your role is needed are highlighted in green
+    4. Days where your role is needed are highlighted in green — dark green means it's the highest ranked hypothetical shift based on your preferences
     5. **Weekend group days are highlighted in yellow** (if assigned to a weekend group)
     6. Go to the Submission tab when you're satisfied with your track
+
+    **Note:** Hypothetical shifts are not guaranteed base assignments — your submitted track only designates a "D" or "N" for each day. The hypothetical base shown is a preview based on today's competition, not a lock-in.
     """)
     
     # Show preassignments if any
@@ -228,13 +230,24 @@ def modify_track_enhanced(
         else:
             st.error("Your track does not meet all requirements. Please review the issues above and make adjustments.")
 
-def _need_indicator_style(rank):
+def _need_indicator_style(rank, is_week_best=False):
     """
-    Green background for a Day/Night Need indicator card, shaded by preference rank:
-    full-strength green for rank 1 (first choice), a lighter tint for rank 2+ or when
-    there's no preference data at all (rank is None).
+    Green background for a Day/Night Need indicator card, shaded in three tiers:
+    - Rank 1 (first choice) always gets the darkest, reserved shade.
+    - is_week_best marks the best rank actually available that week for that
+      shift type (Day or Night) even when it isn't a 1 — e.g. if the best a
+      staff member can get some week is their 3rd choice, those rank-3 boxes
+      still get called out as the best option on screen, one shade lighter
+      than a true rank 1.
+    - Everything else (a worse rank, or no preference data at all) gets the
+      lightest tint.
     """
-    opacity = 0.3 if rank == 1 else 0.12
+    if rank == 1:
+        opacity = 0.45
+    elif is_week_best:
+        opacity = 0.25
+    else:
+        opacity = 0.12
     return f"background-color: rgba(40, 167, 69, {opacity}); padding: 5px; border-radius: 3px; text-align: center;"
 
 
@@ -297,9 +310,24 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
     if weekend_group:
         st.info(f"🟡 **Weekend Group {weekend_group}:** Days highlighted in yellow are part of your weekend group requirements.")
     
-    # Create tabs for blocks
+    # Create tabs for blocks — scoped CSS (via the container's key) makes just these
+    # tab buttons larger/bolder without affecting any other st.tabs on the page.
     blocks = ["A", "B", "C"]  # Use simple letters
-    block_tabs = st.tabs([f"Block {block}" for block in blocks])
+    with st.container(key="block_tabs_container"):
+        st.markdown("""
+        <style>
+        div[class*="st-key-block_tabs_container"] div[role="tab"] {
+            font-size: 1.3rem !important;
+            font-weight: 700 !important;
+            padding: 16px 36px !important;
+            height: auto !important;
+        }
+        div[class*="st-key-block_tabs_container"] div[role="tab"] p {
+            font-size: 1.3rem !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        block_tabs = st.tabs([f"Block {block}" for block in blocks])
     
     # Process each block
     days_per_block = 14
@@ -534,7 +562,27 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                 'day_available': day_available,
                                 'night_available': night_available,
                                 'day_info': day_info,
+                                'proposed_value': selection,
                             }
+
+                # Best (lowest-numbered) preference rank actually available this week, for
+                # Day and Night separately — so if no rank-1 shift is available at all, the
+                # best rank that IS available (e.g. rank 3) still gets called out as the
+                # standout option instead of every box looking equally unremarkable.
+                best_day_rank = None
+                best_night_rank = None
+                for state in day_states.values():
+                    if not state.get('has_options') or state.get('is_preassigned'):
+                        continue
+                    day_info = state['day_info']
+                    if state['day_available']:
+                        r = day_info["day_shift"].get("preference_score")
+                        if r is not None and (best_day_rank is None or r < best_day_rank):
+                            best_day_rank = r
+                    if state['night_available']:
+                        r = day_info["night_shift"].get("preference_score")
+                        if r is not None and (best_night_rank is None or r < best_night_rank):
+                            best_night_rank = r
 
                 # --- Row 2: Day Shifts boxes (or the preassignment lock box) ---
                 day_cols = st.columns([1.3] + [1] * len(week_days))
@@ -593,17 +641,24 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                             indicator_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center;"
                             weekend_indicator = f'Weekend Group {weekend_group}'
                         else:
-                            indicator_style = _need_indicator_style(day_pref)
+                            is_week_best_day = day_pref is not None and day_pref == best_day_rank
+                            indicator_style = _need_indicator_style(day_pref, is_week_best_day)
                             weekend_indicator = ''
+
+                        # Black outline when this is what they've actually picked for
+                        # their proposed track — a clear "this is your selection" marker
+                        # independent of the rank shading.
+                        if state.get('proposed_value') == 'D':
+                            indicator_style += ' outline: 3px solid #000000; outline-offset: -1px;'
+
+                        # If there is a need but no assignment, show asterisk and description
+                        if day_needs_count > 0 and not day_shift_name:
+                            day_shift_name = "* <span style='font-size:smaller;'>(Need exists but all named shifts are filled)</span>"
 
                         # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
                         pref_display = f'<br>Rank: {day_pref}' if day_pref else ''
                         shift_display = f'<br>Hypothetical: {day_shift_name}' if day_shift_name else ''
                         weekend_display = f'🟡 {weekend_indicator}' if weekend_indicator else ''
-
-                        # If there is a need but no assignment, show asterisk and description
-                        if day_needs_count > 0 and not day_shift_name:
-                            day_shift_name = "* <span style='font-size:smaller;'>(Need exists but all named shifts are filled)</span>"
 
                         st.markdown(f"""
                         <div style="{indicator_style}">
@@ -658,8 +713,14 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                 indicator_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center;"
                                 weekend_indicator = f'Weekend Group {weekend_group}'
                             else:
-                                indicator_style = _need_indicator_style(night_pref)
+                                is_week_best_night = night_pref is not None and night_pref == best_night_rank
+                                indicator_style = _need_indicator_style(night_pref, is_week_best_night)
                                 weekend_indicator = ''
+
+                            # Black outline when this is what they've actually picked for
+                            # their proposed track.
+                            if state.get('proposed_value') == 'N':
+                                indicator_style += ' outline: 3px solid #000000; outline-offset: -1px;'
 
                             # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
                             pref_display = f'<br>Rank: {night_pref}' if night_pref else ''
