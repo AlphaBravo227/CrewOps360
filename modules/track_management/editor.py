@@ -253,8 +253,14 @@ def _render_six_week_overview(selected_staff, days, reference_track, preassignme
     dragged around; every day column is pinned to the same width. A thick divider
     marks the block boundaries without splitting the table into separate pieces.
     """
-    col_w = 17
-    label_w = 44
+    # Percentage-based widths (not fixed px) so this table stretches to fill the
+    # container's full width, the same way the per-week table below it does,
+    # instead of sitting at a fixed size regardless of screen width.
+    label_ratio = 2.5
+    day_ratio = 1.0
+    total_ratio = label_ratio + day_ratio * len(days)
+    label_pct = 100 * label_ratio / total_ratio
+    day_pct = 100 * day_ratio / total_ratio
 
     def cell_value(day, is_reference):
         if is_reference:
@@ -270,10 +276,9 @@ def _render_six_week_overview(selected_staff, days, reference_track, preassignme
 
     def cell_style(value, extra=""):
         base = (
-            f"box-sizing: border-box; width: {col_w}px; min-width: {col_w}px; "
-            f"max-width: {col_w}px; overflow: hidden; border: 1px solid #ddd; "
-            "text-align: center; vertical-align: middle; font-size: 9px; "
-            "line-height: 1; padding: 1px 0; white-space: nowrap;"
+            f"box-sizing: border-box; width: {day_pct}%; overflow: hidden; "
+            "border: 1px solid #ddd; text-align: center; vertical-align: middle; "
+            "font-size: 9px; line-height: 1; padding: 1px 0; white-space: nowrap;"
         )
         if value == "D":
             base += " background-color: #d4edda;"
@@ -284,10 +289,10 @@ def _render_six_week_overview(selected_staff, days, reference_track, preassignme
         return base + extra
 
     header_cell_base = (
-        f"box-sizing: border-box; width: {col_w}px; min-width: {col_w}px; "
-        f"max-width: {col_w}px; overflow: hidden; border: 1px solid #ddd; "
-        "background-color: #f0f2f6; font-size: 7px; font-weight: 400; color: #666; "
-        "text-align: center; vertical-align: middle; line-height: 1;"
+        f"box-sizing: border-box; width: {day_pct}%; overflow: hidden; "
+        "border: 1px solid #ddd; background-color: #f0f2f6; font-size: 7px; "
+        "font-weight: 400; color: #666; text-align: center; vertical-align: middle; "
+        "line-height: 1;"
     )
     thick = " border-right: 1px solid #444;"
 
@@ -310,19 +315,17 @@ def _render_six_week_overview(selected_staff, days, reference_track, preassignme
         proposed_cells += f'<td style="{cell_style(prop_val, extra)}">{prop_val}</td>'
 
     label_style = (
-        f"box-sizing: border-box; width: {label_w}px; border: 1px solid #ddd; "
+        f"box-sizing: border-box; width: {label_pct}%; border: 1px solid #ddd; "
         "background-color: #f0f2f6; font-weight: 500; font-size: 10px; "
         "text-align: center; vertical-align: middle; line-height: 1; padding: 1px 2px; white-space: nowrap;"
     )
     label_header_style = label_style + " font-size: 7px; font-weight: 400;"
-    table_width = label_w + col_w * len(days)
 
     st.markdown(f"""
-    <div style="overflow-x: auto;">
-    <table style="border-collapse: collapse; table-layout: fixed; width: {table_width}px;">
+    <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
         <colgroup>
-            <col style="width: {label_w}px;">
-            {''.join(f'<col style="width: {col_w}px;">' for _ in days)}
+            <col style="width: {label_pct}%;">
+            {''.join(f'<col style="width: {day_pct}%;">' for _ in days)}
         </colgroup>
         <thead>
             <tr><th style="{label_style}"></th>{weekday_header}</tr>
@@ -333,7 +336,6 @@ def _render_six_week_overview(selected_staff, days, reference_track, preassignme
             <tr><td style="{label_style}">Proposed</td>{proposed_cells}</tr>
         </tbody>
     </table>
-    </div>
     """, unsafe_allow_html=True)
 
 
