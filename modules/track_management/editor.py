@@ -170,14 +170,13 @@ def modify_track_enhanced(
     st.markdown("""
     ### How to Modify Your Track
     
-    1. Select days where you want to work by clicking on the radio buttons
-    2. Use **"Validate Block"** buttons to check and lock in individual 2-week blocks before proceeding to next block
-    3. Preassignments (if any) are shown as selected and locked radio buttons
-    4. Days where your role is needed are highlighted in green — dark green means it's the highest ranked hypothetical shift based on your preferences
+    1. Select days/nights where you want to work by selecting D, N, or Off to remove the selection
+    2. Use **"Validate Block"** buttons to save individual 2-week blocks
+    3. Pre-assignments (AT, if any) are shown as selected and locked
+    4. Days where your role is needed are highlighted in green — darker green means it's the highest ranked hypothetical shift based on your preferences
     5. **Weekend group days are highlighted in yellow** (if assigned to a weekend group)
     6. Go to the Submission tab when you're satisfied with your track
-
-    **Note:** Hypothetical shifts are not guaranteed base assignments — your submitted track only designates a "D" or "N" for each day. The hypothetical base shown is a preview based on today's competition, not a lock-in.
+    7. **Note:** Hypothetical shifts are not guaranteed base assignments — your submitted track only designates a "D" or "N" for each day.
     """)
     
     # Show preassignments if any
@@ -265,7 +264,9 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
         ('<span class="legend-box" style="background-color: #d4edda;"></span>', 'Day Shift'),
         ('<span class="legend-box" style="background-color: #cce5ff;"></span>', 'Night Shift'),
         ('<span class="legend-box" style="background-color: #e2e3e5;"></span>', 'Preassignment (Locked)'),
-        ('<span class="legend-box" style="background-color: #28a745; opacity: 0.3;"></span>', 'Role Needed'),
+        ('<span class="legend-box" style="background-color: rgba(40, 167, 69, 0.45);"></span>', 'Rank 1 (top choice)'),
+        ('<span class="legend-box" style="background-color: rgba(40, 167, 69, 0.25);"></span>', 'Best rank available this week'),
+        ('<span class="legend-box" style="background-color: rgba(40, 167, 69, 0.12);"></span>', 'Lower rank / no preference data'),
         ('<span style="font-weight: bold">*</span>', 'No Preference Data')
     ]
     
@@ -317,13 +318,23 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
         st.markdown("""
         <style>
         div[class*="st-key-block_tabs_container"] div[role="tab"] {
-            font-size: 1.3rem !important;
+            font-size: 1.05rem !important;
             font-weight: 700 !important;
-            padding: 16px 36px !important;
+            padding: 10px 22px !important;
             height: auto !important;
+            border: 1px solid rgba(49, 51, 63, 0.2) !important;
+            border-radius: 0.5rem !important;
+            margin: 0 6px 6px 0 !important;
         }
         div[class*="st-key-block_tabs_container"] div[role="tab"] p {
-            font-size: 1.3rem !important;
+            font-size: 1.05rem !important;
+        }
+        div[class*="st-key-block_tabs_container"] div[role="tab"][aria-selected="true"] {
+            border-color: #ff4b4b !important;
+            background-color: rgba(255, 75, 75, 0.06) !important;
+        }
+        div[class*="st-key-block_tabs_container"] div[data-baseweb="tab-highlight"] {
+            display: none !important;
         }
         </style>
         """, unsafe_allow_html=True)

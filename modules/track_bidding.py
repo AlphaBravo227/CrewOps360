@@ -1942,14 +1942,13 @@ def _display_track_selection_tab(
     st.markdown("""
     ### How to Select Your Track
 
-    1. Select days where you want to work by clicking on the radio buttons
-    2. Use **"Validate Block"** buttons to check individual 2-week blocks
-    3. Preassignments (if any) are shown as selected and locked
-    4. Days where your role is needed are highlighted in green — dark green means it's the highest ranked hypothetical shift based on your preferences
+    1. Select days/nights where you want to work by selecting D, N, or Off to remove the selection
+    2. Use **"Validate Block"** buttons to save individual 2-week blocks
+    3. Pre-assignments (AT, if any) are shown as selected and locked
+    4. Days where your role is needed are highlighted in green — darker green means it's the highest ranked hypothetical shift based on your preferences
     5. Not ready to finish in one sitting? Click **Save Progress** below at any time — your selections are stored under your name and reappear automatically the next time you come back, no submission required
     6. Go to the **Validation tab** to check your complete bid, then proceed to Submission
-
-    **Note:** Hypothetical shifts are not guaranteed base assignments — your submitted track only designates a "D" or "N" for each day. The hypothetical base shown is a preview based on today's competition, not a lock-in.
+    7. **Note:** Hypothetical shifts are not guaranteed base assignments — your submitted track only designates a "D" or "N" for each day.
     """)
 
     if preassignments:
