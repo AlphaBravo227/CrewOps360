@@ -374,91 +374,13 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                 
                 st.markdown(f"#### Week {week_num}")
 
-                # Build the Current/Proposed Track comparison as a plain HTML table rather
-                # than st.dataframe: st.dataframe's grid lets a user drag-reorder columns
-                # and auto-sizes them per column's content, so the day order and widths
-                # could drift from one render to the next. A static table has neither
-                # problem — column order is fixed in the markup and widths are fixed by
-                # CSS (table-layout: fixed), the same on every tab, with long labels
-                # ellipsized rather than pushing a column wider.
-                label_ratio = 1.3
-                day_ratio = 1.0
-                total_ratio = label_ratio + day_ratio * len(week_days)
-                label_width_pct = 100 * label_ratio / total_ratio
-                day_width_pct = 100 * day_ratio / total_ratio
-
-                cell_base = (
-                    "border: 1px solid #ddd; padding: 4px 2px; text-align: center; "
-                    "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
-                )
-                header_style = cell_base + " background-color: #f0f2f6; font-weight: bold; font-size: 0.8em;"
-                label_cell_style = cell_base + " background-color: #f0f2f6; font-weight: bold; text-align: left; font-size: 0.85em;"
-
-                def _row_value(day, is_reference):
-                    if is_reference:
-                        v = reference_track.get(day, "")
-                        if pd.isna(v):
-                            v = ""
-                        return str(v) if v else "Off"
-                    is_preassigned = preassignments and day in preassignments
-                    if is_preassigned:
-                        return f"Pre: {preassignments[day]}"
-                    v = st.session_state.track_changes[selected_staff].get(day, "")
-                    if pd.isna(v):
-                        v = ""
-                    return str(v) if v else "Off"
-
-                def _cell_style(value):
-                    if value == "D":
-                        return "background-color: #d4edda;"
-                    if value == "N":
-                        return "background-color: #cce5ff;"
-                    if "Pre:" in value:
-                        return "background-color: #e2e3e5; font-weight: bold;"
-                    return ""
-
-                header_cells = "".join(
-                    f'<th style="{header_style} width: {day_width_pct}%;">{day}</th>'
-                    for day in week_days
-                )
-
-                reference_values = {day: _row_value(day, True) for day in week_days}
-                proposed_values = {day: _row_value(day, False) for day in week_days}
-
-                reference_cells = "".join(
-                    f'<td style="{cell_base} width: {day_width_pct}%; {_cell_style(reference_values[day])}">{reference_values[day]}</td>'
-                    for day in week_days
-                )
-
-                proposed_cells = ""
-                for day in week_days:
-                    ref_val = reference_values[day].replace("Off", "")
-                    mod_val = proposed_values[day].replace("Off", "")
-                    change_border = ""
-                    if (not use_database_logic
-                            and "Pre:" not in ref_val and "Pre:" not in mod_val
-                            and ref_val != mod_val):
-                        change_border = " border: 2px solid #ffc107;"
-                    proposed_cells += (
-                        f'<td style="{cell_base} width: {day_width_pct}%; '
-                        f'{_cell_style(proposed_values[day])}{change_border}">{proposed_values[day]}</td>'
-                    )
-
-                st.markdown(f"""
-                <table style="width: 100%; table-layout: fixed; border-collapse: collapse;">
-                    <colgroup>
-                        <col style="width: {label_width_pct}%;">
-                        {''.join(f'<col style="width: {day_width_pct}%;">' for _ in week_days)}
-                    </colgroup>
-                    <thead>
-                        <tr><th style="{header_style} width: {label_width_pct}%;"></th>{header_cells}</tr>
-                    </thead>
-                    <tbody>
-                        <tr><td style="{label_cell_style}">Current Track</td>{reference_cells}</tr>
-                        <tr><td style="{label_cell_style}">Proposed Track</td>{proposed_cells}</tr>
-                    </tbody>
-                </table>
-                """, unsafe_allow_html=True)
+                # Reserve the table's position here, above the radios, but don't render its
+                # content until after the radio row below has run. Streamlit reruns the whole
+                # script on every widget interaction; if the table read session_state before
+                # the radios' on-change updates were applied (later in this same script run),
+                # it would always show last run's values — a one-click-behind lag where the
+                # Proposed Track row only catches up once you interact with something else.
+                table_placeholder = st.empty()
 
                 # Render the radios, Day Shifts boxes, and Night Shifts boxes as three
                 # SEPARATE st.columns() rows rather than stacking all of it inside one
@@ -575,6 +497,95 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                 'day_info': day_info,
                                 'proposed_value': selection,
                             }
+
+                # Build the Current/Proposed Track comparison as a plain HTML table rather
+                # than st.dataframe: st.dataframe's grid lets a user drag-reorder columns
+                # and auto-sizes them per column's content, so the day order and widths
+                # could drift from one render to the next. A static table has neither
+                # problem — column order is fixed in the markup and widths are fixed by
+                # CSS (table-layout: fixed), the same on every tab, with long labels
+                # ellipsized rather than pushing a column wider. Rendered now (after the
+                # radios above have already updated session_state this run) into the
+                # placeholder reserved earlier, so it reflects the latest selection
+                # immediately instead of lagging a run behind.
+                label_ratio = 1.3
+                day_ratio = 1.0
+                total_ratio = label_ratio + day_ratio * len(week_days)
+                label_width_pct = 100 * label_ratio / total_ratio
+                day_width_pct = 100 * day_ratio / total_ratio
+
+                cell_base = (
+                    "border: 1px solid #ddd; padding: 4px 2px; text-align: center; "
+                    "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+                )
+                header_style = cell_base + " background-color: #f0f2f6; font-weight: bold; font-size: 0.8em;"
+                label_cell_style = cell_base + " background-color: #f0f2f6; font-weight: bold; text-align: left; font-size: 0.85em;"
+
+                def _row_value(day, is_reference):
+                    if is_reference:
+                        v = reference_track.get(day, "")
+                        if pd.isna(v):
+                            v = ""
+                        return str(v) if v else "Off"
+                    is_preassigned = preassignments and day in preassignments
+                    if is_preassigned:
+                        return f"Pre: {preassignments[day]}"
+                    v = st.session_state.track_changes[selected_staff].get(day, "")
+                    if pd.isna(v):
+                        v = ""
+                    return str(v) if v else "Off"
+
+                def _cell_style(value):
+                    if value == "D":
+                        return "background-color: #d4edda;"
+                    if value == "N":
+                        return "background-color: #cce5ff;"
+                    if "Pre:" in value:
+                        return "background-color: #e2e3e5; font-weight: bold;"
+                    return ""
+
+                header_cells = "".join(
+                    f'<th style="{header_style} width: {day_width_pct}%;">{day}</th>'
+                    for day in week_days
+                )
+
+                reference_values = {day: _row_value(day, True) for day in week_days}
+                proposed_values = {day: _row_value(day, False) for day in week_days}
+
+                reference_cells = "".join(
+                    f'<td style="{cell_base} width: {day_width_pct}%; {_cell_style(reference_values[day])}">{reference_values[day]}</td>'
+                    for day in week_days
+                )
+
+                proposed_cells = ""
+                for day in week_days:
+                    ref_val = reference_values[day].replace("Off", "")
+                    mod_val = proposed_values[day].replace("Off", "")
+                    change_border = ""
+                    if (not use_database_logic
+                            and "Pre:" not in ref_val and "Pre:" not in mod_val
+                            and ref_val != mod_val):
+                        change_border = " border: 2px solid #ffc107;"
+                    proposed_cells += (
+                        f'<td style="{cell_base} width: {day_width_pct}%; '
+                        f'{_cell_style(proposed_values[day])}{change_border}">{proposed_values[day]}</td>'
+                    )
+
+                table_placeholder.markdown(f"""
+                <table style="width: 100%; table-layout: fixed; border-collapse: collapse;">
+                    <colgroup>
+                        <col style="width: {label_width_pct}%;">
+                        {''.join(f'<col style="width: {day_width_pct}%;">' for _ in week_days)}
+                    </colgroup>
+                    <thead>
+                        <tr><th style="{header_style} width: {label_width_pct}%;"></th>{header_cells}</tr>
+                    </thead>
+                    <tbody>
+                        <tr><td style="{label_cell_style}">Current Track</td>{reference_cells}</tr>
+                        <tr><td style="{label_cell_style}">Proposed Track</td>{proposed_cells}</tr>
+                    </tbody>
+                </table>
+                """, unsafe_allow_html=True)
 
                 # Best (lowest-numbered) preference rank actually available this week, for
                 # Day and Night separately — so if no rank-1 shift is available at all, the
