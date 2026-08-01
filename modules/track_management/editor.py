@@ -244,6 +244,97 @@ def _need_indicator_style(rank, is_week_best=False):
     return f"background-color: {color}; color: #000000; padding: 5px; border-radius: 3px; text-align: center;"
 
 
+def _render_six_week_overview(selected_staff, days, reference_track, preassignments):
+    """
+    Compact 42-day overview spanning all three blocks in one table, shown below the
+    Validate button on every block tab so the full track stays visible no matter
+    which block is currently being edited, and updates live as selections change.
+    A plain HTML table (not st.dataframe) so the column order is fixed and can't be
+    dragged around; every day column is pinned to the same width. A thick divider
+    marks the block boundaries without splitting the table into separate pieces.
+    """
+    col_w = 24
+    label_w = 52
+
+    def cell_value(day, is_reference):
+        if is_reference:
+            v = reference_track.get(day, "")
+        else:
+            is_preassigned = preassignments and day in preassignments
+            if is_preassigned:
+                return str(preassignments[day])
+            v = st.session_state.track_changes[selected_staff].get(day, "")
+        if pd.isna(v):
+            v = ""
+        return str(v)
+
+    def cell_style(value, extra=""):
+        base = (
+            f"box-sizing: border-box; width: {col_w}px; min-width: {col_w}px; "
+            f"max-width: {col_w}px; overflow: hidden; border: 1px solid #ddd; "
+            "text-align: center; font-size: 10px; padding: 3px 0; white-space: nowrap;"
+        )
+        if value == "D":
+            base += " background-color: #d4edda;"
+        elif value == "N":
+            base += " background-color: #cce5ff;"
+        elif value:
+            base += " background-color: #e2e3e5; font-weight: bold;"
+        return base + extra
+
+    header_cell_base = (
+        f"box-sizing: border-box; width: {col_w}px; min-width: {col_w}px; "
+        f"max-width: {col_w}px; overflow: hidden; border: 1px solid #ddd; "
+        "background-color: #f0f2f6; font-size: 8px; font-weight: 400; color: #666;"
+    )
+    thick = " border-right: 3px solid #444;"
+
+    weekday_header = ""
+    tag_header = ""
+    current_cells = ""
+    proposed_cells = ""
+    for i, day in enumerate(days):
+        parts = day.split()
+        weekday = parts[0] if parts else day
+        tag = f"{parts[1]}{parts[2]}" if len(parts) == 3 else ""
+        extra = thick if i in (13, 27) else ""
+
+        weekday_header += f'<th style="{header_cell_base} padding: 3px 0;{extra}">{weekday}</th>'
+        tag_header += f'<th style="{header_cell_base} padding: 2px 0;{extra}">{tag}</th>'
+
+        ref_val = cell_value(day, True)
+        prop_val = cell_value(day, False)
+        current_cells += f'<td style="{cell_style(ref_val, extra)}">{ref_val}</td>'
+        proposed_cells += f'<td style="{cell_style(prop_val, extra)}">{prop_val}</td>'
+
+    label_style = (
+        f"box-sizing: border-box; width: {label_w}px; border: 1px solid #ddd; "
+        "background-color: #f0f2f6; font-weight: 500; font-size: 10px; "
+        "padding: 3px 2px; white-space: nowrap;"
+    )
+    label_header_style = label_style + " font-size: 8px; font-weight: 400;"
+    table_width = label_w + col_w * len(days)
+
+    st.markdown(f"""
+    <div style="overflow-x: auto;">
+    <table style="border-collapse: collapse; table-layout: fixed; width: {table_width}px;">
+        <colgroup>
+            <col style="width: {label_w}px;">
+            {''.join(f'<col style="width: {col_w}px;">' for _ in days)}
+        </colgroup>
+        <thead>
+            <tr><th style="{label_style}"></th>{weekday_header}</tr>
+            <tr><th style="{label_header_style}"></th>{tag_header}</tr>
+        </thead>
+        <tbody>
+            <tr><td style="{label_style}">Current</td>{current_cells}</tr>
+            <tr><td style="{label_style}">Proposed</td>{proposed_cells}</tr>
+        </tbody>
+    </table>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 def display_track_modification_interface_enhanced(selected_staff, options_by_day, reference_track, days, preassignments, use_database_logic, has_db_track, staff_role, weekend_group=None, day_assignments=None, night_assignments=None, assignment_details=None):
     """
     UPDATED: Display the track modification interface with enhanced hypothetical scheduler display and fixed weekend group highlighting
@@ -370,6 +461,14 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                     st.success(f"Block {blocks[block_idx]} validation complete! Check the dashboard above for results.")
                     if st.session_state.get('track_valid', False):
                         st.balloons()
+            st.markdown("---")
+
+            st.markdown("#### 6-Week Overview")
+            # Reserve the spot here (right after the button) but fill it in after this
+            # block's own week loop below has run — same reason as the per-week table's
+            # placeholder: rendering before this block's radios are processed would read
+            # session_state before their on-change updates were applied this run.
+            overview_placeholder = st.empty()
             st.markdown("---")
 
             # Split into weeks
@@ -793,6 +892,11 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                 """, unsafe_allow_html=True)
 
                 st.markdown("---")  # Separator between weeks
+
+            # Now that this block's own radios above have updated session_state this
+            # run, fill in the overview placeholder reserved earlier with fresh data.
+            with overview_placeholder.container():
+                _render_six_week_overview(selected_staff, days, reference_track, preassignments)
 
 def get_weekend_group_highlighting_info_fixed(weekend_group, days):
     """
