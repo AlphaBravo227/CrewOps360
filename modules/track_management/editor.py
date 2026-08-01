@@ -289,7 +289,7 @@ def _render_six_week_overview(selected_staff, days, reference_track, preassignme
         "background-color: #f0f2f6; font-size: 7px; font-weight: 400; color: #666; "
         "text-align: center; vertical-align: middle; line-height: 1;"
     )
-    thick = " border-right: 2px solid #444;"
+    thick = " border-right: 1px solid #444;"
 
     weekday_header = ""
     tag_header = ""
