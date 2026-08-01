@@ -242,7 +242,7 @@ def _need_indicator_style(rank, is_week_best=False):
       lightest tint.
     """
     if rank == 1:
-        opacity = 0.45
+        opacity = 0.65
     elif is_week_best:
         opacity = 0.25
     else:
@@ -264,7 +264,7 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
         ('<span class="legend-box" style="background-color: #d4edda;"></span>', 'Day Shift'),
         ('<span class="legend-box" style="background-color: #cce5ff;"></span>', 'Night Shift'),
         ('<span class="legend-box" style="background-color: #e2e3e5;"></span>', 'Preassignment (Locked)'),
-        ('<span class="legend-box" style="background-color: rgba(40, 167, 69, 0.45);"></span>', 'Rank 1 (top choice)'),
+        ('<span class="legend-box" style="background-color: rgba(40, 167, 69, 0.65);"></span>', 'Rank 1 (top choice)'),
         ('<span class="legend-box" style="background-color: rgba(40, 167, 69, 0.25);"></span>', 'Best rank available this week'),
         ('<span class="legend-box" style="background-color: rgba(40, 167, 69, 0.12);"></span>', 'Lower rank / no preference data'),
         ('<span style="font-weight: bold">*</span>', 'No Preference Data')
