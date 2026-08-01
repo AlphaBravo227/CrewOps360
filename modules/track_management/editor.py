@@ -242,12 +242,12 @@ def _need_indicator_style(rank, is_week_best=False):
       lightest tint.
     """
     if rank == 1:
-        opacity = 0.65
+        color = "#3db669"
     elif is_week_best:
-        opacity = 0.25
+        color = "#9de2ba"
     else:
-        opacity = 0.12
-    return f"background-color: rgba(40, 167, 69, {opacity}); padding: 5px; border-radius: 3px; text-align: center;"
+        color = "#d1fae5"
+    return f"background-color: {color}; color: #000000; padding: 5px; border-radius: 3px; text-align: center;"
 
 
 def display_track_modification_interface_enhanced(selected_staff, options_by_day, reference_track, days, preassignments, use_database_logic, has_db_track, staff_role, weekend_group=None, day_assignments=None, night_assignments=None, assignment_details=None):
@@ -264,9 +264,9 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
         ('<span class="legend-box" style="background-color: #d4edda;"></span>', 'Day Shift'),
         ('<span class="legend-box" style="background-color: #cce5ff;"></span>', 'Night Shift'),
         ('<span class="legend-box" style="background-color: #e2e3e5;"></span>', 'Preassignment (Locked)'),
-        ('<span class="legend-box" style="background-color: rgba(40, 167, 69, 0.65);"></span>', 'Rank 1 (top choice)'),
-        ('<span class="legend-box" style="background-color: rgba(40, 167, 69, 0.25);"></span>', 'Best rank available this week'),
-        ('<span class="legend-box" style="background-color: rgba(40, 167, 69, 0.12);"></span>', 'Lower rank / no preference data'),
+        ('<span class="legend-box" style="background-color: #3db669;"></span>', 'Rank 1 (top choice)'),
+        ('<span class="legend-box" style="background-color: #9de2ba;"></span>', 'Best rank available this week'),
+        ('<span class="legend-box" style="background-color: #d1fae5;"></span>', 'Lower rank / no preference data'),
         ('<span style="font-weight: bold">*</span>', 'No Preference Data')
     ]
     
