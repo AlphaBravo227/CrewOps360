@@ -273,7 +273,7 @@ def _render_six_week_overview(selected_staff, days, reference_track, preassignme
             f"box-sizing: border-box; width: {col_w}px; min-width: {col_w}px; "
             f"max-width: {col_w}px; overflow: hidden; border: 1px solid #ddd; "
             "text-align: center; vertical-align: middle; font-size: 9px; "
-            "padding: 3px 0; white-space: nowrap;"
+            "line-height: 1; padding: 1px 0; white-space: nowrap;"
         )
         if value == "D":
             base += " background-color: #d4edda;"
@@ -287,7 +287,7 @@ def _render_six_week_overview(selected_staff, days, reference_track, preassignme
         f"box-sizing: border-box; width: {col_w}px; min-width: {col_w}px; "
         f"max-width: {col_w}px; overflow: hidden; border: 1px solid #ddd; "
         "background-color: #f0f2f6; font-size: 7px; font-weight: 400; color: #666; "
-        "text-align: center; vertical-align: middle;"
+        "text-align: center; vertical-align: middle; line-height: 1;"
     )
     thick = " border-right: 2px solid #444;"
 
@@ -301,8 +301,8 @@ def _render_six_week_overview(selected_staff, days, reference_track, preassignme
         tag = f"{parts[1]}{parts[2]}" if len(parts) == 3 else ""
         extra = thick if i in (13, 27) else ""
 
-        weekday_header += f'<th style="{header_cell_base} padding: 3px 0;{extra}">{weekday}</th>'
-        tag_header += f'<th style="{header_cell_base} padding: 2px 0;{extra}">{tag}</th>'
+        weekday_header += f'<th style="{header_cell_base} padding: 1px 0;{extra}">{weekday}</th>'
+        tag_header += f'<th style="{header_cell_base} padding: 1px 0;{extra}">{tag}</th>'
 
         ref_val = cell_value(day, True)
         prop_val = cell_value(day, False)
@@ -312,7 +312,7 @@ def _render_six_week_overview(selected_staff, days, reference_track, preassignme
     label_style = (
         f"box-sizing: border-box; width: {label_w}px; border: 1px solid #ddd; "
         "background-color: #f0f2f6; font-weight: 500; font-size: 10px; "
-        "text-align: center; vertical-align: middle; padding: 3px 2px; white-space: nowrap;"
+        "text-align: center; vertical-align: middle; line-height: 1; padding: 1px 2px; white-space: nowrap;"
     )
     label_header_style = label_style + " font-size: 7px; font-weight: 400;"
     table_width = label_w + col_w * len(days)
