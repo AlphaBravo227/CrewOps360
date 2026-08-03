@@ -408,11 +408,12 @@ def _send_manual_bid_notification(staff_name, manual_email, bid_track_name):
 # mirroring the FY26 Track Analysis workbook's manual roll-up.
 # ──────────────────────────────────────────────
 
-# Categorical hues validated with the dataviz skill's palette checker
-# (node scripts/validate_palette.js) — keep any new series color in that set.
-_ROLE_COLORS = {'Nurse': '#2a78d6', 'Medic': '#1baf7a', 'Dual': '#eda100'}
-_PERIOD_COLORS = {'Day': '#2a78d6', 'Night': '#4a3aa7'}
-_SHIFT_COLORS = {'D': '#2a78d6', 'N': '#4a3aa7', 'AT': '#898781', 'Off': '#f0efec'}
+# Day/Night colors (#d4edda / #cce5ff) match the D/N key on the staff Track
+# Selection page; light-red/blue role colors reuse the app's established
+# light-red (#f8d7da) and the blue nurse used to be shown in.
+_ROLE_COLORS = {'Nurse': '#f8d7da', 'Medic': '#2a78d6', 'Dual': '#eda100'}
+_PERIOD_COLORS = {'Day': '#d4edda', 'Night': '#cce5ff'}
+_SHIFT_COLORS = {'D': '#d4edda', 'N': '#cce5ff', 'AT': '#898781', 'Off': '#f0efec'}
 
 
 def _bid_role_and_senior(bid, role_mapping, no_matrix_mapping):
