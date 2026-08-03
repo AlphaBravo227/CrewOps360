@@ -408,11 +408,12 @@ def _send_manual_bid_notification(staff_name, manual_email, bid_track_name):
 # mirroring the FY26 Track Analysis workbook's manual roll-up.
 # ──────────────────────────────────────────────
 
-# Day/Night colors (#d4edda / #cce5ff) match the D/N key on the staff Track
-# Selection page; Medic reuses the blue nurse used to be shown in.
+# Medic reuses the blue nurse used to be shown in. Day/Night and D/N use a
+# darker green/blue than the pastel Track Selection key for better contrast
+# on the Where Staff Are Bidding and Maximum Achievable Crews charts.
 _ROLE_COLORS = {'Nurse': '#f28b82', 'Medic': '#2a78d6', 'Dual': '#eda100'}
-_PERIOD_COLORS = {'Day': '#d4edda', 'Night': '#cce5ff'}
-_SHIFT_COLORS = {'D': '#d4edda', 'N': '#cce5ff', 'AT': '#898781', 'Off': '#f0efec'}
+_PERIOD_COLORS = {'Day': '#66bb6a', 'Night': '#1976d2'}
+_SHIFT_COLORS = {'D': '#66bb6a', 'N': '#1976d2', 'AT': '#898781', 'Off': '#f0efec'}
 
 
 def _bid_role_and_senior(bid, role_mapping, no_matrix_mapping):
