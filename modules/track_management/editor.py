@@ -797,20 +797,24 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
 
                         # If there is a need but no assignment, show asterisk and description
                         if day_needs_count > 0 and not day_shift_name:
-                            day_shift_name = "* <span style='font-size:smaller;'>(Need exists but all named shifts are filled)</span>"
+                            day_shift_name = "* <span style='font-size: 12px;'>(Need exists but all named shifts are filled)</span>"
+                            day_shift_value_style = ""
+                        else:
+                            day_shift_value_style = "font-size: 18px; font-weight: 500;"
 
                         # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
                         day_star = ' ⭐' if day_pref == 1 else ''
-                        pref_display = f'<br>Rank: {day_pref}{day_star}' if day_pref else ''
+                        pref_display = f'<br><span style="font-size: 15px;">Rank: {day_pref}{day_star}</span>' if day_pref else ''
                         shift_display = (
-                            f'<br><span style="font-size: clamp(8px, 7cqw, 12px);">Hypothetical: {day_shift_name}</span>'
+                            f'<br><span style="font-size: 15px;">Hypothetical:</span>'
+                            f'<br><span style="{day_shift_value_style}">{day_shift_name}</span>'
                             if day_shift_name else ''
                         )
                         weekend_display = f'🟡 {weekend_indicator}' if weekend_indicator else ''
 
                         st.markdown(f"""
                         <div style="{indicator_style}">
-                            <strong>Day Need ({day_needs_count})</strong>
+                            <strong style="font-size: 16px;">Day Need ({day_needs_count})</strong>
                             {shift_display}
                             {pref_display}
                             {weekend_display}
@@ -854,7 +858,10 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
 
                             # If there is a need but no assignment, show asterisk and description
                             if night_needs_count > 0 and not night_shift_name:
-                                night_shift_name = "* <span style='font-size:smaller;'>(Need exists but all named shifts are filled)</span>"
+                                night_shift_name = "* <span style='font-size: 12px;'>(Need exists but all named shifts are filled)</span>"
+                                night_shift_value_style = ""
+                            else:
+                                night_shift_value_style = "font-size: 18px; font-weight: 500;"
 
                             # Night shifts always count as weekend (including Friday nights)
                             if is_weekend_group_day:
@@ -872,16 +879,17 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
 
                             # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
                             night_star = ' ⭐' if night_pref == 1 else ''
-                            pref_display = f'<br>Rank: {night_pref}{night_star}' if night_pref else ''
+                            pref_display = f'<br><span style="font-size: 15px;">Rank: {night_pref}{night_star}</span>' if night_pref else ''
                             shift_display = (
-                                f'<br><span style="font-size: clamp(8px, 7cqw, 12px);">Hypothetical: {night_shift_name}</span>'
+                                f'<br><span style="font-size: 15px;">Hypothetical:</span>'
+                                f'<br><span style="{night_shift_value_style}">{night_shift_name}</span>'
                                 if night_shift_name else ''
                             )
                             weekend_display = f'🟡 {weekend_indicator}' if weekend_indicator else ''
 
                             st.markdown(f"""
                             <div style="{indicator_style}">
-                                <strong>Night Need ({night_needs_count})</strong>
+                                <strong style="font-size: 16px;">Night Need ({night_needs_count})</strong>
                                 {shift_display}
                                 {pref_display}
                                 {weekend_display}
