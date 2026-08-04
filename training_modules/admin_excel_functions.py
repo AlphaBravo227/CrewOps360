@@ -2011,7 +2011,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
 
         role_scope = st.radio(
             "Include",
-            options=["All Staff / All Roles", "Nurse/Medic Only"],
+            options=["Nurse/Medic Only", "All Staff / All Roles"],
             horizontal=True,
             key="schedule_report_role_scope"
         )
