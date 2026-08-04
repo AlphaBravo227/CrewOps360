@@ -241,7 +241,10 @@ def _need_indicator_style(rank, is_week_best=False):
       data at all) gets the lighter tint.
     """
     color = "#9de2ba" if is_week_best else "#d1fae5"
-    return f"background-color: {color}; color: #000000; padding: 5px; border-radius: 3px; text-align: center;"
+    return (
+        f"background-color: {color}; color: #000000; padding: 5px; border-radius: 3px; "
+        "text-align: center; container-type: inline-size; overflow-wrap: break-word;"
+    )
 
 
 def _render_six_week_overview(selected_staff, days, reference_track, preassignments):
@@ -755,6 +758,11 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                             continue
 
                         if not state['day_available']:
+                            st.markdown("""
+                            <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 5px; border-radius: 3px; text-align: center;">
+                                <strong>(FULL)</strong>
+                            </div>
+                            """, unsafe_allow_html=True)
                             continue
 
                         day_info = state['day_info']
@@ -774,7 +782,7 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
 
                         # Don't highlight Friday day shifts yellow (only Friday nights count as weekend)
                         if is_weekend_group_day and not is_friday:
-                            indicator_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center;"
+                            indicator_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center; container-type: inline-size; overflow-wrap: break-word;"
                             weekend_indicator = f'Weekend Group {weekend_group}'
                         else:
                             is_week_best_day = day_pref is not None and day_pref == best_day_rank
@@ -794,7 +802,10 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                         # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
                         day_star = ' ⭐' if day_pref == 1 else ''
                         pref_display = f'<br>Rank: {day_pref}{day_star}' if day_pref else ''
-                        shift_display = f'<br>Hypothetical: {day_shift_name}' if day_shift_name else ''
+                        shift_display = (
+                            f'<br><span style="font-size: clamp(8px, 7cqw, 12px);">Hypothetical: {day_shift_name}</span>'
+                            if day_shift_name else ''
+                        )
                         weekend_display = f'🟡 {weekend_indicator}' if weekend_indicator else ''
 
                         st.markdown(f"""
@@ -847,7 +858,7 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
 
                             # Night shifts always count as weekend (including Friday nights)
                             if is_weekend_group_day:
-                                indicator_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center;"
+                                indicator_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center; container-type: inline-size; overflow-wrap: break-word;"
                                 weekend_indicator = f'Weekend Group {weekend_group}'
                             else:
                                 is_week_best_night = night_pref is not None and night_pref == best_night_rank
@@ -862,7 +873,10 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                             # UPDATED: Enhanced display with remaining needs and hypothetical scheduler results
                             night_star = ' ⭐' if night_pref == 1 else ''
                             pref_display = f'<br>Rank: {night_pref}{night_star}' if night_pref else ''
-                            shift_display = f'<br>Hypothetical: {night_shift_name}' if night_shift_name else ''
+                            shift_display = (
+                                f'<br><span style="font-size: clamp(8px, 7cqw, 12px);">Hypothetical: {night_shift_name}</span>'
+                                if night_shift_name else ''
+                            )
                             weekend_display = f'🟡 {weekend_indicator}' if weekend_indicator else ''
 
                             st.markdown(f"""
@@ -894,6 +908,13 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                     <br><small>Only Friday <em>night</em> shifts count as weekend</small>
                                 </div>
                                 """, unsafe_allow_html=True)
+
+                        else:
+                            st.markdown("""
+                            <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 5px; border-radius: 3px; text-align: center;">
+                                <strong>(FULL)</strong>
+                            </div>
+                            """, unsafe_allow_html=True)
 
                 st.markdown("---")  # Separator between weeks
 
