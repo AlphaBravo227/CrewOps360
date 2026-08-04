@@ -770,3 +770,142 @@ def generate_bid_summary_pdf(staff_name, track_data, days, track_name, version, 
     filename = f"{safe_name}_bid_summary_v{version}_{datetime.now(_eastern_tz).strftime('%Y%m%d%H%M%S')}.pdf"
 
     return pdf_bytes, filename
+
+
+def generate_hypothetical_schedule_pdf(staff_name, shift_track, base_track, days,
+                                        track_name, version, submission_date):
+    """
+    Generate a compact PDF of the Hypothetical Schedule tab: the same disclaimer shown
+    on-screen, then all 3 blocks (14 days each) with an Assignment row (D/N/AT) and an
+    Expected Base row underneath it.
+
+    Args:
+        staff_name (str): Name of the staff member
+        shift_track (dict): day -> "D"/"N"/"AT" (only entries for working/preassigned days)
+        base_track (dict): day -> expected base code (only entries for D/N days with a
+            resolved hypothetical assignment)
+        days (list): Ordered list of the 42 schedule days
+        track_name (str): Bid track/cycle name (e.g. "FY27")
+        version (int): Bid version number
+        submission_date (str): Timestamp string as stored in the database
+
+    Returns:
+        tuple: (pdf_bytes, filename)
+    """
+    pdf = BidSummaryPDF()
+    pdf.alias_nb_pages()
+    pdf.set_auto_page_break(False)
+    pdf.add_page()
+
+    if isinstance(days, pd.Index):
+        days_list = days.tolist()
+    else:
+        days_list = list(days)
+
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(45, 6.5, 'Staff Member:', 0, 0)
+    pdf.set_font('Arial', '', 10)
+    pdf.cell(75, 6.5, fit_text_to_width(pdf, staff_name, 71), 0, 0)
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(30, 6.5, 'Bid Version:', 0, 0)
+    pdf.set_font('Arial', '', 10)
+    pdf.cell(0, 6.5, f'v{version}', 0, 1)
+
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(45, 6.5, 'Bid Track:', 0, 0)
+    pdf.set_font('Arial', '', 10)
+    pdf.cell(75, 6.5, fit_text_to_width(pdf, track_name, 71), 0, 0)
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(30, 6.5, 'Submitted:', 0, 0)
+    pdf.set_font('Arial', '', 10)
+    pdf.cell(0, 6.5, sanitize_text_for_pdf(submission_date), 0, 1)
+    pdf.ln(1.5)
+
+    # Disclaimer — matches the note shown at the top of the Hypothetical Schedule tab
+    pdf.set_fill_color(255, 243, 205)
+    pdf.set_font('Arial', 'B', 8)
+    pdf.multi_cell(
+        0, 4,
+        sanitize_text_for_pdf(
+            "Note: The 'Hypothetical Schedule' are not guaranteed base assignments -- your "
+            'proposed track only designates a "D" or "N" for each day. The expected base '
+            'assignments shown here do not account for 10-hour rest or "clock moving '
+            'forward" rules, and are for demonstration purposes only.'
+        ),
+        1, 'L', 1
+    )
+    pdf.ln(2)
+
+    pdf.section_title('Hypothetical Schedule')
+    blocks = ["A", "B", "C"]
+    for block_idx, block in enumerate(blocks):
+        start_idx = block_idx * 14
+        end_idx = start_idx + 14
+        block_days = days_list[start_idx:end_idx]
+        if not block_days:
+            continue
+
+        pdf.set_font('Arial', 'B', 8)
+        pdf.cell(0, 5, f'Block {block}', 0, 1)
+
+        label_width = 24
+        cell_width = (190 - label_width) / len(block_days)
+        pdf.set_font('Arial', '', 6.5)
+        pdf.set_fill_color(220, 220, 220)
+        pdf.cell(label_width, 4.5, 'Date', 1, 0, 'C', 1)
+        for wd in block_days:
+            pdf.cell(cell_width, 4.5, wd.split()[0], 1, 0, 'C', 1)
+        pdf.ln()
+
+        # Fill color per day is shared between the Assignment and Expected Base rows,
+        # so the base row is shaded to match its day's shift type.
+        day_fills = {}
+        for day in block_days:
+            shift = shift_track.get(day, '')
+            if shift == "D":
+                day_fills[day] = (212, 237, 218)
+            elif shift == "N":
+                day_fills[day] = (204, 229, 255)
+            elif shift == "AT":
+                day_fills[day] = (226, 227, 229)
+            else:
+                day_fills[day] = (255, 255, 255)
+
+        pdf.set_font('Arial', '', 7)
+        pdf.cell(label_width, 4.5, fit_text_to_width(pdf, 'Assignment', label_width - 2), 1, 0, 'C', 1)
+        for day in block_days:
+            shift = shift_track.get(day, '')
+            pdf.set_fill_color(*day_fills[day])
+            pdf.cell(cell_width, 4.5, shift if shift else '-', 1, 0, 'C', 1)
+        pdf.ln()
+
+        pdf.set_fill_color(220, 220, 220)
+        pdf.cell(label_width, 4.5, fit_text_to_width(pdf, 'Expected Base', label_width - 2), 1, 0, 'C', 1)
+        for day in block_days:
+            base = base_track.get(day, '')
+            pdf.set_fill_color(*day_fills[day])
+            pdf.cell(cell_width, 4.5, fit_text_to_width(pdf, base, cell_width - 1) if base else '-', 1, 0, 'C', 1)
+        pdf.ln(5)
+
+    try:
+        pdf_bytes = pdf.output(dest='S')
+        if isinstance(pdf_bytes, bytearray):
+            pdf_bytes = bytes(pdf_bytes)
+        if isinstance(pdf_bytes, str):
+            pdf_bytes = pdf_bytes.encode('latin-1')
+    except Exception as e:
+        try:
+            pdf_output = pdf.output()
+            if isinstance(pdf_output, str):
+                pdf_bytes = pdf_output.encode('latin-1')
+            elif isinstance(pdf_output, bytearray):
+                pdf_bytes = bytes(pdf_output)
+            else:
+                pdf_bytes = pdf_output
+        except Exception as e2:
+            raise Exception(f"Error generating PDF: {e}, {e2}")
+
+    safe_name = ''.join(c if c.isalnum() else '_' for c in staff_name)
+    filename = f"{safe_name}_hypothetical_schedule_v{version}_{datetime.now(_eastern_tz).strftime('%Y%m%d%H%M%S')}.pdf"
+
+    return pdf_bytes, filename
