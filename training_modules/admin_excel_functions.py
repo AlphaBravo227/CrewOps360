@@ -2008,7 +2008,14 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
             st.warning(f"⚠️ Large date range selected ({date_diff} days). This may take longer to generate.")
         
         st.info(f"📊 Report will cover {date_diff} days from {start_date.strftime('%m/%d/%Y')} to {end_date.strftime('%m/%d/%Y')}")
-        
+
+        role_scope = st.radio(
+            "Include",
+            options=["All Staff / All Roles", "Nurse/Medic Only"],
+            horizontal=True,
+            key="schedule_report_role_scope"
+        )
+
         # Generate report button
         if st.button("📊 Generate Comprehensive Schedule Report", type="primary", use_container_width=True):
             try:
@@ -2018,7 +2025,10 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                         start_date.strftime('%Y-%m-%d'),
                         end_date.strftime('%Y-%m-%d')
                     )
-                
+
+                    if role_scope == "Nurse/Medic Only" and not schedule_df.empty:
+                        schedule_df = schedule_df[schedule_df['ROLE'].str.upper().isin(['NURSE', 'MEDIC'])]
+
                 if not schedule_df.empty:
                     st.success(f"✅ Report generated successfully! Found {len(schedule_df)} staff members.")
                     
@@ -2084,11 +2094,12 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                     )
                     
                     if excel_data:
+                        scope_suffix = "_NurseMedic" if role_scope == "Nurse/Medic Only" else ""
                         st.download_button(
                             label="📊 Download as Excel",
                             type="primary",
                             data=excel_data,
-                            file_name=f"education_schedule_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}_{datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M')}.xlsx",
+                            file_name=f"education_schedule_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}{scope_suffix}_{datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M')}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True
                         )
