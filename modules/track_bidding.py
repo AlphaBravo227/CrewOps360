@@ -1220,17 +1220,37 @@ def display_bidding_admin_interface():
                     (d for d in staff_data if str(d['Role']).strip().lower() == 'medic'),
                     key=_seniority_key)
 
+                # Eligible-to-bid rosters (management staff — blank SHIFTS PER PAY PERIOD
+                # in Requirements.xlsx — excluded), for the submitted/remaining counters
+                # below. Same helpers the auto bid progression cascade uses, so the counts
+                # stay consistent with who actually gets skipped there.
+                requirements_map = _load_requirements_map(ctx.get('requirements_df'))
+                nurse_roster = _ordered_bidding_roster(
+                    staff_names, role_mapping, seniority_mapping, requirements_map, 'nurse')
+                medic_roster = _ordered_bidding_roster(
+                    staff_names, role_mapping, seniority_mapping, requirements_map, 'medic')
+                nurse_submitted_count = sum(1 for name in nurse_roster if name in bids_lookup)
+                medic_submitted_count = sum(1 for name in medic_roster if name in bids_lookup)
+
                 col_nurse, col_medic = st.columns(2)
                 with col_nurse:
                     st.markdown(f"##### Nurses ({len(nurse_data)})")
                     st.dataframe(
                         pd.DataFrame(nurse_data, columns=display_cols),
                         use_container_width=True, hide_index=True)
+                    st.caption(
+                        f"**{nurse_submitted_count} submitted** · "
+                        f"**{len(nurse_roster) - nurse_submitted_count} remaining** "
+                        f"({len(nurse_roster)} eligible bidders; managers excluded)")
                 with col_medic:
                     st.markdown(f"##### Medics ({len(medic_data)})")
                     st.dataframe(
                         pd.DataFrame(medic_data, columns=display_cols),
                         use_container_width=True, hide_index=True)
+                    st.caption(
+                        f"**{medic_submitted_count} submitted** · "
+                        f"**{len(medic_roster) - medic_submitted_count} remaining** "
+                        f"({len(medic_roster)} eligible bidders; managers excluded)")
 
                 st.markdown("---")
                 st.markdown("### Automatic Bid Access & Notification")
