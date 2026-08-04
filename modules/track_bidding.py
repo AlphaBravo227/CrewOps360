@@ -2267,6 +2267,47 @@ def _display_bid_submission(
                 st.error(f"Error: {msg}")
 
 
+def _display_hypothetical_track_by_blocks(display_track, days):
+    """
+    Block-by-block schedule table matching Current Track's layout (all 3 blocks shown
+    one after another, not tabs) but for the Hypothetical Schedule tab: cell values are
+    "D (BASE)" / "N (BASE)" strings rather than bare "D"/"N", so the day/night shading
+    matches by prefix instead of an exact value match.
+    """
+    blocks = ["A", "B", "C"]
+    weekday_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    for block_idx, block in enumerate(blocks):
+        st.markdown(f"#### Block {block} (Pay Period {block_idx + 1})")
+
+        start_idx = block_idx * 14
+        end_idx = start_idx + 14
+        block_days = days[start_idx:end_idx]
+
+        day_headers = []
+        for i in range(14):
+            day_num = i % 7
+            week_num = (block_idx * 2) + (i // 7) + 1
+            day_headers.append(f"{weekday_names[day_num]} {block} {week_num}")
+
+        df = pd.DataFrame(
+            {"Assignment": [display_track.get(day, "") for day in block_days]},
+            index=day_headers
+        )
+
+        def _highlight_cell(val):
+            val_str = str(val) if val is not None else ""
+            if val_str.startswith("D"):
+                return 'background-color: #d4edda'
+            elif val_str.startswith("N"):
+                return 'background-color: #cce5ff'
+            elif val_str == "AT":
+                return 'background-color: #e2e3e5; font-weight: bold'
+            return ''
+
+        st.dataframe(df.T.style.map(_highlight_cell), use_container_width=True)
+        st.write("")
+
+
 def _display_bid_hypothetical(
     selected_staff, preferences_df, current_tracks_df, days,
     staff_col_prefs, staff_col_tracks, role_col, no_matrix_col,
@@ -2280,6 +2321,12 @@ def _display_bid_hypothetical(
     from modules.db_utils import get_location_preferences_from_db
 
     st.subheader(f"Hypothetical Schedule for {selected_staff}")
+    st.info(
+        "**Note:** The Hypothetical Schedule is not guaranteed base assignments — your "
+        "Proposed Track only designates a \"D\" or \"N\" for each day. The expected base "
+        "assignments shown here do not account for 10-hour rest or \"clock moving forward\" "
+        "rules, and are for demonstration purposes only."
+    )
 
     if not has_bid:
         st.info(
@@ -2311,7 +2358,6 @@ def _display_bid_hypothetical(
 
     day_assignments = results['day_assignments']
     night_assignments = results['night_assignments']
-    assignment_details = results['assignment_details']
 
     staff_info = preferences_df[preferences_df[staff_col_prefs] == selected_staff].iloc[0]
     staff_role = staff_info[role_col]
@@ -2337,35 +2383,18 @@ def _display_bid_hypothetical(
     sc[1].metric("Day Shifts", total_day)
     sc[2].metric("Night Shifts", total_night)
 
-    blocks = ["A", "B", "C"]
-    block_tabs = st.tabs([f"Block {b}" for b in blocks])
-    for bi, bt in enumerate(block_tabs):
-        with bt:
-            start = bi * 14
-            end = start + 14
-            block_days = [d for d in days[start:end] if d in bid_work_days]
+    # Build a track-shaped dict like Current Track's, but with the expected base
+    # appended after the D/N (e.g. "D (KBED)") for bid work days.
+    display_track = {}
+    for day in days:
+        shift = submitted_track.get(day, "")
+        if shift == "D":
+            assignment = day_assignments.get(day)
+            display_track[day] = f"D ({assignment})" if assignment else "D"
+        elif shift == "N":
+            assignment = night_assignments.get(day)
+            display_track[day] = f"N ({assignment})" if assignment else "N"
+        elif shift:
+            display_track[day] = shift  # e.g. "AT"
 
-            if not block_days:
-                st.caption("No shifts bid in this block.")
-                continue
-
-            table = []
-            for day in block_days:
-                shift = bid_work_days[day]
-                if shift == "D":
-                    assignment = day_assignments.get(day)
-                    detail = assignment_details.get(day, {}).get('day', {})
-                else:
-                    assignment = night_assignments.get(day)
-                    detail = assignment_details.get(day, {}).get('night', {})
-
-                if assignment:
-                    pref = detail.get('preference_score')
-                    expected_base = f"{assignment} (Rank {pref})" if pref else f"{assignment}"
-                elif staff_preassignments and staff_preassignments.get(day) == shift:
-                    expected_base = "Preassigned"
-                else:
-                    expected_base = "No assignment"
-
-                table.append({"Day": day, "Shift": shift, "Expected Base": expected_base})
-            st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
+    _display_hypothetical_track_by_blocks(display_track, days)
