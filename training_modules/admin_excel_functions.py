@@ -1974,13 +1974,23 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                 value=datetime.now(_eastern_tz).replace(day=1),  # Default to first of current month
                 key="schedule_report_start_date"
             )
-        
+
+        # Auto-fill the end date to two weeks after the start date whenever the
+        # user picks a new start date. Only fires on an actual start date change
+        # (not every rerun) so a manually-edited end date isn't clobbered.
+        prev_start_key = "schedule_report_prev_start_date"
+        if prev_start_key not in st.session_state:
+            st.session_state[prev_start_key] = start_date
+        elif st.session_state[prev_start_key] != start_date:
+            st.session_state["schedule_report_end_date"] = start_date + timedelta(days=13)
+            st.session_state[prev_start_key] = start_date
+
         with col2:
             # Default end date to end of current month
             now = datetime.now(_eastern_tz)
             last_day = calendar.monthrange(now.year, now.month)[1]
             default_end = now.replace(day=last_day)
-            
+
             end_date = st.date_input(
                 "End Date",
                 value=default_end,
