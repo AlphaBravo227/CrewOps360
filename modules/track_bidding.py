@@ -736,8 +736,14 @@ def _render_bid_roster_tab(config_names, default_track_index):
         return
 
     view = st.radio(
-        "View:", ["All Staff (sorted by seniority)", "Split by Role (Nurse / Medic)"],
+        "View:", ["All Staff", "Split by Role (Nurse / Medic)"],
         horizontal=True, key="roster_view_mode")
+    sort_by = st.selectbox("Sort by:", ["Seniority", "Staff Name"], key="roster_sort_by")
+
+    def _sort_table(df):
+        if sort_by == "Staff Name":
+            return df.sort_values(by='Staff')
+        return df.sort_values(by='Seniority', key=_seniority_sort_key)
 
     role_mapping = ctx['role_mapping']
     staff_options = sorted({b['staff_name'] for b in bids})
@@ -771,22 +777,22 @@ def _render_bid_roster_tab(config_names, default_track_index):
     days = ctx['days']
     blocks = [("A", days[0:14]), ("B", days[14:28]), ("C", days[28:42])]
 
-    if view == "All Staff (sorted by seniority)":
-        sorted_table = table.sort_values(by='Seniority', key=_seniority_sort_key)
+    if view == "All Staff":
+        sorted_table = _sort_table(table)
         for block_letter, block_days in blocks:
             st.markdown(f"#### Block {block_letter}")
-            display_cols = ['Staff', 'Role', 'Seniority'] + block_days
+            display_cols = ['Staff', 'Role'] + block_days
             st.dataframe(sorted_table[display_cols], use_container_width=True, hide_index=True)
     else:
         for bucket_label, bucket in [("Nurses", "nurse"), ("Medics", "medic")]:
             st.markdown(f"### {bucket_label}")
-            sub = table[table['_role_bucket'] == bucket].sort_values(by='Seniority', key=_seniority_sort_key)
+            sub = _sort_table(table[table['_role_bucket'] == bucket])
             if sub.empty:
                 st.caption("No bids yet.")
                 continue
             for block_letter, block_days in blocks:
                 st.markdown(f"#### Block {block_letter}")
-                display_cols = ['Staff', 'Role', 'Seniority'] + block_days
+                display_cols = ['Staff', 'Role'] + block_days
                 st.dataframe(sub[display_cols], use_container_width=True, hide_index=True)
 
 
