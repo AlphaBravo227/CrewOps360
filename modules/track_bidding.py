@@ -739,8 +739,17 @@ def _render_bid_roster_tab(config_names, default_track_index):
         "View:", ["All Staff (sorted by seniority)", "Split by Role (Nurse / Medic)"],
         horizontal=True, key="roster_view_mode")
 
+    staff_options = sorted({b['staff_name'] for b in bids})
+    selected_staff = st.multiselect(
+        "Staff:", staff_options, default=staff_options, key="roster_staff_filter")
+
     with st.spinner("Computing expected base assignments..."):
         table = _compute_bid_roster_table(roster_track, ctx, bids)
+
+    table = table[table['Staff'].isin(selected_staff)]
+    if table.empty:
+        st.info("No staff match the current filter.")
+        return
 
     display_cols = ['Staff', 'Role', 'Seniority'] + ctx['days']
 
@@ -835,8 +844,18 @@ def _render_base_analysis_tab(config_names, default_track_index):
         st.error(roster_error)
         return
 
-    role_choice = st.radio("Role:", ["Nurses", "Medics"], horizontal=True, key="base_analysis_role")
-    role_bucket = 'nurse' if role_choice == "Nurses" else 'medic'
+    role_choices = st.multiselect(
+        "Role:", ["Nurses", "Medics"], default=["Nurses", "Medics"], key="base_analysis_role")
+    # Nurses and medics compete for their own independent copy of every slot (separate
+    # crew roles, each with their own base-slot allotment), so showing both just runs
+    # the same per-role simulation twice and stacks the results with a Role column.
+    role_buckets = [
+        (label, bucket) for label, bucket in (("Nurse", "nurse"), ("Medic", "medic"))
+        if f"{label}s" in role_choices
+    ]
+    if not role_buckets:
+        st.info("Select at least one role.")
+        return
 
     base_options = [f"{_BASE_FULL_NAMES.get(b, b)} ({b})" for b in _ALL_BASE_CODES]
     base_code_by_option = dict(zip(base_options, _ALL_BASE_CODES))
@@ -848,7 +867,12 @@ def _render_base_analysis_tab(config_names, default_track_index):
         "Shift Type:", ["Day", "Night"], default=["Day", "Night"], key="base_analysis_shift_filter")
 
     with st.spinner("Computing base fill status..."):
-        table = _compute_base_analysis_table(analysis_track, ctx, role_bucket)
+        role_tables = []
+        for role_label, role_bucket in role_buckets:
+            role_table = _compute_base_analysis_table(analysis_track, ctx, role_bucket)
+            role_table.insert(1, 'Role', role_label)
+            role_tables.append(role_table)
+        table = pd.concat(role_tables, ignore_index=True)
 
     filtered = table[table['_base_code'].isin(selected_bases) & table['Shift'].isin(selected_shifts)]
 
@@ -863,7 +887,7 @@ def _render_base_analysis_tab(config_names, default_track_index):
     blocks = [("A", days[0:14]), ("B", days[14:28]), ("C", days[28:42])]
     for block_letter, block_days in blocks:
         st.markdown(f"#### Block {block_letter}")
-        display_cols = ['Base', 'Shift', 'Slot'] + block_days
+        display_cols = ['Base', 'Role', 'Shift', 'Slot'] + block_days
         st.dataframe(
             filtered[display_cols].style.map(_highlight_fill, subset=block_days),
             use_container_width=True, hide_index=True
