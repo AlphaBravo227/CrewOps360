@@ -739,9 +739,26 @@ def _render_bid_roster_tab(config_names, default_track_index):
         "View:", ["All Staff (sorted by seniority)", "Split by Role (Nurse / Medic)"],
         horizontal=True, key="roster_view_mode")
 
+    role_mapping = ctx['role_mapping']
     staff_options = sorted({b['staff_name'] for b in bids})
-    selected_staff = st.multiselect(
-        "Staff:", staff_options, default=staff_options, key="roster_staff_filter")
+    nurse_names = sorted(n for n in staff_options if _bidding_role_bucket(role_mapping.get(n, '')) == 'nurse')
+    medic_names = sorted(n for n in staff_options if _bidding_role_bucket(role_mapping.get(n, '')) == 'medic')
+
+    if "roster_staff_filter" not in st.session_state:
+        st.session_state["roster_staff_filter"] = staff_options
+
+    quick_col1, quick_col2, quick_col3 = st.columns(3)
+    with quick_col1:
+        if st.button("All Staff", key="roster_filter_all_btn", use_container_width=True):
+            st.session_state["roster_staff_filter"] = staff_options
+    with quick_col2:
+        if st.button("All Nurses", key="roster_filter_nurses_btn", use_container_width=True):
+            st.session_state["roster_staff_filter"] = nurse_names
+    with quick_col3:
+        if st.button("All Medics", key="roster_filter_medics_btn", use_container_width=True):
+            st.session_state["roster_staff_filter"] = medic_names
+
+    selected_staff = st.multiselect("Staff:", staff_options, key="roster_staff_filter")
 
     with st.spinner("Computing expected base assignments..."):
         table = _compute_bid_roster_table(roster_track, ctx, bids)
