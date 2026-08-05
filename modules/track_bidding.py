@@ -751,18 +751,25 @@ def _render_bid_roster_tab(config_names, default_track_index):
         st.info("No staff match the current filter.")
         return
 
-    display_cols = ['Staff', 'Role', 'Seniority'] + ctx['days']
+    days = ctx['days']
+    blocks = [("A", days[0:14]), ("B", days[14:28]), ("C", days[28:42])]
 
     if view == "All Staff (sorted by seniority)":
         sorted_table = table.sort_values(by='Seniority', key=_seniority_sort_key)
-        st.dataframe(sorted_table[display_cols], use_container_width=True, hide_index=True)
+        for block_letter, block_days in blocks:
+            st.markdown(f"#### Block {block_letter}")
+            display_cols = ['Staff', 'Role', 'Seniority'] + block_days
+            st.dataframe(sorted_table[display_cols], use_container_width=True, hide_index=True)
     else:
         for bucket_label, bucket in [("Nurses", "nurse"), ("Medics", "medic")]:
-            st.markdown(f"#### {bucket_label}")
+            st.markdown(f"### {bucket_label}")
             sub = table[table['_role_bucket'] == bucket].sort_values(by='Seniority', key=_seniority_sort_key)
             if sub.empty:
                 st.caption("No bids yet.")
-            else:
+                continue
+            for block_letter, block_days in blocks:
+                st.markdown(f"#### Block {block_letter}")
+                display_cols = ['Staff', 'Role', 'Seniority'] + block_days
                 st.dataframe(sub[display_cols], use_container_width=True, hide_index=True)
 
 
