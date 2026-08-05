@@ -711,6 +711,79 @@ def _seniority_sort_key(series):
     return series.map(conv)
 
 
+def _render_bid_roster_block_table(df, block_days):
+    """
+    Fixed-width, non-draggable HTML table for one block of the Bid Roster: Staff/Role
+    plus one column per day, every day column pinned to the same width regardless of
+    content — st.dataframe's grid lets a user drag-reorder columns and auto-sizes them
+    per content, which would let the day order drift and the widths go uneven.
+    """
+    label_cols = [('Staff', 12), ('Role', 8)]
+    label_ratio = sum(w for _, w in label_cols)
+    day_ratio = 1.0 * len(block_days)
+    total_ratio = label_ratio + day_ratio
+    day_pct = 100 * 1.0 / total_ratio
+
+    weekday_header = ""
+    tag_header = ""
+    for day in block_days:
+        parts = day.split()
+        weekday = parts[0] if parts else day
+        tag = f"{parts[1]}{parts[2]}" if len(parts) == 3 else ""
+        weekday_header += (
+            f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
+            f'background-color:#f0f2f6; font-size:9px; font-weight:400; color:#666; '
+            f'text-align:center; padding:2px 0; white-space:nowrap;">{weekday}</th>'
+        )
+        tag_header += (
+            f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
+            f'background-color:#f0f2f6; font-size:8px; font-weight:400; color:#666; '
+            f'text-align:center; padding:2px 0; white-space:nowrap;">{tag}</th>'
+        )
+
+    label_th = "".join(
+        f'<th rowspan="2" style="width:{100 * w / total_ratio}%; box-sizing:border-box; '
+        f'border:1px solid #ddd; background-color:#f0f2f6; font-size:10px; font-weight:500; '
+        f'text-align:center; padding:2px;">{name}</th>'
+        for name, w in label_cols
+    )
+
+    rows_html = ""
+    for _, row in df.iterrows():
+        label_tds = "".join(
+            f'<td style="width:{100 * w / total_ratio}%; box-sizing:border-box; border:1px solid #ddd; '
+            f'font-size:11px; text-align:center; padding:3px 2px; white-space:nowrap; '
+            f'overflow:hidden; text-overflow:ellipsis;">{row[name]}</td>'
+            for name, w in label_cols
+        )
+        day_tds = ""
+        for day in block_days:
+            val = row.get(day, "")
+            val = "" if pd.isna(val) else str(val)
+            style = (
+                f"width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; font-size:6.5px; "
+                "text-align:center; padding:3px 1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"
+            )
+            if val.startswith("D"):
+                style += " background-color:#d4edda;"
+            elif val.startswith("N"):
+                style += " background-color:#cce5ff;"
+            elif val == "AT":
+                style += " background-color:#e2e3e5; font-weight:bold;"
+            day_tds += f'<td style="{style}">{val}</td>'
+        rows_html += f"<tr>{label_tds}{day_tds}</tr>"
+
+    st.markdown(f"""
+    <table style="width:100%; border-collapse:collapse; table-layout:fixed;">
+        <thead>
+            <tr>{label_th}{weekday_header}</tr>
+            <tr>{tag_header}</tr>
+        </thead>
+        <tbody>{rows_html}</tbody>
+    </table>
+    """, unsafe_allow_html=True)
+
+
 def _render_bid_roster_tab(config_names, default_track_index):
     """Wide staff x day roster of submitted bids, with shift + expected base per day."""
     st.markdown("### Bid Roster")
@@ -753,18 +826,20 @@ def _render_bid_roster_tab(config_names, default_track_index):
     if "roster_staff_filter" not in st.session_state:
         st.session_state["roster_staff_filter"] = staff_options
 
-    quick_col1, quick_col2, quick_col3 = st.columns(3)
-    with quick_col1:
-        if st.button("All Staff", key="roster_filter_all_btn", use_container_width=True):
-            st.session_state["roster_staff_filter"] = staff_options
-    with quick_col2:
-        if st.button("All Nurses", key="roster_filter_nurses_btn", use_container_width=True):
-            st.session_state["roster_staff_filter"] = nurse_names
-    with quick_col3:
-        if st.button("All Medics", key="roster_filter_medics_btn", use_container_width=True):
-            st.session_state["roster_staff_filter"] = medic_names
+    selected_staff = st.session_state["roster_staff_filter"]
+    with st.expander("Staff Filter", expanded=False):
+        quick_col1, quick_col2, quick_col3 = st.columns(3)
+        with quick_col1:
+            if st.button("All Staff", key="roster_filter_all_btn", use_container_width=True):
+                st.session_state["roster_staff_filter"] = staff_options
+        with quick_col2:
+            if st.button("All Nurses", key="roster_filter_nurses_btn", use_container_width=True):
+                st.session_state["roster_staff_filter"] = nurse_names
+        with quick_col3:
+            if st.button("All Medics", key="roster_filter_medics_btn", use_container_width=True):
+                st.session_state["roster_staff_filter"] = medic_names
 
-    selected_staff = st.multiselect("Staff:", staff_options, key="roster_staff_filter")
+        selected_staff = st.multiselect("Staff:", staff_options, key="roster_staff_filter")
 
     with st.spinner("Computing expected base assignments..."):
         table = _compute_bid_roster_table(roster_track, ctx, bids)
@@ -781,8 +856,7 @@ def _render_bid_roster_tab(config_names, default_track_index):
         sorted_table = _sort_table(table)
         for block_letter, block_days in blocks:
             st.markdown(f"#### Block {block_letter}")
-            display_cols = ['Staff', 'Role'] + block_days
-            st.dataframe(sorted_table[display_cols], use_container_width=True, hide_index=True)
+            _render_bid_roster_block_table(sorted_table, block_days)
     else:
         for bucket_label, bucket in [("Nurses", "nurse"), ("Medics", "medic")]:
             st.markdown(f"### {bucket_label}")
@@ -792,8 +866,7 @@ def _render_bid_roster_tab(config_names, default_track_index):
                 continue
             for block_letter, block_days in blocks:
                 st.markdown(f"#### Block {block_letter}")
-                display_cols = ['Staff', 'Role'] + block_days
-                st.dataframe(sub[display_cols], use_container_width=True, hide_index=True)
+                _render_bid_roster_block_table(sub, block_days)
 
 
 # ──────────────────────────────────────────────
