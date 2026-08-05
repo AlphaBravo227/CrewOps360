@@ -776,8 +776,8 @@ def generate_hypothetical_schedule_pdf(staff_name, shift_track, base_track, days
                                         track_name, version, submission_date):
     """
     Generate a compact PDF of the Hypothetical Schedule tab: the same disclaimer shown
-    on-screen, then all 3 blocks (14 days each) with an Assignment row (D/N/AT) and an
-    Expected Base row underneath it.
+    on-screen, then all 3 blocks (14 days each) with an Assignment row (D/N/AT) and a
+    Possible Shift row underneath it.
 
     Args:
         staff_name (str): Name of the staff member
@@ -809,7 +809,8 @@ def generate_hypothetical_schedule_pdf(staff_name, shift_track, base_track, days
     pdf.set_font('Arial', 'B', 10)
     pdf.cell(30, 6.5, 'Bid Version:', 0, 0)
     pdf.set_font('Arial', '', 10)
-    pdf.cell(0, 6.5, f'v{version}', 0, 1)
+    version_label = f'v{version}' if isinstance(version, int) else str(version)
+    pdf.cell(0, 6.5, version_label, 0, 1)
 
     pdf.set_font('Arial', 'B', 10)
     pdf.cell(45, 6.5, 'Bid Track:', 0, 0)
@@ -857,7 +858,7 @@ def generate_hypothetical_schedule_pdf(staff_name, shift_track, base_track, days
             pdf.cell(cell_width, 4.5, wd.split()[0], 1, 0, 'C', 1)
         pdf.ln()
 
-        # Fill color per day is shared between the Assignment and Expected Base rows,
+        # Fill color per day is shared between the Assignment and Possible Shift rows,
         # so the base row is shaded to match its day's shift type.
         day_fills = {}
         for day in block_days:
@@ -880,7 +881,7 @@ def generate_hypothetical_schedule_pdf(staff_name, shift_track, base_track, days
         pdf.ln()
 
         pdf.set_fill_color(220, 220, 220)
-        pdf.cell(label_width, 4.5, fit_text_to_width(pdf, 'Expected Base', label_width - 2), 1, 0, 'C', 1)
+        pdf.cell(label_width, 4.5, fit_text_to_width(pdf, 'Possible Shift', label_width - 2), 1, 0, 'C', 1)
         for day in block_days:
             base = base_track.get(day, '')
             pdf.set_fill_color(*day_fills[day])
@@ -906,6 +907,6 @@ def generate_hypothetical_schedule_pdf(staff_name, shift_track, base_track, days
             raise Exception(f"Error generating PDF: {e}, {e2}")
 
     safe_name = ''.join(c if c.isalnum() else '_' for c in staff_name)
-    filename = f"{safe_name}_hypothetical_schedule_v{version}_{datetime.now(_eastern_tz).strftime('%Y%m%d%H%M%S')}.pdf"
+    filename = f"{safe_name}_hypothetical_schedule_{version_label}_{datetime.now(_eastern_tz).strftime('%Y%m%d%H%M%S')}.pdf"
 
     return pdf_bytes, filename

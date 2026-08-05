@@ -8,7 +8,7 @@ bid access, add/update/remove bids on staff members' behalf, promote to active.
 import streamlit as st
 import pandas as pd
 import altair as alt
-from datetime import datetime
+from datetime import datetime, date, timedelta
 import pytz
 import json
 
@@ -2062,7 +2062,7 @@ def _display_bidding_staff_interface(
             selected_staff, preferences_df, current_tracks_df, days,
             staff_col_prefs, staff_col_tracks, role_col, no_matrix_col,
             reduced_rest_col, seniority_col, capacity, bid_track_name,
-            has_bid, bid_result, staff_preassignments
+            has_bid, bid_result, staff_preassignments, _build_track()
         )
 
     # Write back bidding-specific state
@@ -2472,22 +2472,52 @@ def _display_bid_submission(
                 st.error(f"Error: {msg}")
 
 
-def _display_hypothetical_track_by_blocks(shift_track, base_track, days):
+def _hypothetical_date_block_options():
+    """
+    Successive 6-week (42-day) calendar ranges, Sunday-to-Saturday, starting at the
+    first Block A/Week 1 date (9/27/2026) through the block that contains 10/1/2027 —
+    the choices offered by the Hypothetical Schedule tab's optional date overlay.
+
+    Returns:
+        list[tuple[date, date]]: (block_start, block_end) pairs, in order.
+    """
+    start = date(2026, 9, 27)
+    target = date(2027, 10, 1)
+    ranges = []
+    cur = start
+    while True:
+        end = cur + timedelta(days=41)
+        ranges.append((cur, end))
+        if cur <= target <= end:
+            break
+        cur = end + timedelta(days=1)
+    return ranges
+
+
+def _display_hypothetical_track_by_blocks(shift_track, base_track, days, calendar_dates=None):
     """
     Block-by-block schedule table matching Current Track's layout (all 3 blocks shown
-    one after another, not tabs), but for the Hypothetical Schedule tab: an Assignment
-    row (bare "D"/"N"/"AT", shaded the same way Current Track is) and a separate
-    Expected Base row underneath it with the hypothetical base code, shaded to match
-    that day's Assignment cell.
+    one after another, not tabs), rendered as a fixed-width HTML table so the day
+    columns can't be dragged, reordered, or resized. Two rows per block: Assignment
+    (bare "D"/"N"/"AT") and Possible Shift (the hypothetical base code), both shaded
+    to match that day's Assignment value.
+
+    calendar_dates, if given, is a flat list of 42 date objects (one per day across
+    all 3 blocks, in order) — an extra row of real dates is drawn above the weekday
+    header for that block. Omitting it (the default) leaves that row out entirely.
     """
     blocks = ["A", "B", "C"]
     weekday_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    label_pct = 10.0
+    day_pct = (100 - label_pct) / 14
+
     for block_idx, block in enumerate(blocks):
         st.markdown(f"#### Block {block} (Pay Period {block_idx + 1})")
 
         start_idx = block_idx * 14
         end_idx = start_idx + 14
         block_days = days[start_idx:end_idx]
+        block_dates = calendar_dates[start_idx:end_idx] if calendar_dates else None
 
         day_headers = []
         for i in range(14):
@@ -2495,39 +2525,100 @@ def _display_hypothetical_track_by_blocks(shift_track, base_track, days):
             week_num = (block_idx * 2) + (i // 7) + 1
             day_headers.append(f"{weekday_names[day_num]} {block} {week_num}")
 
-        df = pd.DataFrame(
-            {
-                "Assignment": [shift_track.get(day, "") for day in block_days],
-                "Expected Base": [base_track.get(day, "") for day in block_days],
-            },
-            index=day_headers
+        header_row_count = 3 if block_dates else 2
+        corner_cell = (
+            f'<th rowspan="{header_row_count}" style="width:{label_pct}%; box-sizing:border-box; '
+            'border:1px solid #ddd; background-color:#f0f2f6;"></th>'
         )
 
-        def _highlight_column(col):
-            shift_val = col.get("Assignment", "")
-            if shift_val == "D":
-                style = 'background-color: #d4edda'
-            elif shift_val == "N":
-                style = 'background-color: #cce5ff'
-            elif shift_val == "AT":
-                style = 'background-color: #e2e3e5; font-weight: bold'
-            else:
-                style = ''
-            return [style] * len(col)
+        weekday_cells = "".join(
+            f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
+            f'background-color:#f0f2f6; font-size:9px; font-weight:400; color:#666; '
+            f'text-align:center; padding:2px 0; white-space:nowrap;">{dh.split()[0]}</th>'
+            for dh in day_headers
+        )
+        tag_cells = "".join(
+            f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
+            f'background-color:#f0f2f6; font-size:8px; font-weight:400; color:#666; '
+            f'text-align:center; padding:2px 0; white-space:nowrap;">{dh.split()[1]}{dh.split()[2]}</th>'
+            for dh in day_headers
+        )
 
-        st.dataframe(df.T.style.apply(_highlight_column, axis=0), use_container_width=True)
+        if block_dates:
+            date_cells = "".join(
+                f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
+                f'background-color:#fff; font-size:9px; font-weight:700; color:#000; '
+                f'text-align:center; padding:2px 0; white-space:nowrap;">{d.strftime("%-m/%-d")}</th>'
+                for d in block_dates
+            )
+            date_row = f"<tr>{corner_cell}{date_cells}</tr>"
+            weekday_row = f"<tr>{weekday_cells}</tr>"
+        else:
+            date_row = ""
+            weekday_row = f"<tr>{corner_cell}{weekday_cells}</tr>"
+        tag_row = f"<tr>{tag_cells}</tr>"
+
+        row_defs = [("Assignment", shift_track), ("Possible Shift", base_track)]
+        body_rows = ""
+        for row_label, source in row_defs:
+            cells = ""
+            for day in block_days:
+                val = source.get(day, "")
+                shift_val = shift_track.get(day, "")
+                style = (
+                    f"width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; font-size:10px; "
+                    "text-align:center; padding:3px 1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"
+                )
+                if shift_val == "D":
+                    style += " background-color:#d4edda;"
+                elif shift_val == "N":
+                    style += " background-color:#cce5ff;"
+                elif shift_val == "AT":
+                    style += " background-color:#e2e3e5; font-weight:bold;"
+                cells += f'<td style="{style}">{val}</td>'
+            label_cell = (
+                f'<td style="width:{label_pct}%; box-sizing:border-box; border:1px solid #ddd; '
+                'background-color:#f0f2f6; font-size:10px; font-weight:500; text-align:center; '
+                f'padding:3px 2px; white-space:nowrap;">{row_label}</td>'
+            )
+            body_rows += f"<tr>{label_cell}{cells}</tr>"
+
+        # thead content is joined into one string (not spread across template lines)
+        # because an empty date_row leaves a blank line, and CommonMark treats a
+        # blank line inside an HTML block as ending it — everything after would
+        # render as literal escaped text instead of an actual table.
+        thead_content = date_row + weekday_row + tag_row
+        st.markdown(
+            f'<table style="width:100%; border-collapse:collapse; table-layout:fixed;">'
+            f'<thead>{thead_content}</thead>'
+            f'<tbody>{body_rows}</tbody>'
+            f'</table>',
+            unsafe_allow_html=True
+        )
         st.write("")
+
+
+_NOT_SUBMITTED_BANNER_HTML = (
+    '<div style="background-color:#f8d7da; border:2px solid #dc3545; border-radius:5px; '
+    'padding:10px; text-align:center; font-weight:700; color:#721c24; margin-bottom:10px;">'
+    'PROPOSED TRACK NOT YET SUBMITTED</div>'
+)
 
 
 def _display_bid_hypothetical(
     selected_staff, preferences_df, current_tracks_df, days,
     staff_col_prefs, staff_col_tracks, role_col, no_matrix_col,
     reduced_rest_col, seniority_col, capacity, bid_track_name,
-    has_bid, bid_result, staff_preassignments
+    has_bid, bid_result, staff_preassignments, current_working_track
 ):
-    """Hypothetical schedule for bidding — shows expected assignments only for the
-    days/nights actually present (as D or N) in the staff member's submitted bid,
-    not every day the role has an opening."""
+    """
+    Hypothetical schedule for bidding — shows expected assignments only for the
+    days/nights actually present (as D or N) in the staff member's track, not every
+    day the role has an opening. Works off the actual submitted bid once there is
+    one; otherwise falls back to the staff member's saved-but-not-submitted working
+    selections (current_working_track) so this tab doesn't require submission first,
+    with a red banner top and bottom noting the track isn't submitted yet.
+    """
     from modules.track_modification_core import calculate_all_modification_options
     from modules.db_utils import get_location_preferences_from_db
 
@@ -2540,17 +2631,29 @@ def _display_bid_hypothetical(
     )
 
     if not has_bid:
-        st.info(
-            f"You have not submitted a bid for **{bid_track_name}** yet. "
-            "Submit your bid from the **Submission** tab to see your expected "
-            "shift assignments here."
-        )
-        return
+        st.markdown(_NOT_SUBMITTED_BANNER_HTML, unsafe_allow_html=True)
 
-    submitted_track = bid_result[1]['track_data']
+    if has_bid:
+        submitted_track = bid_result[1]['track_data']
+        bid_version = bid_result[1]['version']
+        bid_submission_date = bid_result[1]['submission_date']
+    else:
+        submitted_track = current_working_track
+        bid_version = "Draft"
+        bid_submission_date = "not yet submitted"
+
     # Only the days the staff actually bid a working shift on — excludes Off days
     # and AT (preassigned days that aren't a D/N shift are covered on their own).
     bid_work_days = {day: shift for day, shift in submitted_track.items() if shift in ("D", "N")}
+
+    if not bid_work_days:
+        st.info(
+            f"No working days selected yet for **{bid_track_name}**. Pick some D/N shifts "
+            "in the **Track Selection** tab to see your hypothetical schedule here."
+        )
+        if not has_bid:
+            st.markdown(_NOT_SUBMITTED_BANNER_HTML, unsafe_allow_html=True)
+        return
 
     max_dn = capacity['max_day_nurses']
     max_dm = capacity['max_day_medics']
@@ -2581,11 +2684,16 @@ def _display_bid_hypothetical(
         st.warning("No base preferences found. Set them in Edit Preferences for better results.")
 
     st.markdown("### Hypothetical Schedule")
-    st.caption(
-        f"Expected assignments for the days you bid a shift on your submitted "
-        f"**{bid_track_name}** bid (version {bid_result[1]['version']}, "
-        f"submitted {bid_result[1]['submission_date']})."
-    )
+    if has_bid:
+        st.caption(
+            f"Expected assignments for the days you bid a shift on your submitted "
+            f"**{bid_track_name}** bid (version {bid_version}, submitted {bid_submission_date})."
+        )
+    else:
+        st.caption(
+            f"Expected assignments for the days you've selected a shift on so far for "
+            f"**{bid_track_name}** — this bid has not been submitted yet."
+        )
 
     total_day = sum(1 for day, shift in bid_work_days.items() if shift == "D" and day_assignments.get(day))
     total_night = sum(1 for day, shift in bid_work_days.items() if shift == "N" and night_assignments.get(day))
@@ -2594,9 +2702,33 @@ def _display_bid_hypothetical(
     sc[1].metric("Day Shifts", total_day)
     sc[2].metric("Night Shifts", total_night)
 
+    with st.expander("Simulate for specific dates?", expanded=False):
+        dates_acknowledged = st.checkbox(
+            "I acknowledge the hypothetical schedule displayed with dates will be for "
+            "general reference and mapping out proposed track shifts only, and base "
+            "assignments are not guaranteed as displayed. 9/27/26 will be the first "
+            "date displayed as the first day of a 6-week block, but this does not mean "
+            "new tracks will launch on that date. All tracks displayed here are "
+            "proposed only until FY27 rebids are finalized.",
+            key="hypo_dates_ack"
+        )
+        date_block_options = _hypothetical_date_block_options()
+        date_option_labels = [
+            f"{s.strftime('%-m/%-d/%y')} to {e.strftime('%-m/%-d/%y')}" for s, e in date_block_options
+        ]
+        selected_date_label = st.selectbox(
+            "6-week block to map onto the schedule below:",
+            date_option_labels, key="hypo_dates_range", disabled=not dates_acknowledged
+        )
+
+    calendar_dates = None
+    if dates_acknowledged:
+        block_start, _ = date_block_options[date_option_labels.index(selected_date_label)]
+        calendar_dates = [block_start + timedelta(days=i) for i in range(42)]
+
     # Build track-shaped dicts like Current Track's: shift_track holds the bare
     # D/N/AT for the Assignment row, base_track holds the expected base (D/N days
-    # with a resolved hypothetical assignment only) for the Expected Base row.
+    # with a resolved hypothetical assignment only) for the Possible Shift row.
     shift_track = {}
     base_track = {}
     for day in days:
@@ -2614,14 +2746,17 @@ def _display_bid_hypothetical(
         elif shift:
             shift_track[day] = shift  # e.g. "AT"
 
-    _display_hypothetical_track_by_blocks(shift_track, base_track, days)
+    _display_hypothetical_track_by_blocks(shift_track, base_track, days, calendar_dates)
 
     from modules.pdf_generator import generate_hypothetical_schedule_pdf
     pdf_bytes, pdf_filename = generate_hypothetical_schedule_pdf(
         selected_staff, shift_track, base_track, days,
-        bid_track_name, bid_result[1]['version'], bid_result[1]['submission_date']
+        bid_track_name, bid_version, bid_submission_date
     )
     st.download_button(
         "📄 Download Hypothetical Schedule (PDF)",
         data=pdf_bytes, file_name=pdf_filename, mime="application/pdf"
     )
+
+    if not has_bid:
+        st.markdown(_NOT_SUBMITTED_BANNER_HTML, unsafe_allow_html=True)
