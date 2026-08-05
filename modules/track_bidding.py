@@ -927,6 +927,81 @@ def _compute_base_analysis_table(analysis_track, ctx, role_bucket):
     return pd.DataFrame(rows)
 
 
+def _render_base_analysis_block_table(df, block_days):
+    """
+    Fixed-width, non-draggable HTML table for one block of Base Analysis: Base/Role/
+    Shift/Slot plus one column per day, green/red fill status. df must already be
+    sorted so every base's rows are contiguous — a thicker top border is drawn on the
+    first row of each new base (by _base_code) so the groups stay visually separated
+    when multiple bases are shown at once.
+    """
+    label_cols = [('Base', 14), ('Role', 6), ('Shift', 6), ('Slot', 4)]
+    label_ratio = sum(w for _, w in label_cols)
+    day_ratio = 1.0 * len(block_days)
+    total_ratio = label_ratio + day_ratio
+    day_pct = 100 * 1.0 / total_ratio
+
+    weekday_header = ""
+    tag_header = ""
+    for day in block_days:
+        parts = day.split()
+        weekday = parts[0] if parts else day
+        tag = f"{parts[1]}{parts[2]}" if len(parts) == 3 else ""
+        weekday_header += (
+            f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
+            f'background-color:#f0f2f6; font-size:9px; font-weight:400; color:#666; '
+            f'text-align:center; padding:2px 0; white-space:nowrap;">{weekday}</th>'
+        )
+        tag_header += (
+            f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
+            f'background-color:#f0f2f6; font-size:8px; font-weight:400; color:#666; '
+            f'text-align:center; padding:2px 0; white-space:nowrap;">{tag}</th>'
+        )
+
+    label_th = "".join(
+        f'<th rowspan="2" style="width:{100 * w / total_ratio}%; box-sizing:border-box; '
+        f'border:1px solid #ddd; background-color:#f0f2f6; font-size:10px; font-weight:500; '
+        f'text-align:center; padding:2px;">{name}</th>'
+        for name, w in label_cols
+    )
+
+    rows_html = ""
+    prev_base = None
+    for _, row in df.iterrows():
+        is_new_base_group = prev_base is not None and row['_base_code'] != prev_base
+        prev_base = row['_base_code']
+        top_border = "border-top:3px solid #333;" if is_new_base_group else ""
+
+        label_tds = "".join(
+            f'<td style="width:{100 * w / total_ratio}%; box-sizing:border-box; border:1px solid #ddd; '
+            f'{top_border} font-size:10px; text-align:center; padding:3px 2px; white-space:nowrap; '
+            f'overflow:hidden; text-overflow:ellipsis;">{row[name]}</td>'
+            for name, w in label_cols
+        )
+        day_tds = ""
+        for day in block_days:
+            val = row.get(day, "")
+            val = "" if pd.isna(val) else str(val)
+            fill = "#d4edda" if val else "#f8d7da"
+            style = (
+                f"width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; {top_border} "
+                f"background-color:{fill}; font-size:8px; text-align:center; padding:3px 1px; "
+                "white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"
+            )
+            day_tds += f'<td style="{style}">{val}</td>'
+        rows_html += f"<tr>{label_tds}{day_tds}</tr>"
+
+    st.markdown(f"""
+    <table style="width:100%; border-collapse:collapse; table-layout:fixed;">
+        <thead>
+            <tr>{label_th}{weekday_header}</tr>
+            <tr>{tag_header}</tr>
+        </thead>
+        <tbody>{rows_html}</tbody>
+    </table>
+    """, unsafe_allow_html=True)
+
+
 def _render_base_analysis_tab(config_names, default_track_index):
     """Per-base, per-slot fill-status grid: green = filled (shows who), red = still open."""
     st.markdown("### Base Analysis")
@@ -983,18 +1058,20 @@ def _render_base_analysis_tab(config_names, default_track_index):
         st.info("No base/shift combinations match the current filters.")
         return
 
-    def _highlight_fill(val):
-        return 'background-color: #d4edda' if val else 'background-color: #f8d7da'
+    # Group every base's rows together (across shift/slot/role) rather than grouping
+    # by role first, so Nurse and Medic rows for the same base sit next to each other.
+    filtered = filtered.copy()
+    filtered['_base_order'] = pd.Categorical(filtered['_base_code'], categories=_ALL_BASE_CODES, ordered=True)
+    filtered['_shift_order'] = pd.Categorical(filtered['Shift'], categories=['Day', 'Night'], ordered=True)
+    filtered['_slot_order'] = filtered['Slot'].str.lstrip('#').astype(int)
+    filtered['_role_order'] = pd.Categorical(filtered['Role'], categories=['Nurse', 'Medic'], ordered=True)
+    filtered = filtered.sort_values(['_base_order', '_shift_order', '_slot_order', '_role_order'])
 
     days = ctx['days']
     blocks = [("A", days[0:14]), ("B", days[14:28]), ("C", days[28:42])]
     for block_letter, block_days in blocks:
         st.markdown(f"#### Block {block_letter}")
-        display_cols = ['Base', 'Role', 'Shift', 'Slot'] + block_days
-        st.dataframe(
-            filtered[display_cols].style.map(_highlight_fill, subset=block_days),
-            use_container_width=True, hide_index=True
-        )
+        _render_base_analysis_block_table(filtered, block_days)
 
 
 # ──────────────────────────────────────────────
