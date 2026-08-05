@@ -935,11 +935,12 @@ def _render_base_analysis_block_table(df, block_days):
     first row of each new base (by _base_code) so the groups stay visually separated
     when multiple bases are shown at once.
     """
-    label_cols = [('Base', 14), ('Role', 6), ('Shift', 6), ('Slot', 4)]
-    label_ratio = sum(w for _, w in label_cols)
-    day_ratio = 1.0 * len(block_days)
-    total_ratio = label_ratio + day_ratio
-    day_pct = 100 * 1.0 / total_ratio
+    # Fixed percentages (not weighted against day count) — Role/Shift/Slot only ever
+    # hold a couple characters ("Medic", "Night", "#1") so they don't need much room,
+    # which leaves most of the table for the day columns.
+    label_cols = [('Base', 11), ('Role', 4), ('Shift', 4), ('Slot', 2.5)]
+    label_pct_total = sum(w for _, w in label_cols)
+    day_pct = (100 - label_pct_total) / len(block_days)
 
     weekday_header = ""
     tag_header = ""
@@ -959,7 +960,7 @@ def _render_base_analysis_block_table(df, block_days):
         )
 
     label_th = "".join(
-        f'<th rowspan="2" style="width:{100 * w / total_ratio}%; box-sizing:border-box; '
+        f'<th rowspan="2" style="width:{w}%; box-sizing:border-box; '
         f'border:1px solid #ddd; background-color:#f0f2f6; font-size:10px; font-weight:500; '
         f'text-align:center; padding:2px;">{name}</th>'
         for name, w in label_cols
@@ -973,7 +974,7 @@ def _render_base_analysis_block_table(df, block_days):
         top_border = "border-top:3px solid #333;" if is_new_base_group else ""
 
         label_tds = "".join(
-            f'<td style="width:{100 * w / total_ratio}%; box-sizing:border-box; border:1px solid #ddd; '
+            f'<td style="width:{w}%; box-sizing:border-box; border:1px solid #ddd; '
             f'{top_border} font-size:10px; text-align:center; padding:3px 2px; white-space:nowrap; '
             f'overflow:hidden; text-overflow:ellipsis;">{row[name]}</td>'
             for name, w in label_cols
