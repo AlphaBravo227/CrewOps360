@@ -2525,38 +2525,33 @@ def _display_hypothetical_track_by_blocks(shift_track, base_track, days, calenda
             week_num = (block_idx * 2) + (i // 7) + 1
             day_headers.append(f"{weekday_names[day_num]} {block} {week_num}")
 
-        header_row_count = 3 if block_dates else 2
+        header_row_count = 2 if block_dates else 1
         corner_cell = (
             f'<th rowspan="{header_row_count}" style="width:{label_pct}%; box-sizing:border-box; '
             'border:1px solid #ddd; background-color:#f0f2f6;"></th>'
         )
 
-        weekday_cells = "".join(
+        # One combined header cell per day (e.g. "Mon A2") instead of a separate
+        # weekday row and A1/A2/etc. tag row.
+        combined_header_cells = "".join(
             f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
-            f'background-color:#f0f2f6; font-size:9px; font-weight:400; color:#666; '
-            f'text-align:center; padding:2px 0; white-space:nowrap;">{dh.split()[0]}</th>'
-            for dh in day_headers
-        )
-        tag_cells = "".join(
-            f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
-            f'background-color:#f0f2f6; font-size:8px; font-weight:400; color:#666; '
-            f'text-align:center; padding:2px 0; white-space:nowrap;">{dh.split()[1]}{dh.split()[2]}</th>'
+            f'background-color:#f0f2f6; font-size:12px; font-weight:500; color:#333; '
+            f'text-align:center; padding:4px 0; white-space:nowrap;">{dh.split()[0]} {dh.split()[1]}{dh.split()[2]}</th>'
             for dh in day_headers
         )
 
         if block_dates:
             date_cells = "".join(
                 f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
-                f'background-color:#fff; font-size:9px; font-weight:700; color:#000; '
-                f'text-align:center; padding:2px 0; white-space:nowrap;">{d.strftime("%-m/%-d")}</th>'
+                f'background-color:#fff; font-size:12px; font-weight:700; color:#000; '
+                f'text-align:center; padding:3px 0; white-space:nowrap;">{d.strftime("%-m/%-d")}</th>'
                 for d in block_dates
             )
             date_row = f"<tr>{corner_cell}{date_cells}</tr>"
-            weekday_row = f"<tr>{weekday_cells}</tr>"
+            combined_header_row = f"<tr>{combined_header_cells}</tr>"
         else:
             date_row = ""
-            weekday_row = f"<tr>{corner_cell}{weekday_cells}</tr>"
-        tag_row = f"<tr>{tag_cells}</tr>"
+            combined_header_row = f"<tr>{corner_cell}{combined_header_cells}</tr>"
 
         row_defs = [("Assignment", shift_track), ("Possible Shift", base_track)]
         body_rows = ""
@@ -2566,8 +2561,8 @@ def _display_hypothetical_track_by_blocks(shift_track, base_track, days, calenda
                 val = source.get(day, "")
                 shift_val = shift_track.get(day, "")
                 style = (
-                    f"width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; font-size:10px; "
-                    "text-align:center; padding:3px 1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"
+                    f"width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; font-size:13px; "
+                    "text-align:center; padding:5px 1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"
                 )
                 if shift_val == "D":
                     style += " background-color:#d4edda;"
@@ -2578,8 +2573,8 @@ def _display_hypothetical_track_by_blocks(shift_track, base_track, days, calenda
                 cells += f'<td style="{style}">{val}</td>'
             label_cell = (
                 f'<td style="width:{label_pct}%; box-sizing:border-box; border:1px solid #ddd; '
-                'background-color:#f0f2f6; font-size:10px; font-weight:500; text-align:center; '
-                f'padding:3px 2px; white-space:nowrap;">{row_label}</td>'
+                'background-color:#f0f2f6; font-size:13px; font-weight:500; text-align:center; '
+                f'padding:5px 2px; white-space:nowrap;">{row_label}</td>'
             )
             body_rows += f"<tr>{label_cell}{cells}</tr>"
 
@@ -2587,7 +2582,7 @@ def _display_hypothetical_track_by_blocks(shift_track, base_track, days, calenda
         # because an empty date_row leaves a blank line, and CommonMark treats a
         # blank line inside an HTML block as ending it — everything after would
         # render as literal escaped text instead of an actual table.
-        thead_content = date_row + weekday_row + tag_row
+        thead_content = date_row + combined_header_row
         st.markdown(
             f'<table style="width:100%; border-collapse:collapse; table-layout:fixed;">'
             f'<thead>{thead_content}</thead>'
