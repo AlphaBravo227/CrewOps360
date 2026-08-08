@@ -729,11 +729,13 @@ def _render_bid_roster_block_table(df, block_days):
     content — st.dataframe's grid lets a user drag-reorder columns and auto-sizes them
     per content, which would let the day order drift and the widths go uneven.
     """
-    label_cols = [('Staff', 4), ('Role', 1.5)]
-    label_ratio = sum(w for _, w in label_cols)
-    day_ratio = 1.0 * len(block_days)
-    total_ratio = label_ratio + day_ratio
-    day_pct = 100 * 1.0 / total_ratio
+    # Fixed pixel widths, sized to the longest real value at this font (11px Source
+    # Sans) plus padding/border — "Hanley-McCarthy" is the longest staff name on file,
+    # "Medic"/"Nurse" the longest roles. Day <th>/<td> below deliberately carry no
+    # width: table-layout:fixed auto-divides any remaining columns equally once the
+    # sized ones are pinned, which is what actually gives the day columns the room
+    # freed up by narrowing Staff/Role, at any table/container width.
+    label_cols = [('Staff', 90), ('Role', 38)]
 
     weekday_header = ""
     tag_header = ""
@@ -742,18 +744,18 @@ def _render_bid_roster_block_table(df, block_days):
         weekday = parts[0] if parts else day
         tag = f"{parts[1]}{parts[2]}" if len(parts) == 3 else ""
         weekday_header += (
-            f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
+            f'<th style="box-sizing:border-box; border:1px solid #ddd; '
             f'background-color:#f0f2f6; font-size:10px; font-weight:400; color:#666; '
             f'text-align:center; padding:2px 0; white-space:nowrap;">{weekday}</th>'
         )
         tag_header += (
-            f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
+            f'<th style="box-sizing:border-box; border:1px solid #ddd; '
             f'background-color:#f0f2f6; font-size:9px; font-weight:400; color:#666; '
             f'text-align:center; padding:2px 0; white-space:nowrap;">{tag}</th>'
         )
 
     label_th = "".join(
-        f'<th rowspan="2" style="width:{100 * w / total_ratio}%; box-sizing:border-box; '
+        f'<th rowspan="2" style="width:{w}px; box-sizing:border-box; '
         f'border:1px solid #ddd; background-color:#f0f2f6; font-size:10px; font-weight:500; '
         f'text-align:center; padding:2px;">{name}</th>'
         for name, w in label_cols
@@ -762,7 +764,7 @@ def _render_bid_roster_block_table(df, block_days):
     rows_html = ""
     for _, row in df.iterrows():
         label_tds = "".join(
-            f'<td style="width:{100 * w / total_ratio}%; box-sizing:border-box; border:1px solid #ddd; '
+            f'<td style="width:{w}px; box-sizing:border-box; border:1px solid #ddd; '
             f'font-size:11px; text-align:center; padding:3px 2px; white-space:nowrap; '
             f'overflow:hidden; text-overflow:ellipsis;">{row[name]}</td>'
             for name, w in label_cols
@@ -772,7 +774,7 @@ def _render_bid_roster_block_table(df, block_days):
             val = row.get(day, "")
             val = "" if pd.isna(val) else str(val)
             style = (
-                f"width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; font-size:6.5px; "
+                "box-sizing:border-box; border:1px solid #ddd; font-size:8px; "
                 "text-align:center; padding:3px 1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"
             )
             if val.startswith("D"):
