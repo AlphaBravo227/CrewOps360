@@ -254,11 +254,21 @@ def _bidding_role_bucket(role):
     return 'medic' if str(role).strip().lower() == 'medic' else 'nurse'
 
 
+# Probationary staff (under a year, not yet eligible to bid a track) who should be
+# treated like management for bidding purposes: skipped in the bid order so they
+# never get auto-notified/auto-opened when the person ahead of them bids. Unlike
+# real management they still work clinical shifts, so — unlike management — they
+# keep a normal SHIFTS PER PAY PERIOD in Requirements.xlsx (Summer Leave, PDF
+# generation, and the track validators all depend on that field being accurate).
+_BID_INELIGIBLE_STAFF = {"O'Flaherty", "Phelan", "VanderKooi"}
+
+
 def _ordered_bidding_roster(staff_names, role_mapping, seniority_mapping, requirements_map, bucket):
     """
     Seniority-ascending (most senior first) list of staff in one role bucket ('nurse'
     or 'medic'), excluding anyone with no SHIFTS PER PAY PERIOD on file in
-    Requirements.xlsx — those are management/non-bidding staff and are skipped.
+    Requirements.xlsx (management/non-bidding staff) or in _BID_INELIGIBLE_STAFF
+    (probationary staff not yet eligible to bid) — both are skipped.
     """
     def _seniority_key(name):
         try:
@@ -270,6 +280,7 @@ def _ordered_bidding_roster(staff_names, role_mapping, seniority_mapping, requir
         name for name in staff_names
         if _bidding_role_bucket(role_mapping.get(name, '')) == bucket
         and requirements_map.get(name, {}).get('shifts_per_pay_period') is not None
+        and name not in _BID_INELIGIBLE_STAFF
     ]
     return sorted(eligible, key=_seniority_key)
 
@@ -1426,8 +1437,9 @@ def display_bidding_admin_interface():
                     key=_seniority_key)
 
                 # Eligible-to-bid rosters (management staff — blank SHIFTS PER PAY PERIOD
-                # in Requirements.xlsx — excluded), for the submitted/remaining counters
-                # below. Same helpers the auto bid progression cascade uses, so the counts
+                # in Requirements.xlsx — and _BID_INELIGIBLE_STAFF excluded), for the
+                # submitted/remaining counters below. Same helpers the auto bid progression
+                # cascade uses, so the counts
                 # stay consistent with who actually gets skipped there.
                 requirements_map = _load_requirements_map(ctx.get('requirements_df'))
                 nurse_roster = _ordered_bidding_roster(
@@ -1446,7 +1458,7 @@ def display_bidding_admin_interface():
                     st.caption(
                         f"**{nurse_submitted_count} submitted** · "
                         f"**{len(nurse_roster) - nurse_submitted_count} remaining** "
-                        f"({len(nurse_roster)} eligible bidders; managers excluded)")
+                        f"({len(nurse_roster)} eligible bidders; management/non-bidding staff excluded)")
                 with col_medic:
                     st.markdown(f"##### Medics ({len(medic_data)})")
                     st.dataframe(
@@ -1455,7 +1467,7 @@ def display_bidding_admin_interface():
                     st.caption(
                         f"**{medic_submitted_count} submitted** · "
                         f"**{len(medic_roster) - medic_submitted_count} remaining** "
-                        f"({len(medic_roster)} eligible bidders; managers excluded)")
+                        f"({len(medic_roster)} eligible bidders; management/non-bidding staff excluded)")
 
                 st.markdown("---")
                 st.markdown("### Automatic Bid Access & Notification")
