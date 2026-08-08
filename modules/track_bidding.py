@@ -729,7 +729,7 @@ def _render_bid_roster_block_table(df, block_days):
     content — st.dataframe's grid lets a user drag-reorder columns and auto-sizes them
     per content, which would let the day order drift and the widths go uneven.
     """
-    label_cols = [('Staff', 12), ('Role', 8)]
+    label_cols = [('Staff', 4), ('Role', 1.5)]
     label_ratio = sum(w for _, w in label_cols)
     day_ratio = 1.0 * len(block_days)
     total_ratio = label_ratio + day_ratio
@@ -743,12 +743,12 @@ def _render_bid_roster_block_table(df, block_days):
         tag = f"{parts[1]}{parts[2]}" if len(parts) == 3 else ""
         weekday_header += (
             f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
-            f'background-color:#f0f2f6; font-size:9px; font-weight:400; color:#666; '
+            f'background-color:#f0f2f6; font-size:10px; font-weight:400; color:#666; '
             f'text-align:center; padding:2px 0; white-space:nowrap;">{weekday}</th>'
         )
         tag_header += (
             f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
-            f'background-color:#f0f2f6; font-size:8px; font-weight:400; color:#666; '
+            f'background-color:#f0f2f6; font-size:9px; font-weight:400; color:#666; '
             f'text-align:center; padding:2px 0; white-space:nowrap;">{tag}</th>'
         )
 
@@ -941,10 +941,14 @@ def _compute_base_analysis_table(analysis_track, ctx, role_bucket):
 def _render_base_analysis_block_table(df, block_days):
     """
     Fixed-width, non-draggable HTML table for one block of Base Analysis: Base/Role/
-    Shift/Slot plus one column per day, green/red fill status. df must already be
-    sorted so every base's rows are contiguous — a thicker top border is drawn on the
-    first row of each new base (by _base_code) so the groups stay visually separated
-    when multiple bases are shown at once.
+    Shift/Slot plus one column per day, green/red/blue fill status. df must already
+    be sorted so every base's rows (and within a base, every shift's rows, and within
+    a shift, every slot's rows) are contiguous — a three-tier top border marks each
+    new group: a double line between bases, a thin black line between Day and Night
+    within a base, and a thin gray line between numbered slots within the same base +
+    shift. Night rows also get a faint blue tint on the label columns, and filled day
+    cells are blue instead of green, matching the Day/Night colors used elsewhere
+    (Bid Roster, track editors).
     """
     # Fixed percentages (not weighted against day count) — Role/Shift/Slot only ever
     # hold a couple characters ("Medic", "Night", "#1") so they don't need much room,
@@ -961,12 +965,12 @@ def _render_base_analysis_block_table(df, block_days):
         tag = f"{parts[1]}{parts[2]}" if len(parts) == 3 else ""
         weekday_header += (
             f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
-            f'background-color:#f0f2f6; font-size:9px; font-weight:400; color:#666; '
+            f'background-color:#f0f2f6; font-size:10px; font-weight:400; color:#666; '
             f'text-align:center; padding:2px 0; white-space:nowrap;">{weekday}</th>'
         )
         tag_header += (
             f'<th style="width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; '
-            f'background-color:#f0f2f6; font-size:8px; font-weight:400; color:#666; '
+            f'background-color:#f0f2f6; font-size:9px; font-weight:400; color:#666; '
             f'text-align:center; padding:2px 0; white-space:nowrap;">{tag}</th>'
         )
 
@@ -978,15 +982,27 @@ def _render_base_analysis_block_table(df, block_days):
     )
 
     rows_html = ""
-    prev_base = None
+    prev_base = prev_shift = prev_slot = None
     for _, row in df.iterrows():
-        is_new_base_group = prev_base is not None and row['_base_code'] != prev_base
-        prev_base = row['_base_code']
-        top_border = "border-top:3px solid #333;" if is_new_base_group else ""
+        is_new_base = prev_base is not None and row['_base_code'] != prev_base
+        is_new_shift = not is_new_base and prev_shift is not None and row['Shift'] != prev_shift
+        is_new_slot = not is_new_base and not is_new_shift and prev_slot is not None and row['Slot'] != prev_slot
+        if is_new_base:
+            top_border = "border-top:5px double #333;"
+        elif is_new_shift:
+            top_border = "border-top:1.5px solid #333;"
+        elif is_new_slot:
+            top_border = "border-top:1.5px solid #8a8a8a;"
+        else:
+            top_border = ""
+        prev_base, prev_shift, prev_slot = row['_base_code'], row['Shift'], row['Slot']
+
+        is_night = row['Shift'] == 'Night'
+        night_bg = "background-color:rgba(25, 118, 210, 0.10);" if is_night else ""
 
         label_tds = "".join(
             f'<td style="width:{w}%; box-sizing:border-box; border:1px solid #ddd; '
-            f'{top_border} font-size:10px; text-align:center; padding:3px 2px; white-space:nowrap; '
+            f'{top_border} {night_bg} font-size:10px; text-align:center; padding:3px 2px; white-space:nowrap; '
             f'overflow:hidden; text-overflow:ellipsis;">{row[name]}</td>'
             for name, w in label_cols
         )
@@ -994,10 +1010,13 @@ def _render_base_analysis_block_table(df, block_days):
         for day in block_days:
             val = row.get(day, "")
             val = "" if pd.isna(val) else str(val)
-            fill = "#d4edda" if val else "#f8d7da"
+            if val:
+                fill = "#cce5ff" if is_night else "#d4edda"
+            else:
+                fill = "#f8d7da"
             style = (
                 f"width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; {top_border} "
-                f"background-color:{fill}; font-size:8px; text-align:center; padding:3px 1px; "
+                f"background-color:{fill}; font-size:9.5px; text-align:center; padding:3px 1px; "
                 "white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"
             )
             day_tds += f'<td style="{style}">{val}</td>'
