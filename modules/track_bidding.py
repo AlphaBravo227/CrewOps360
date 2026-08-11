@@ -451,6 +451,71 @@ def _max_possible_shifts(nurse_n, medic_n, dual_n, senior_n):
     return max(0, min(senior_n, best))
 
 
+def _simulate_day_flex(day_nurse, day_medic, day_dual, day_senior,
+                        night_nurse, night_medic, night_dual, night_senior,
+                        min_night_crews):
+    """
+    Iteratively flex one night staffer's body (by plain nurse/medic headcount —
+    not touching dual-credential or senior status) over to day, as long as it:
+      - actually raises day's max achievable crews (_max_possible_shifts),
+      - day hasn't already reached 7, and
+      - the resulting night max achievable crews would stay >= min_night_crews.
+
+    A flex is "free" (cost 0) when night has an unmatched/leftover body of that
+    role on hand — pulling it doesn't change night's own max achievable crews
+    at all, since it was never part of a crew pairing to begin with. Only when
+    night has no leftover of that role does a flex cost a full night crew.
+
+    Returns (simulated_day_max, simulated_night_max, night_crew_sacrificed).
+    """
+    day_max = _max_possible_shifts(day_nurse, day_medic, day_dual, day_senior)
+    night_max = _max_possible_shifts(night_nurse, night_medic, night_dual, night_senior)
+    if day_max >= 7:
+        return day_max, night_max, False
+
+    sim_day_nurse, sim_day_medic = day_nurse, day_medic
+    sim_night_nurse, sim_night_medic = night_nurse, night_medic
+    cur_day_max, cur_night_max = day_max, night_max
+    sacrificed = False
+
+    while cur_day_max < 7:
+        best = None
+        for role in ('medic', 'nurse'):
+            night_count = sim_night_medic if role == 'medic' else sim_night_nurse
+            if night_count <= 0:
+                continue
+            trial_day_medic = sim_day_medic + 1 if role == 'medic' else sim_day_medic
+            trial_day_nurse = sim_day_nurse + 1 if role == 'nurse' else sim_day_nurse
+            trial_day_max = _max_possible_shifts(trial_day_nurse, trial_day_medic, day_dual, day_senior)
+            if trial_day_max <= cur_day_max:
+                continue  # this flex wouldn't actually help day
+
+            trial_night_medic = sim_night_medic - 1 if role == 'medic' else sim_night_medic
+            trial_night_nurse = sim_night_nurse - 1 if role == 'nurse' else sim_night_nurse
+            trial_night_max = _max_possible_shifts(trial_night_nurse, trial_night_medic, night_dual, night_senior)
+            cost = cur_night_max - trial_night_max
+
+            if cost > 0 and trial_night_max < min_night_crews:
+                continue  # would drop night below the floor — not allowed
+
+            # Prefer free flexes over costly ones; among equal cost, prefer the bigger day gain.
+            key = (cost, -trial_day_max)
+            payload = (trial_day_max, trial_night_max, cost,
+                       trial_day_nurse, trial_day_medic, trial_night_nurse, trial_night_medic)
+            if best is None or key < best[0]:
+                best = (key, payload)
+
+        if best is None:
+            break  # no further eligible flex
+        (_, (trial_day_max, trial_night_max, cost,
+             sim_day_nurse, sim_day_medic, sim_night_nurse, sim_night_medic)) = best
+        if cost > 0:
+            sacrificed = True
+        cur_day_max, cur_night_max = trial_day_max, trial_night_max
+
+    return cur_day_max, cur_night_max, sacrificed
+
+
 def _compute_bid_day_stats(days, bids, role_mapping, no_matrix_mapping):
     """One row per bid day with Nurse/Medic/Dual/Senior counts and Max Shifts, Day and Night."""
     resolved = [(_bid_role_and_senior(b, role_mapping, no_matrix_mapping), b) for b in bids]
@@ -553,21 +618,123 @@ def _build_demand_vs_cap_chart(day_stats, period, role):
     return (bars + cap_line).properties(title=f'{period} · {role} (dashed = cap)', height=180)
 
 
-def _build_max_shifts_chart(day_stats):
-    """Max achievable Day/Night crews (see _max_possible_shifts) across the 42 days."""
-    long_df = day_stats.melt(id_vars=['day_label'], value_vars=['day_max_shifts', 'night_max_shifts'],
-                              var_name='Period', value_name='Max Crews')
+def _split_day_label(day_label):
+    """"Sun A 1" -> ("Sun", "A1") — same letter+number join the block-table
+    headers already use, kept apart from the weekday by one space."""
+    parts = day_label.split()
+    if len(parts) == 3:
+        return parts[0], f"{parts[1]}{parts[2]}"
+    return day_label, ""
+
+
+# Vega-Lite has no declarative hatch-fill, so the flex-simulation's day
+# extension bar (see _build_max_shifts_chart) references a literal
+# url(#diagonalHatchDay) fill — this injects the matching SVG <pattern>
+# definition into the page. SVG patterns resolve by ID lookup anywhere in the
+# document, so this can live in its own tiny invisible <svg> rather than
+# needing to reach into the chart's own generated markup.
+_DIAGONAL_HATCH_PATTERN_HTML = """
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <pattern id="diagonalHatchDay" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+      <rect width="6" height="6" fill="white"></rect>
+      <line x1="0" y1="0" x2="0" y2="6" stroke="#66bb6a" stroke-width="2"></line>
+    </pattern>
+  </defs>
+</svg>
+"""
+
+
+def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
+    """
+    Max achievable Day/Night crews (see _max_possible_shifts) across the 42
+    days, as a diverging bar chart — Day bars above the zero line, Night bars
+    below. Solid lines mark the Day (7) and Night (min_night_crews) minimums;
+    dashed lines mark the secondary Day references (5, 9). Day labels are a
+    two-row weekday/tag strip (see _split_day_label) kept below the chart on
+    a shared x-scale, since Vega-Lite axis labels can't reliably line-break.
+
+    When simulate=True, days below the Day minimum get a hatched extension
+    (see _simulate_day_flex and _DIAGONAL_HATCH_PATTERN_HTML) showing how far
+    the day count could climb by flexing Night staff over. A white tick marks
+    the reduced Night level on any day where a flex actually cost a full crew.
+    """
+    df = day_stats.copy()
+    split = df['day_label'].map(_split_day_label)
+    df['weekday'] = split.map(lambda p: p[0])
+    df['tag'] = split.map(lambda p: p[1])
+    df['day_label_display'] = df['weekday'] + ' ' + df['tag']
+    order = df['day_label_display'].tolist()
+
+    if simulate:
+        sim = df.apply(lambda r: _simulate_day_flex(
+            r.day_nurse, r.day_medic, r.day_dual, r.day_senior,
+            r.night_nurse, r.night_medic, r.night_dual, r.night_senior,
+            min_night_crews), axis=1)
+        df['sim_day_max'] = [s[0] for s in sim]
+        df['sim_night_max'] = [s[1] for s in sim]
+        df['sacrificed'] = [s[2] for s in sim]
+
+    long_df = df.melt(id_vars=['day_label_display'], value_vars=['day_max_shifts', 'night_max_shifts'],
+                       var_name='Period', value_name='Max Crews')
     long_df['Period'] = long_df['Period'].map({'day_max_shifts': 'Day', 'night_max_shifts': 'Night'})
+    long_df['plot_value'] = long_df.apply(
+        lambda r: r['Max Crews'] if r['Period'] == 'Day' else -r['Max Crews'], axis=1)
 
     color_scale = alt.Scale(domain=list(_PERIOD_COLORS.keys()), range=list(_PERIOD_COLORS.values()))
-    order = day_stats['day_label'].tolist()
-    return alt.Chart(long_df).mark_line(strokeWidth=2, point=True).encode(
-        x=alt.X('day_label:N', sort=order, title=None,
-                axis=alt.Axis(labelAngle=-90, labelFontSize=8, labelOverlap=False)),
-        y=alt.Y('Max Crews:Q'),
+    shared_x = alt.X('day_label_display:N', sort=order, title=None, axis=None)
+
+    bars = alt.Chart(long_df).mark_bar().encode(
+        x=shared_x,
+        y=alt.Y('plot_value:Q', title='Max Crews  (Day above · Night below)',
+                axis=alt.Axis(labelExpr='abs(datum.value)', grid=False)),
         color=alt.Color('Period:N', scale=color_scale, legend=alt.Legend(title=None)),
-        tooltip=['day_label:N', 'Period:N', 'Max Crews:Q'],
-    ).properties(height=240)
+        tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
+                 alt.Tooltip('Period:N', title='Period'),
+                 alt.Tooltip('Max Crews:Q', title='Max Crews')],
+    )
+
+    zero_line = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(strokeWidth=1.5, color='#333').encode(y='y:Q')
+    day_refs_soft = alt.Chart(pd.DataFrame({'y': [5, 9]})).mark_rule(
+        strokeDash=[4, 3], strokeWidth=1, color=_PERIOD_COLORS['Day'], opacity=0.6).encode(y='y:Q')
+    day_ref_min = alt.Chart(pd.DataFrame({'y': [7]})).mark_rule(
+        strokeWidth=2, color=_PERIOD_COLORS['Day'], opacity=0.95).encode(y='y:Q')
+    night_ref_min = alt.Chart(pd.DataFrame({'y': [-min_night_crews]})).mark_rule(
+        strokeWidth=2, color=_PERIOD_COLORS['Night'], opacity=0.95).encode(y='y:Q')
+
+    layers = [bars, zero_line, day_refs_soft, day_ref_min, night_ref_min]
+
+    if simulate:
+        ext_df = df[df['sim_day_max'] > df['day_max_shifts']].copy()
+        if not ext_df.empty:
+            ext_df['y0'] = ext_df['day_max_shifts']
+            ext_df['y1'] = ext_df['sim_day_max']
+            day_extension = alt.Chart(ext_df).mark_bar(
+                stroke=_PERIOD_COLORS['Day'], strokeWidth=1.5, strokeDash=[4, 3],
+                fill='url(#diagonalHatchDay)',
+            ).encode(x=shared_x, y='y0:Q', y2='y1:Q',
+                      tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
+                               alt.Tooltip('day_max_shifts:Q', title='Actual max'),
+                               alt.Tooltip('sim_day_max:Q', title='Simulated max')])
+            layers.append(day_extension)
+
+        sac_df = df[df['sacrificed']].copy()
+        if not sac_df.empty:
+            sac_df['y'] = -sac_df['sim_night_max']
+            night_marker = alt.Chart(sac_df).mark_tick(color='white', thickness=2, size=28).encode(
+                x=shared_x, y='y:Q',
+                tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
+                         alt.Tooltip('night_max_shifts:Q', title='Actual night max'),
+                         alt.Tooltip('sim_night_max:Q', title='Simulated night max')])
+            layers.append(night_marker)
+
+    main = alt.layer(*layers).properties(height=340)
+
+    weekday_row = alt.Chart(df).mark_text(fontSize=11, fontWeight='bold', dy=0).encode(x=shared_x, text='weekday:N')
+    tag_row = alt.Chart(df).mark_text(fontSize=11, dy=16).encode(x=shared_x, text='tag:N')
+    label_strip = (weekday_row + tag_row).properties(height=40)
+
+    return alt.vconcat(main, label_strip, spacing=2).resolve_scale(x='shared')
 
 
 def _build_bid_summary_table(day_stats):
@@ -636,9 +803,27 @@ def _render_bid_analysis_tab(config_names, default_track_index):
             day_stats[f'{period}_cap_{role}'] = day_stats['weekday'].map(
                 lambda w: weekday_caps.get(w, {}).get(f'{cap_key_prefix}{role}s', 0))
 
-    st.markdown("#### Where Staff Are Bidding")
-    st.caption("One row per staff member (nurses A–Z, then medics A–Z), one column per bid day.")
-    st.altair_chart(_build_bid_heatmap(days, bids, role_mapping, no_matrix_mapping), use_container_width=True)
+    st.markdown("#### Maximum Achievable Crews per Day")
+    st.caption("The most complete Nurse+Medic crews that day's bidders could staff — letting dual-credentialed "
+               "staff flex to whichever side is short, capped by how many no-matrix/senior staff bid that day. "
+               "Solid lines mark the Day (7) and Night minimums; dashed lines are secondary Day references (5, 9).")
+    simulate_flex = st.checkbox("Simulate N to D Flex?", value=False, key="bid_analysis_simulate_flex")
+    min_night_crews = 4
+    if simulate_flex:
+        min_night_crews = st.selectbox(
+            "Minimum Night Crews:", list(range(10)), index=4, key="bid_analysis_min_night_crews")
+        st.caption("Hatched extensions show how far a below-minimum Day count could climb by flexing Night "
+                   "staff over, without dropping Night below this minimum. A white tick marks Night's new "
+                   "level on any day where a flex actually cost a full night crew.")
+        st.markdown(_DIAGONAL_HATCH_PATTERN_HTML, unsafe_allow_html=True)
+    # Split into 14-day blocks like Bid Roster/Base Analysis — at the full 42-day
+    # width the two-row weekday/tag labels don't have enough room per column and
+    # start overlapping.
+    for block_letter, block_start in (('A', 0), ('B', 14), ('C', 28)):
+        st.markdown(f"##### Block {block_letter}")
+        block_day_stats = day_stats.iloc[block_start:block_start + 14]
+        st.altair_chart(_build_max_shifts_chart(block_day_stats, simulate_flex, min_night_crews),
+                         use_container_width=True)
 
     st.markdown("#### Bid Composition by Day")
     st.altair_chart(_build_composition_chart(day_stats, 'Day'), use_container_width=True)
@@ -655,13 +840,12 @@ def _render_bid_analysis_tab(config_names, default_track_index):
         st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Day', 'Medic'), use_container_width=True)
         st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Night', 'Medic'), use_container_width=True)
 
-    st.markdown("#### Maximum Achievable Crews per Day")
-    st.caption("The most complete Nurse+Medic crews that day's bidders could staff — letting dual-credentialed "
-               "staff flex to whichever side is short, capped by how many no-matrix/senior staff bid that day.")
-    st.altair_chart(_build_max_shifts_chart(day_stats), use_container_width=True)
-
     with st.expander("Full Day/Night breakdown table (Max Shifts / Senior / Nurse / Dual / Medic)"):
         st.dataframe(_build_bid_summary_table(day_stats), use_container_width=True)
+
+    with st.expander("Where Staff Are Bidding", expanded=False):
+        st.caption("One row per staff member (nurses A–Z, then medics A–Z), one column per bid day.")
+        st.altair_chart(_build_bid_heatmap(days, bids, role_mapping, no_matrix_mapping), use_container_width=True)
 
 
 def _compute_bid_roster_table(analysis_track, ctx, bids):
