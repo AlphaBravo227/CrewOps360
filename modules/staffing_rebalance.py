@@ -10,6 +10,9 @@ reviews this, then makes the actual offer and applies the change by hand in the
 existing Admin Track Editor.
 """
 
+import io
+from datetime import datetime
+
 import streamlit as st
 import pandas as pd
 
@@ -277,6 +280,7 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
         rows.append({
             'Name': name,
             'Role': ctx['role_mapping'].get(name, 'Unknown'),
+            'Seniority': ctx['seniority_mapping'].get(name),
             'No Matrix': ctx['no_matrix_mapping'].get(name, False),
             'Currently extra on': source_day,
             'Would get a shift?': hypo['assignment'] is not None,
@@ -303,6 +307,33 @@ def _format_deficit(deficit):
         return ""
     parts = [f"{deficit[k]} {k}" for k in ('nurse', 'medic', 'senior') if deficit[k]]
     return " + ".join(parts) if parts else "0 (senior cap only)"
+
+
+def _safe_filename_part(text):
+    return ''.join(c if c.isalnum() else '_' for c in text)
+
+
+def _excel_download_button(df, label, file_prefix, key, sheet_name="Sheet1"):
+    """'Download as Excel' button for a DataFrame — same ExcelWriter+download_button
+    pattern as the Bid Analysis tab's Day/Night breakdown export."""
+    from openpyxl.utils import get_column_letter
+    from modules.track_bidding import _eastern_tz
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
+        ws = writer.sheets[sheet_name]
+        for col_idx, col in enumerate(df.columns, start=1):
+            content_width = int(df[col].astype(str).map(len).max()) if len(df) else 0
+            ws.column_dimensions[get_column_letter(col_idx)].width = min(40, max(10, content_width + 2, len(str(col)) + 2))
+    buffer.seek(0)
+
+    st.download_button(
+        label, data=buffer,
+        file_name=f"{_safe_filename_part(file_prefix)}_{datetime.now(_eastern_tz).strftime('%Y%m%d%H%M%S')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=key,
+    )
 
 
 def _render_staffing_rebalance_tab(config_names, default_track_index):
@@ -350,6 +381,11 @@ def _render_staffing_rebalance_tab(config_names, default_track_index):
     } for s in shortfalls])
     st.markdown(f"#### {len(shortfalls)} below-minimum shifts")
     st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    _excel_download_button(
+        summary_df, "📥 Download shortfalls as Excel",
+        f"{track_name}_staffing_rebalance_shortfalls", key="download_rebalance_shortfalls",
+        sheet_name="Shortfalls",
+    )
 
     st.markdown("#### Who could cover a specific shortfall")
     labels = [_format_shortfall_label(s) for s in shortfalls]
@@ -369,4 +405,10 @@ def _render_staffing_rebalance_tab(config_names, default_track_index):
         return
 
     rows.sort(key=lambda r: (not r['Would get a shift?'], r['Competition rank'] or 999))
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    candidates_df = pd.DataFrame(rows)
+    st.dataframe(candidates_df, use_container_width=True, hide_index=True)
+    _excel_download_button(
+        candidates_df, "📥 Download candidates as Excel",
+        f"{track_name}_{shortfall['day_label']}_{shortfall['period']}_{shortfall['mode']}_candidates",
+        key=f"download_rebalance_candidates_{picked_label}", sheet_name="Candidates",
+    )
