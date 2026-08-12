@@ -467,12 +467,15 @@ def _simulate_day_flex(day_nurse, day_medic, day_dual, day_senior,
     at all, since it was never part of a crew pairing to begin with. Only when
     night has no leftover of that role does a flex cost a full night crew.
 
-    Returns (simulated_day_max, simulated_night_max, night_crew_sacrificed).
+    Returns (simulated_day_max, simulated_night_max, night_crew_sacrificed,
+    sim_day_nurse, sim_day_medic, sim_night_nurse, sim_night_medic) — the trailing
+    four are the post-flex body counts (Staffing Rebalance needs them to compute
+    what's still short; the chart ignores them).
     """
     day_max = _max_possible_shifts(day_nurse, day_medic, day_dual, day_senior)
     night_max = _max_possible_shifts(night_nurse, night_medic, night_dual, night_senior)
     if day_max >= 7:
-        return day_max, night_max, False
+        return day_max, night_max, False, day_nurse, day_medic, night_nurse, night_medic
 
     sim_day_nurse, sim_day_medic = day_nurse, day_medic
     sim_night_nurse, sim_night_medic = night_nurse, night_medic
@@ -514,7 +517,8 @@ def _simulate_day_flex(day_nurse, day_medic, day_dual, day_senior,
             sacrificed = True
         cur_day_max, cur_night_max = trial_day_max, trial_night_max
 
-    return cur_day_max, cur_night_max, sacrificed
+    return (cur_day_max, cur_night_max, sacrificed,
+            sim_day_nurse, sim_day_medic, sim_night_nurse, sim_night_medic)
 
 
 def _compute_bid_day_stats(days, bids, role_mapping, no_matrix_mapping):
@@ -1351,9 +1355,9 @@ def display_bidding_admin_interface():
         if bid_cfg and bid_cfg['track_name'] in config_names else 0
     )
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "📊 Overview", "🛠️ Track Configs", "👥 Manage Bid Access", "➕ Add/Remove Selection", "📈 Bid Analysis",
-        "📋 Bid Roster", "🏢 Base Analysis"
+        "📋 Bid Roster", "🏢 Base Analysis", "⚖️ Staffing Rebalance"
     ])
 
     # ── Tab 1: Overview ──
@@ -1916,6 +1920,11 @@ def display_bidding_admin_interface():
     # ── Tab 7: Base Analysis ──
     with tab7:
         _render_base_analysis_tab(config_names, default_track_index)
+
+    # ── Tab 8: Staffing Rebalance ──
+    with tab8:
+        from modules.staffing_rebalance import _render_staffing_rebalance_tab
+        _render_staffing_rebalance_tab(config_names, default_track_index)
 
 
 # ──────────────────────────────────────────────
