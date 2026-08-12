@@ -11,6 +11,7 @@ import altair as alt
 from datetime import datetime, date, timedelta
 import pytz
 import json
+import io
 
 _eastern_tz = pytz.timezone('America/New_York')
 
@@ -841,7 +842,28 @@ def _render_bid_analysis_tab(config_names, default_track_index):
         st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Night', 'Medic'), use_container_width=True)
 
     with st.expander("Full Day/Night breakdown table (Max Shifts / Senior / Nurse / Dual / Medic)"):
-        st.dataframe(_build_bid_summary_table(day_stats), use_container_width=True)
+        summary_table = _build_bid_summary_table(day_stats)
+        st.dataframe(summary_table, use_container_width=True)
+
+        from openpyxl.utils import get_column_letter
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            sheet_name = 'Day-Night Breakdown'
+            summary_table.to_excel(writer, sheet_name=sheet_name, index=True)
+            ws = writer.sheets[sheet_name]
+            ws.column_dimensions['A'].width = 26
+            for col_idx in range(2, len(summary_table.columns) + 2):
+                ws.column_dimensions[get_column_letter(col_idx)].width = 10
+        excel_buffer.seek(0)
+
+        safe_track_name = ''.join(c if c.isalnum() else '_' for c in analysis_track)
+        st.download_button(
+            "📥 Download as Excel",
+            data=excel_buffer,
+            file_name=f"{safe_track_name}_bid_breakdown_{datetime.now(_eastern_tz).strftime('%Y%m%d%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"download_bid_breakdown_{analysis_track}",
+        )
 
     with st.expander("Where Staff Are Bidding", expanded=False):
         st.caption("One row per staff member (nurses A–Z, then medics A–Z), one column per bid day.")
