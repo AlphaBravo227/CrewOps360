@@ -425,6 +425,7 @@ def _send_manual_bid_notification(staff_name, manual_email, bid_track_name):
 # on the Where Staff Are Bidding and Maximum Achievable Crews charts.
 _ROLE_COLORS = {'Nurse': '#f28b82', 'Medic': '#2a78d6', 'Dual': '#eda100'}
 _PERIOD_COLORS = {'Day': '#66bb6a', 'Night': '#1976d2'}
+_PERIOD_LINE_COLORS = {'Day': '#4c9950', 'Night': '#125aa3'}
 _SHIFT_COLORS = {'D': '#66bb6a', 'N': '#1976d2', 'AT': '#898781', 'Off': '#f0efec'}
 
 
@@ -632,18 +633,18 @@ def _split_day_label(day_label):
     return day_label, ""
 
 
-# Vega-Lite has no declarative hatch-fill, so the flex-simulation's day
-# extension bar (see _build_max_shifts_chart) references a literal
-# url(#diagonalHatchDay) fill — this injects the matching SVG <pattern>
+# Vega-Lite has no declarative hatch-fill, so the flex-simulation's Night
+# "capacity given up" gap (see _build_max_shifts_chart) references a literal
+# url(#hatchNightBorrow) fill — this injects the matching SVG <pattern>
 # definition into the page. SVG patterns resolve by ID lookup anywhere in the
 # document, so this can live in its own tiny invisible <svg> rather than
 # needing to reach into the chart's own generated markup.
 _DIAGONAL_HATCH_PATTERN_HTML = """
 <svg width="0" height="0" style="position:absolute">
   <defs>
-    <pattern id="diagonalHatchDay" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+    <pattern id="hatchNightBorrow" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
       <rect width="6" height="6" fill="white"></rect>
-      <line x1="0" y1="0" x2="0" y2="6" stroke="#66bb6a" stroke-width="2"></line>
+      <line x1="0" y1="0" x2="0" y2="6" stroke="#6fa8dc" stroke-width="2"></line>
     </pattern>
   </defs>
 </svg>
@@ -659,10 +660,13 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
     two-row weekday/tag strip (see _split_day_label) kept below the chart on
     a shared x-scale, since Vega-Lite axis labels can't reliably line-break.
 
-    When simulate=True, days below the Day minimum get a hatched extension
-    (see _simulate_day_flex and _DIAGONAL_HATCH_PATTERN_HTML) showing how far
-    the day count could climb by flexing Night staff over. A white tick marks
-    the reduced Night level on any day where a flex actually cost a full crew.
+    When simulate=True, days below the Day minimum get a solid blue extension
+    (see _simulate_day_flex) — Night's own color — showing how far the day
+    count could climb by flexing Night staff over. When a flex actually costs
+    a full Night crew, the Night bar itself is drawn at its new, smaller
+    height, and the gap it gave up (old max down to new max) is filled with a
+    white/light-blue hatch rather than solid blue, so it reads as "no longer
+    there" instead of double-counting.
     """
     df = day_stats.copy()
     split = df['day_label'].map(_split_day_label)
@@ -685,6 +689,17 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
     long_df['Period'] = long_df['Period'].map({'day_max_shifts': 'Day', 'night_max_shifts': 'Night'})
     long_df['plot_value'] = long_df.apply(
         lambda r: r['Max Crews'] if r['Period'] == 'Day' else -r['Max Crews'], axis=1)
+
+    if simulate:
+        # A sacrificed flex lowers Night's own max, so the main Night bar is
+        # drawn at that new, smaller height — the hatch gap below fills in
+        # what it gave up, instead of the bar overstating what Night can
+        # still staff.
+        sac_by_day = df.set_index('day_label_display')['sacrificed']
+        sim_night_by_day = df.set_index('day_label_display')['sim_night_max']
+        sacrificed_rows = (long_df['Period'] == 'Night') & long_df['day_label_display'].map(sac_by_day)
+        long_df.loc[sacrificed_rows, 'plot_value'] = \
+            -long_df.loc[sacrificed_rows, 'day_label_display'].map(sim_night_by_day)
 
     color_scale = alt.Scale(domain=list(_PERIOD_COLORS.keys()), range=list(_PERIOD_COLORS.values()))
     shared_x = alt.X('day_label_display:N', sort=order, title=None, axis=None)
@@ -715,8 +730,7 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
             ext_df['y0'] = ext_df['day_max_shifts']
             ext_df['y1'] = ext_df['sim_day_max']
             day_extension = alt.Chart(ext_df).mark_bar(
-                stroke=_PERIOD_COLORS['Day'], strokeWidth=1.5, strokeDash=[4, 3],
-                fill='url(#diagonalHatchDay)',
+                fill=_PERIOD_COLORS['Night'], stroke=_PERIOD_LINE_COLORS['Night'], strokeWidth=1.2,
             ).encode(x=shared_x, y='y0:Q', y2='y1:Q',
                       tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
                                alt.Tooltip('day_max_shifts:Q', title='Actual max'),
@@ -725,13 +739,15 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
 
         sac_df = df[df['sacrificed']].copy()
         if not sac_df.empty:
-            sac_df['y'] = -sac_df['sim_night_max']
-            night_marker = alt.Chart(sac_df).mark_tick(color='white', thickness=2, size=28).encode(
-                x=shared_x, y='y:Q',
-                tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
-                         alt.Tooltip('night_max_shifts:Q', title='Actual night max'),
-                         alt.Tooltip('sim_night_max:Q', title='Simulated night max')])
-            layers.append(night_marker)
+            sac_df['y0'] = -sac_df['night_max_shifts']
+            sac_df['y1'] = -sac_df['sim_night_max']
+            night_borrow_gap = alt.Chart(sac_df).mark_bar(
+                fill='url(#hatchNightBorrow)', stroke=_PERIOD_LINE_COLORS['Night'], strokeWidth=1.2,
+            ).encode(x=shared_x, y='y0:Q', y2='y1:Q',
+                      tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
+                               alt.Tooltip('night_max_shifts:Q', title='Actual night max'),
+                               alt.Tooltip('sim_night_max:Q', title='Simulated night max')])
+            layers.append(night_borrow_gap)
 
     main = alt.layer(*layers).properties(height=340)
 
@@ -817,9 +833,10 @@ def _render_bid_analysis_tab(config_names, default_track_index):
     if simulate_flex:
         min_night_crews = st.selectbox(
             "Minimum Night Crews:", list(range(10)), index=4, key="bid_analysis_min_night_crews")
-        st.caption("Hatched extensions show how far a below-minimum Day count could climb by flexing Night "
-                   "staff over, without dropping Night below this minimum. A white tick marks Night's new "
-                   "level on any day where a flex actually cost a full night crew.")
+        st.caption("Solid blue extensions show how far a below-minimum Day count could climb by flexing "
+                   "Night staff over, without dropping Night below this minimum. On any day where a flex "
+                   "actually costs a full night crew, Night is redrawn at its new level and the white/"
+                   "light-blue hatch marks the crew it gave up.")
         st.markdown(_DIAGONAL_HATCH_PATTERN_HTML, unsafe_allow_html=True)
     # Split into 14-day blocks like Bid Roster/Base Analysis — at the full 42-day
     # width the two-row weekday/tag labels don't have enough room per column and
@@ -984,7 +1001,7 @@ def _render_bid_roster_block_table(df, block_days):
             val = row.get(day, "")
             val = "" if pd.isna(val) else str(val)
             style = (
-                "box-sizing:border-box; border:1px solid #ddd; font-size:8px; "
+                "box-sizing:border-box; border:1px solid #ddd; font-size:10px; "
                 "text-align:center; padding:3px 1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"
             )
             if val.startswith("D"):
@@ -1005,6 +1022,101 @@ def _render_bid_roster_block_table(df, block_days):
         <tbody>{rows_html}</tbody>
     </table>
     """, unsafe_allow_html=True)
+
+
+def _build_bid_roster_excel(table, days):
+    """
+    Bid Roster as a styled .xlsx: Staff/Role plus all 42 days side by side in
+    one continuous sheet (rather than the on-screen separate Block A/B/C
+    tables), with a merged header row naming each block's 14-day span so the
+    blocks stay visually distinguishable in the combined view.
+    """
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Bid Roster"
+
+    header_fill = PatternFill(start_color="F0F2F6", end_color="F0F2F6", fill_type="solid")
+    day_fills = {
+        'D': PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid"),
+        'N': PatternFill(start_color="CCE5FF", end_color="CCE5FF", fill_type="solid"),
+        'AT': PatternFill(start_color="E2E3E5", end_color="E2E3E5", fill_type="solid"),
+    }
+    thin = Side(style='thin', color='DDDDDD')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal='center', vertical='center')
+
+    blocks = [("Block A", days[0:14]), ("Block B", days[14:28]), ("Block C", days[28:42])]
+
+    col = 3
+    for block_name, block_days in blocks:
+        start_col, end_col = col, col + len(block_days) - 1
+        ws.merge_cells(start_row=1, start_column=start_col, end_row=1, end_column=end_col)
+        for c in range(start_col, end_col + 1):
+            cell = ws.cell(row=1, column=c)
+            cell.fill = header_fill
+            cell.border = border
+        top_left = ws.cell(row=1, column=start_col, value=block_name)
+        top_left.font = Font(bold=True)
+        top_left.alignment = center
+        col = end_col + 1
+
+    for header_col, label in ((1, 'Staff'), (2, 'Role')):
+        ws.merge_cells(start_row=1, start_column=header_col, end_row=3, end_column=header_col)
+        cell = ws.cell(row=1, column=header_col, value=label)
+        cell.font = Font(bold=True)
+        cell.alignment = center
+        cell.fill = header_fill
+        cell.border = border
+
+    col = 3
+    for day in days:
+        weekday, tag = _split_day_label(day)
+        for row_idx, text in ((2, weekday), (3, tag)):
+            cell = ws.cell(row=row_idx, column=col, value=text)
+            cell.font = Font(size=9, color="666666")
+            cell.alignment = center
+            cell.fill = header_fill
+            cell.border = border
+        col += 1
+
+    row_idx = 4
+    for _, row in table.iterrows():
+        staff_cell = ws.cell(row=row_idx, column=1, value=row['Staff'])
+        staff_cell.border = border
+        role_cell = ws.cell(row=row_idx, column=2, value=row['Role'])
+        role_cell.alignment = center
+        role_cell.border = border
+        col = 3
+        for day in days:
+            val = row.get(day, "")
+            val = "" if pd.isna(val) else str(val)
+            cell = ws.cell(row=row_idx, column=col, value=val)
+            cell.alignment = center
+            cell.border = border
+            cell.font = Font(size=9, bold=(val == "AT"))
+            if val.startswith("D"):
+                cell.fill = day_fills['D']
+            elif val.startswith("N"):
+                cell.fill = day_fills['N']
+            elif val == "AT":
+                cell.fill = day_fills['AT']
+            col += 1
+        row_idx += 1
+
+    ws.column_dimensions['A'].width = 20
+    ws.column_dimensions['B'].width = 10
+    for c in range(3, 3 + len(days)):
+        ws.column_dimensions[get_column_letter(c)].width = 7
+    ws.freeze_panes = "C4"
+
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
 
 
 def _render_bid_roster_tab(config_names, default_track_index):
@@ -1074,12 +1186,12 @@ def _render_bid_roster_tab(config_names, default_track_index):
 
     days = ctx['days']
     blocks = [("A", days[0:14]), ("B", days[14:28]), ("C", days[28:42])]
+    export_table = _sort_table(table)
 
     if view == "All Staff":
-        sorted_table = _sort_table(table)
         for block_letter, block_days in blocks:
             st.markdown(f"#### Block {block_letter}")
-            _render_bid_roster_block_table(sorted_table, block_days)
+            _render_bid_roster_block_table(export_table, block_days)
     else:
         for bucket_label, bucket in [("Nurses", "nurse"), ("Medics", "medic")]:
             st.markdown(f"### {bucket_label}")
@@ -1090,6 +1202,14 @@ def _render_bid_roster_tab(config_names, default_track_index):
             for block_letter, block_days in blocks:
                 st.markdown(f"#### Block {block_letter}")
                 _render_bid_roster_block_table(sub, block_days)
+
+    st.download_button(
+        "⬇️ Download to Excel",
+        data=_build_bid_roster_excel(export_table, days),
+        file_name=f"Bid_Roster_{roster_track}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="bid_roster_download_excel",
+    )
 
 
 # ──────────────────────────────────────────────
@@ -1150,6 +1270,38 @@ def _compute_base_analysis_table(analysis_track, ctx, role_bucket):
     return pd.DataFrame(rows)
 
 
+def _compute_unassigned_rows(role_table, bids, role_mapping, no_matrix_mapping, role_bucket, role_label, days):
+    """
+    Two extra rows (Day/Night) for one role, not tied to any base: everyone
+    who bid that shift type but the seniority competition never gave a slot —
+    role_table already has who won each slot, so this just inverts that
+    against who actually bid. '_base_code' is a sentinel that doesn't match
+    any real base code, so _render_base_analysis_block_table's group-border
+    logic naturally draws the same double-line separator ahead of these rows
+    that it draws between any two different bases.
+    """
+    rows = []
+    for shift_type, shift_label in (('day', 'Day'), ('night', 'Night')):
+        code = 'D' if shift_type == 'day' else 'N'
+        shift_rows = role_table[role_table['Shift'] == shift_label]
+        row = {
+            'Base': 'Unassigned', '_base_code': 'UNASSIGNED', 'Role': role_label,
+            'Shift': shift_label, 'Slot': '—',
+        }
+        for day in days:
+            winners = set(shift_rows[day]) - {''}
+            bidders = set()
+            for b in bids:
+                if (b['track_data'] or {}).get(day) != code:
+                    continue
+                raw_role, _ = _bid_role_and_senior(b, role_mapping, no_matrix_mapping)
+                if _bidding_role_bucket(raw_role) == role_bucket:
+                    bidders.add(b['staff_name'])
+            row[day] = ", ".join(sorted(bidders - winners))
+        rows.append(row)
+    return rows
+
+
 def _render_base_analysis_block_table(df, block_days):
     """
     Fixed-width, non-draggable HTML table for one block of Base Analysis: Base/Role/
@@ -1160,7 +1312,10 @@ def _render_base_analysis_block_table(df, block_days):
     within a base, and a thin gray line between numbered slots within the same base +
     shift. Night rows also get a faint blue tint on the label columns, and filled day
     cells are blue instead of green, matching the Day/Night colors used elsewhere
-    (Bid Roster, track editors).
+    (Bid Roster, track editors). Rows with _base_code == 'UNASSIGNED' (see
+    _compute_unassigned_rows) render differently: cells hold a name list rather than
+    a single winner, so they wrap instead of truncating, and amber/neutral fill
+    replaces the green/blue/red fill status — a blank cell there is the good outcome.
     """
     # Fixed percentages (not weighted against day count) — Role/Shift/Slot only ever
     # hold a couple characters ("Medic", "Night", "#1") so they don't need much room,
@@ -1210,6 +1365,7 @@ def _render_base_analysis_block_table(df, block_days):
         prev_base, prev_shift, prev_slot = row['_base_code'], row['Shift'], row['Slot']
 
         is_night = row['Shift'] == 'Night'
+        is_unassigned = row['_base_code'] == 'UNASSIGNED'
         night_bg = "background-color:rgba(25, 118, 210, 0.10);" if is_night else ""
 
         label_tds = "".join(
@@ -1222,14 +1378,18 @@ def _render_base_analysis_block_table(df, block_days):
         for day in block_days:
             val = row.get(day, "")
             val = "" if pd.isna(val) else str(val)
-            if val:
-                fill = "#cce5ff" if is_night else "#d4edda"
+            if is_unassigned:
+                # Names, not a single winner, so cells wrap instead of truncating —
+                # and blank here is the good outcome (everyone who bid got a slot),
+                # so it isn't colored red like a genuinely unfilled slot.
+                fill = "#fff3cd" if val else "#f8f9fa"
+                overflow_rule = "white-space:normal; word-break:break-word;"
             else:
-                fill = "#f8d7da"
+                fill = ("#cce5ff" if is_night else "#d4edda") if val else "#f8d7da"
+                overflow_rule = "white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"
             style = (
                 f"width:{day_pct}%; box-sizing:border-box; border:1px solid #ddd; {top_border} "
-                f"background-color:{fill}; font-size:9.5px; text-align:center; padding:3px 1px; "
-                "white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"
+                f"background-color:{fill}; font-size:9.5px; text-align:center; padding:3px 1px; {overflow_rule}"
             )
             day_tds += f'<td style="{style}">{val}</td>'
         rows_html += f"<tr>{label_tds}{day_tds}</tr>"
@@ -1243,6 +1403,122 @@ def _render_base_analysis_block_table(df, block_days):
         <tbody>{rows_html}</tbody>
     </table>
     """, unsafe_allow_html=True)
+
+
+def _build_base_analysis_excel(filtered, days):
+    """
+    Base Analysis as a styled .xlsx: Base/Role/Shift/Slot plus all 42 days in
+    one continuous sheet, with the same merged Block A/B/C header row as the
+    Bid Roster export, and the same three-tier group separators (double line
+    between bases, medium line between Day/Night, thin dark line between
+    slots) rendered as Excel cell borders instead of CSS. filtered must
+    already be sorted the way _render_base_analysis_tab sorts it, so each
+    group's rows are contiguous.
+    """
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Base Analysis"
+
+    header_fill = PatternFill(start_color="F0F2F6", end_color="F0F2F6", fill_type="solid")
+    night_tint_fill = PatternFill(start_color="EAF2FB", end_color="EAF2FB", fill_type="solid")
+    fills = {
+        'day_filled': PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid"),
+        'night_filled': PatternFill(start_color="CCE5FF", end_color="CCE5FF", fill_type="solid"),
+        'unfilled': PatternFill(start_color="F8D7DA", end_color="F8D7DA", fill_type="solid"),
+        'unassigned_has': PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid"),
+        'unassigned_none': PatternFill(start_color="F8F9FA", end_color="F8F9FA", fill_type="solid"),
+    }
+    thin_gray = Side(style='thin', color='DDDDDD')
+    base_top = Side(style='double', color='333333')
+    shift_top = Side(style='medium', color='333333')
+    slot_top = Side(style='thin', color='8A8A8A')
+    center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+    label_cols = [('Base', 1, 22), ('Role', 2, 8), ('Shift', 3, 8), ('Slot', 4, 6)]
+    n_label_cols = len(label_cols)
+
+    blocks = [("Block A", days[0:14]), ("Block B", days[14:28]), ("Block C", days[28:42])]
+    col = n_label_cols + 1
+    for block_name, block_days in blocks:
+        start_col, end_col = col, col + len(block_days) - 1
+        ws.merge_cells(start_row=1, start_column=start_col, end_row=1, end_column=end_col)
+        for c in range(start_col, end_col + 1):
+            cell = ws.cell(row=1, column=c)
+            cell.fill = header_fill
+            cell.border = Border(left=thin_gray, right=thin_gray, top=thin_gray, bottom=thin_gray)
+        top_left = ws.cell(row=1, column=start_col, value=block_name)
+        top_left.font = Font(bold=True)
+        top_left.alignment = center
+        col = end_col + 1
+
+    for label, header_col, width in label_cols:
+        ws.merge_cells(start_row=1, start_column=header_col, end_row=3, end_column=header_col)
+        cell = ws.cell(row=1, column=header_col, value=label)
+        cell.font = Font(bold=True)
+        cell.alignment = center
+        cell.fill = header_fill
+        cell.border = Border(left=thin_gray, right=thin_gray, top=thin_gray, bottom=thin_gray)
+        ws.column_dimensions[get_column_letter(header_col)].width = width
+
+    col = n_label_cols + 1
+    for day in days:
+        weekday, tag = _split_day_label(day)
+        for row_idx, text in ((2, weekday), (3, tag)):
+            cell = ws.cell(row=row_idx, column=col, value=text)
+            cell.font = Font(size=9, color="666666")
+            cell.alignment = center
+            cell.fill = header_fill
+            cell.border = Border(left=thin_gray, right=thin_gray, top=thin_gray, bottom=thin_gray)
+        ws.column_dimensions[get_column_letter(col)].width = 7
+        col += 1
+
+    row_idx = 4
+    prev_base = prev_shift = prev_slot = None
+    for _, row in filtered.iterrows():
+        is_new_base = prev_base is not None and row['_base_code'] != prev_base
+        is_new_shift = not is_new_base and prev_shift is not None and row['Shift'] != prev_shift
+        is_new_slot = not is_new_base and not is_new_shift and prev_slot is not None and row['Slot'] != prev_slot
+        top_side = base_top if is_new_base else shift_top if is_new_shift else slot_top if is_new_slot else thin_gray
+        prev_base, prev_shift, prev_slot = row['_base_code'], row['Shift'], row['Slot']
+
+        is_night = row['Shift'] == 'Night'
+        is_unassigned = row['_base_code'] == 'UNASSIGNED'
+        row_border = Border(left=thin_gray, right=thin_gray, top=top_side, bottom=thin_gray)
+
+        for label, col_idx, _ in label_cols:
+            cell = ws.cell(row=row_idx, column=col_idx, value=row[label])
+            cell.alignment = center
+            cell.border = row_border
+            if is_night:
+                cell.fill = night_tint_fill
+
+        col = n_label_cols + 1
+        for day in days:
+            val = row.get(day, "")
+            val = "" if pd.isna(val) else str(val)
+            cell = ws.cell(row=row_idx, column=col, value=val)
+            cell.alignment = center
+            cell.border = row_border
+            cell.font = Font(size=9)
+            if is_unassigned:
+                cell.fill = fills['unassigned_has'] if val else fills['unassigned_none']
+            elif val:
+                cell.fill = fills['night_filled'] if is_night else fills['day_filled']
+            else:
+                cell.fill = fills['unfilled']
+            col += 1
+        row_idx += 1
+
+    ws.freeze_panes = f"{get_column_letter(n_label_cols + 1)}4"
+
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
 
 
 def _render_base_analysis_tab(config_names, default_track_index):
@@ -1264,6 +1540,9 @@ def _render_base_analysis_tab(config_names, default_track_index):
     if ctx is None:
         st.error(roster_error)
         return
+
+    ok, bids_raw = get_all_bid_tracks(analysis_track)
+    bids = bids_raw if ok else []
 
     role_choices = st.multiselect(
         "Role:", ["Nurses", "Medics"], default=["Nurses", "Medics"], key="base_analysis_role")
@@ -1287,15 +1566,33 @@ def _render_base_analysis_tab(config_names, default_track_index):
     selected_shifts = st.multiselect(
         "Shift Type:", ["Day", "Night"], default=["Day", "Night"], key="base_analysis_shift_filter")
 
+    show_unassigned = st.checkbox(
+        "Show Unassigned (bid but won no slot)", value=False, key="base_analysis_show_unassigned")
+    if show_unassigned:
+        st.caption("Adds an 'Unassigned' row per role/shift: everyone who bid that shift but every slot "
+                   "of it was already won by someone more senior, so they aren't tied to a specific base.")
+
+    days = ctx['days']
+
     with st.spinner("Computing base fill status..."):
         role_tables = []
+        unassigned_rows = []
         for role_label, role_bucket in role_buckets:
             role_table = _compute_base_analysis_table(analysis_track, ctx, role_bucket)
             role_table.insert(1, 'Role', role_label)
             role_tables.append(role_table)
+            if show_unassigned:
+                unassigned_rows.extend(_compute_unassigned_rows(
+                    role_table, bids, ctx['role_mapping'], ctx['no_matrix_mapping'],
+                    role_bucket, role_label, days))
         table = pd.concat(role_tables, ignore_index=True)
 
     filtered = table[table['_base_code'].isin(selected_bases) & table['Shift'].isin(selected_shifts)]
+
+    if unassigned_rows:
+        unassigned_df = pd.DataFrame(unassigned_rows)
+        unassigned_df = unassigned_df[unassigned_df['Shift'].isin(selected_shifts)]
+        filtered = pd.concat([filtered, unassigned_df], ignore_index=True)
 
     if filtered.empty:
         st.info("No base/shift combinations match the current filters.")
@@ -1303,18 +1600,28 @@ def _render_base_analysis_tab(config_names, default_track_index):
 
     # Group every base's rows together (across shift/slot/role) rather than grouping
     # by role first, so Nurse and Medic rows for the same base sit next to each other.
+    # 'UNASSIGNED' is listed last so those rows sort as their own group at the end,
+    # after every real base.
     filtered = filtered.copy()
-    filtered['_base_order'] = pd.Categorical(filtered['_base_code'], categories=_ALL_BASE_CODES, ordered=True)
+    filtered['_base_order'] = pd.Categorical(
+        filtered['_base_code'], categories=_ALL_BASE_CODES + ['UNASSIGNED'], ordered=True)
     filtered['_shift_order'] = pd.Categorical(filtered['Shift'], categories=['Day', 'Night'], ordered=True)
-    filtered['_slot_order'] = filtered['Slot'].str.lstrip('#').astype(int)
+    filtered['_slot_order'] = pd.to_numeric(filtered['Slot'].str.lstrip('#'), errors='coerce').fillna(9999)
     filtered['_role_order'] = pd.Categorical(filtered['Role'], categories=['Nurse', 'Medic'], ordered=True)
     filtered = filtered.sort_values(['_base_order', '_shift_order', '_slot_order', '_role_order'])
 
-    days = ctx['days']
     blocks = [("A", days[0:14]), ("B", days[14:28]), ("C", days[28:42])]
     for block_letter, block_days in blocks:
         st.markdown(f"#### Block {block_letter}")
         _render_base_analysis_block_table(filtered, block_days)
+
+    st.download_button(
+        "⬇️ Download to Excel",
+        data=_build_base_analysis_excel(filtered, days),
+        file_name=f"Base_Analysis_{analysis_track}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="base_analysis_download_excel",
+    )
 
 
 # ──────────────────────────────────────────────
