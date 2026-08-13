@@ -694,7 +694,7 @@ def _render_base_outlook(staff_name, need, report_ctx):
     else:
         best = options[0]
         moves = best['moves']
-        line = f"**Where you'd work: {best['base']}** ({_rank_text(best)} on your list)"
+        line = f"**Hypothetical Shift: {best['base']}** ({_rank_text(best)} on your list)"
         if moves:
             line += " — " + "; ".join(
                 f"{m['staff']} shifts {m['from']} → {m['to']}, which they rank higher"
@@ -876,7 +876,7 @@ pairing, and you'll see the status of each offer here.
     table = pd.DataFrame([{
         'Need': _shift_label(m['need']['day_label'], m['need']['period']),
         'Priority': _PRIORITY_LABEL[need_priority(m['need'])],
-        'Where you\'d work': m['base']['base'] if m['base'] else 'Not guaranteed',
+        'Hypothetical Shift': m['base']['base'] if m['base'] else 'Not guaranteed',
         'Your ranking there': _rank_text(m['base']),
         'Shifts you could give up': _give_up_summary(m['options']),
     } for m in menu])
@@ -892,10 +892,11 @@ pairing, and you'll see the status of each offer here.
         },
     )
     st.caption(
-        "**Priority** is where the help is needed most — red first. **Where you'd work** only "
-        "ever shows a base you could take without pushing anyone already on that day onto a base "
-        "they rank lower, so it's a base you could actually expect, not the one a straight "
-        "seniority draft would hand you."
+        "**Priority** is where the help is needed most — red first. **Hypothetical Shift** is the "
+        "base you could expect to work if you moved onto that day. It only ever shows a base you "
+        "could take without pushing anyone already on that day onto a base they rank lower — so "
+        "it isn't the base a straight seniority draft would hand you, it's one you could "
+        "realistically hold."
     )
 
     # ── Build the offer ──
@@ -1003,7 +1004,7 @@ def _offers_dataframe(offers, report_ctx):
         'Seniority': seniority.get(o['staff_name']),
         'Would give up': _shift_label(o['give_up_day'], o['give_up_period']),
         'Their rank': o['preference_rank'],
-        'Where they\'d work': where(o),
+        'Hypothetical Shift': where(o),
         'Status': _STATUS_LABEL.get(o['status'], o['status']),
         'Still applies': '' if o['status'] != 'pending' else ('Yes' if o['still_valid'] else o['stale_reason']),
         'Notes': o['staff_notes'] or '',
@@ -1108,8 +1109,8 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
                     seniority = report_ctx['ctx']['seniority_mapping'].get(o['staff_name'], '?')
                     base = best_base_for_need(o['staff_name'], o['need_day'],
                                                o['need_period'], report_ctx)
-                    where = (f"would work {base['base']} ({_rank_text(base)})" if base
-                             else "no base can be promised")
+                    where = (f"hypothetical shift {base['base']} ({_rank_text(base)})" if base
+                             else "no hypothetical shift can be promised")
                     line = (f"**{o['staff_name']}** ({role}, seniority {seniority}) — "
                             f"give up {_shift_label(o['give_up_day'], o['give_up_period'])} "
                             f"· their rank {o['preference_rank']} · {where}")
