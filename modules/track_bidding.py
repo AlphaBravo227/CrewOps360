@@ -1355,9 +1355,9 @@ def display_bidding_admin_interface():
         if bid_cfg and bid_cfg['track_name'] in config_names else 0
     )
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "📊 Overview", "🛠️ Track Configs", "👥 Manage Bid Access", "➕ Add/Remove Selection", "📈 Bid Analysis",
-        "📋 Bid Roster", "🏢 Base Analysis", "⚖️ Staffing Rebalance"
+        "📋 Bid Roster", "🏢 Base Analysis", "⚖️ Staffing Rebalance", "🔁 Needs Swap Requests"
     ])
 
     # ── Tab 1: Overview ──
@@ -1926,6 +1926,11 @@ def display_bidding_admin_interface():
         from modules.staffing_rebalance import _render_staffing_rebalance_tab
         _render_staffing_rebalance_tab(config_names, default_track_index)
 
+    # ── Tab 9: Needs Swap Requests ──
+    with tab9:
+        from modules.track_needs_swap import _render_needs_swap_admin_tab
+        _render_needs_swap_admin_tab(config_names, default_track_index)
+
 
 # ──────────────────────────────────────────────
 # Main bidding page (staff-facing)
@@ -2001,10 +2006,18 @@ def display_track_bidding():
     bid_cfg = get_bidding_track_config()
     active_cfg = get_active_track_config()
 
+    # Track Needs Swap — opens after bidding closes and the shortfalls are known, so
+    # it renders on its own regardless of whether a bidding cycle is currently open.
+    from modules.track_needs_swap import display_staff_needs_swap
+    swap_shown = display_staff_needs_swap()
+    if swap_shown:
+        st.markdown("---")
+
     if not bid_cfg:
-        st.info("Bidding is currently closed. Check back later for the next bidding cycle.")
-        if active_cfg:
-            st.markdown(f"**Current active track:** {active_cfg['track_name']}")
+        if not swap_shown:
+            st.info("Bidding is currently closed. Check back later for the next bidding cycle.")
+            if active_cfg:
+                st.markdown(f"**Current active track:** {active_cfg['track_name']}")
         return
 
     bid_track_name = bid_cfg['track_name']

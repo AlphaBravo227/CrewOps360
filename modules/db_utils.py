@@ -267,6 +267,8 @@ def initialize_database():
             night_kpym INTEGER DEFAULT 2,
             use_weekday_capacity INTEGER DEFAULT 0,
             auto_bid_progression INTEGER DEFAULT 0,
+            needs_swap_open INTEGER DEFAULT 0,
+            needs_swap_surplus_buffer INTEGER DEFAULT 0,
             created_date TEXT NOT NULL,
             modified_date TEXT NOT NULL
         )
@@ -324,6 +326,10 @@ def initialize_database():
             cursor.execute('ALTER TABLE track_configs ADD COLUMN use_weekday_capacity INTEGER DEFAULT 0')
         if 'auto_bid_progression' not in tc_columns:
             cursor.execute('ALTER TABLE track_configs ADD COLUMN auto_bid_progression INTEGER DEFAULT 0')
+        if 'needs_swap_open' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN needs_swap_open INTEGER DEFAULT 0')
+        if 'needs_swap_surplus_buffer' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN needs_swap_surplus_buffer INTEGER DEFAULT 0')
 
         # Check if we need to add the new columns to existing tracks table
         cursor.execute("PRAGMA table_info(tracks)")
@@ -451,6 +457,30 @@ def initialize_database():
         bpl_columns = [column[1] for column in cursor.fetchall()]
         if 'trigger_type' not in bpl_columns:
             cursor.execute("ALTER TABLE bid_progression_log ADD COLUMN trigger_type TEXT DEFAULT 'auto'")
+
+        # NEW: Staff-submitted offers to move onto an identified staffing need.
+        # One row per (staff, need, shift they'd give up) — a staff member may offer
+        # several give-up options for the same need, ranked, and an admin approves the
+        # single pairing they want to apply as a track change.
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS track_need_offers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_name TEXT NOT NULL,
+            staff_name TEXT NOT NULL,
+            need_day TEXT NOT NULL,
+            need_period TEXT NOT NULL,
+            give_up_day TEXT NOT NULL,
+            give_up_period TEXT NOT NULL,
+            preference_rank INTEGER NOT NULL DEFAULT 1,
+            staff_notes TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            submission_date TEXT NOT NULL,
+            reviewed_by TEXT,
+            review_date TEXT,
+            review_notes TEXT,
+            UNIQUE(track_name, staff_name, need_day, need_period, give_up_day, give_up_period)
+        )
+        ''')
 
         # Commit changes
         conn.commit()
@@ -1955,7 +1985,7 @@ def update_track_config(track_name, **kwargs):
                     'min_day_staff', 'min_night_staff',
                     'day_kmht', 'day_klwm', 'day_kbed', 'day_1b9', 'day_kpym',
                     'night_klwm', 'night_kbed', 'night_kpym', 'use_weekday_capacity',
-                    'auto_bid_progression'}
+                    'auto_bid_progression', 'needs_swap_open', 'needs_swap_surplus_buffer'}
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return False, "No valid fields to update"
@@ -2641,6 +2671,189 @@ def get_bid_progression_log(track_name, limit=100):
     except Exception as e:
         print(f"Error getting bid progression log: {str(e)}")
         return []
+
+
+# ──────────────────────────────────────────────
+# Track Needs Swap — staff offers to move onto an identified staffing need
+# ──────────────────────────────────────────────
+
+_NEED_OFFER_COLUMNS = [
+    'id', 'track_name', 'staff_name', 'need_day', 'need_period',
+    'give_up_day', 'give_up_period', 'preference_rank', 'staff_notes',
+    'status', 'submission_date', 'reviewed_by', 'review_date', 'review_notes',
+]
+
+
+def get_needs_swap_track_config():
+    """Return the track_config row with the needs-swap window open, or None."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM track_configs WHERE needs_swap_open = 1 LIMIT 1")
+        row = cursor.fetchone()
+        if row:
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+        return None
+    except Exception as e:
+        print(f"Error getting needs swap track config: {e}")
+        return None
+
+
+def save_need_swap_offers(track_name, staff_name, offers, staff_notes=None):
+    """
+    Replace a staff member's still-pending offers for a track cycle with `offers`.
+
+    Offers already acted on by an admin (approved/declined/superseded) are left
+    untouched — a staff member can revise what they're still waiting on, but can't
+    rewrite history.
+
+    Args:
+        track_name (str): Bid track/cycle name
+        staff_name (str): Staff member submitting
+        offers (list): Dicts with need_day, need_period, give_up_day, give_up_period,
+            preference_rank
+        staff_notes (str, optional): Free-text note stored on every row of this submission
+
+    Returns:
+        tuple: (success, message)
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+        cursor.execute("""DELETE FROM track_need_offers
+                          WHERE track_name = ? AND staff_name = ? AND status = 'pending'""",
+                       (track_name, staff_name))
+
+        saved = 0
+        for offer in offers:
+            # An offer the admin already decided on stays as-is rather than being
+            # re-opened as pending by a later submission.
+            cursor.execute("""SELECT status FROM track_need_offers
+                              WHERE track_name = ? AND staff_name = ? AND need_day = ?
+                                AND need_period = ? AND give_up_day = ? AND give_up_period = ?""",
+                           (track_name, staff_name, offer['need_day'], offer['need_period'],
+                            offer['give_up_day'], offer['give_up_period']))
+            if cursor.fetchone():
+                continue
+            cursor.execute("""INSERT INTO track_need_offers
+                (track_name, staff_name, need_day, need_period, give_up_day, give_up_period,
+                 preference_rank, staff_notes, status, submission_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                           (track_name, staff_name, offer['need_day'], offer['need_period'],
+                            offer['give_up_day'], offer['give_up_period'],
+                            int(offer.get('preference_rank', 1)), staff_notes, now))
+            saved += 1
+
+        conn.commit()
+        if not offers:
+            return True, "Your previous offers were withdrawn — nothing is pending for you now."
+        return True, f"Submitted {saved} swap option{'s' if saved != 1 else ''}."
+    except Exception as e:
+        return False, f"Error saving swap offers: {e}"
+
+
+def get_need_swap_offers(track_name, staff_name=None, statuses=None):
+    """
+    Offers for a track cycle, newest submission first.
+
+    Args:
+        track_name (str): Bid track/cycle name
+        staff_name (str, optional): Limit to one staff member
+        statuses (list, optional): Limit to these status values
+
+    Returns:
+        list: List of dicts keyed by _NEED_OFFER_COLUMNS
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        query = f"SELECT {', '.join(_NEED_OFFER_COLUMNS)} FROM track_need_offers WHERE track_name = ?"
+        params = [track_name]
+        if staff_name:
+            query += " AND staff_name = ?"
+            params.append(staff_name)
+        if statuses:
+            query += f" AND status IN ({', '.join('?' * len(statuses))})"
+            params.extend(statuses)
+        query += " ORDER BY need_day, staff_name, preference_rank"
+        cursor.execute(query, params)
+        return [dict(zip(_NEED_OFFER_COLUMNS, row)) for row in cursor.fetchall()]
+    except Exception as e:
+        print(f"Error getting need swap offers: {e}")
+        return []
+
+
+def update_need_swap_offer_status(offer_id, status, reviewed_by=None, review_notes=None):
+    """Set one offer's status (pending/approved/declined/superseded) and stamp the review."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("""UPDATE track_need_offers
+                          SET status = ?, reviewed_by = ?, review_date = ?, review_notes = ?
+                          WHERE id = ?""",
+                       (status, reviewed_by, now, review_notes, offer_id))
+        conn.commit()
+        return True, f"Offer marked {status}."
+    except Exception as e:
+        return False, f"Error updating offer: {e}"
+
+
+def supersede_sibling_need_offers(offer_id):
+    """
+    Mark the approved offer's siblings — the same staff member's other pending
+    give-up options for that same need — as superseded, since the need is now
+    covered by them and only one of the options can be applied.
+
+    Returns:
+        int: Number of rows superseded
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""SELECT track_name, staff_name, need_day, need_period
+                          FROM track_need_offers WHERE id = ?""", (offer_id,))
+        row = cursor.fetchone()
+        if not row:
+            return 0
+        now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("""UPDATE track_need_offers
+                          SET status = 'superseded', review_date = ?,
+                              review_notes = 'Another option for this need was approved'
+                          WHERE track_name = ? AND staff_name = ? AND need_day = ?
+                            AND need_period = ? AND status = 'pending' AND id != ?""",
+                       (now, row[0], row[1], row[2], row[3], offer_id))
+        conn.commit()
+        return cursor.rowcount
+    except Exception as e:
+        print(f"Error superseding sibling offers: {e}")
+        return 0
+
+
+def delete_need_swap_offers(track_name, staff_name=None):
+    """Delete offers for a track cycle (all of them, or just one staff member's)."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        if staff_name:
+            cursor.execute("DELETE FROM track_need_offers WHERE track_name = ? AND staff_name = ?",
+                           (track_name, staff_name))
+        else:
+            cursor.execute("DELETE FROM track_need_offers WHERE track_name = ?", (track_name,))
+        deleted = cursor.rowcount
+        conn.commit()
+        return True, f"Deleted {deleted} offer{'s' if deleted != 1 else ''}."
+    except Exception as e:
+        return False, f"Error deleting offers: {e}"
 
 
 # Clean up connections when the module is unloaded

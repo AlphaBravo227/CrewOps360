@@ -342,7 +342,9 @@ def _render_staffing_rebalance_tab(config_names, default_track_index):
         "For every below-minimum Day/Night shift in a track cycle: the crew mix that would "
         "close the gap, and who — within that same week, and only if it wouldn't break their "
         "own track's validation rules — could be asked to move to cover it. Recommendations "
-        "only; nothing here changes the schedule."
+        "only; nothing here changes the schedule. To ask staff to volunteer for these same "
+        "shifts instead of picking people yourself, open the swap window in the "
+        "**Needs Swap Requests** tab."
     )
 
     if not config_names:
