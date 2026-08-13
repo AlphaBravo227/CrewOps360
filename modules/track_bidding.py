@@ -1637,10 +1637,11 @@ def _render_admin_mode_toggle():
         st.markdown("## Track Bidding Admin")
         password = st.text_input("Enter admin password:", type="password", key="bid_admin_pw")
 
+        # text_input already commits (and reruns) on Enter, so once the password
+        # checks out there's nothing left to confirm — no separate button click needed.
         if check_admin_access(password) and not st.session_state.track_bidding_admin_mode:
-            if st.button("🔧 Enter Admin Mode", key="bid_enter_admin_mode", use_container_width=True):
-                st.session_state.track_bidding_admin_mode = True
-                st.rerun()
+            st.session_state.track_bidding_admin_mode = True
+            st.rerun()
 
         if st.session_state.track_bidding_admin_mode:
             st.success("✅ Admin Mode Active")

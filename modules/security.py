@@ -223,19 +223,19 @@ def display_user_login():
             </style>
             """, unsafe_allow_html=True)
             
-            # PIN input field
-            entered_pin = st.text_input(
-                "Access Code",
-                type="password",
-                max_chars=4,
-                placeholder="Enter 4-digit code (same as duty phone unlock)",
-                help="Contact your supervisor if you need the access code",
-                key="user_pin_input"
-            )
-            
-            # Login button
-            login_clicked = st.button("Access System", use_container_width=True, type="primary")
-            
+            # PIN input + submit in a form, so pressing Enter in the field submits
+            # too instead of requiring a separate click on "Access System".
+            with st.form("login_form"):
+                entered_pin = st.text_input(
+                    "Access Code",
+                    type="password",
+                    max_chars=4,
+                    placeholder="Enter 4-digit code (same as duty phone unlock)",
+                    help="Contact your supervisor if you need the access code",
+                    key="user_pin_input"
+                )
+                login_clicked = st.form_submit_button("Access System", use_container_width=True, type="primary")
+
             # Process login attempt
             if login_clicked:
                 if len(entered_pin) == 4 and entered_pin.isdigit():
