@@ -1099,10 +1099,11 @@ def display_summer_leave_app(excel_handler, track_manager):
         st.markdown("### Administration")
         admin_password = st.text_input("Admin Password:", type="password", key="summer_admin_pw")
 
-        if admin_password == "PW":
-            if st.button("🔧 Enter Admin Mode"):
-                st.session_state.summer_leave_admin_mode = True
-                st.rerun()
+        # text_input already commits (and reruns) on Enter, so once the password
+        # checks out there's nothing left to confirm — no separate button click needed.
+        if admin_password == "PW" and not st.session_state.summer_leave_admin_mode:
+            st.session_state.summer_leave_admin_mode = True
+            st.rerun()
 
         if st.session_state.summer_leave_admin_mode:
             st.success("✅ Admin Mode Active")
