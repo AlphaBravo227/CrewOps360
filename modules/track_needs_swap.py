@@ -36,8 +36,9 @@ from modules.db_utils import (
     update_need_swap_offer_status,
     update_track_config,
 )
+from modules.nondisplacing_assignment import nondisplacing_bases, rank_options
 from modules.staffing_rebalance import _excel_download_button, find_shortfalls, load_report_context
-from modules.track_bidding import _bid_role_and_senior, _max_possible_shifts
+from modules.track_bidding import _bid_role_and_senior, _bidding_role_bucket, _max_possible_shifts
 
 _PERIOD_CODE = {'Day': 'D', 'Night': 'N'}
 _CODE_PERIOD = {'D': 'Day', 'N': 'Night'}
@@ -373,6 +374,81 @@ def swap_options_for_staff(staff_name, needs, report_ctx, surplus_buffer=0):
 
 
 # ──────────────────────────────────────────────
+# Where a volunteer would actually work
+# ──────────────────────────────────────────────
+
+def _seniority_of(staff_name, report_ctx):
+    try:
+        return int(report_ctx['ctx']['seniority_mapping'].get(staff_name))
+    except (TypeError, ValueError):
+        return 999
+
+
+def day_roster(day_label, period, role_bucket, report_ctx, exclude=None):
+    """
+    Everyone bidding this day/period in one role bucket, most senior first — the
+    people a volunteer would be joining, and whose base assignments the
+    non-displacing rule protects.
+    """
+    code = _PERIOD_CODE[period]
+    roster = [
+        (name, _seniority_of(name, report_ctx))
+        for name, bid in report_ctx['bids_by_name'].items()
+        if name != exclude and (bid['track_data'] or {}).get(day_label) == code
+        and _bidding_role_bucket(
+            _bid_role_and_senior(bid, report_ctx['ctx']['role_mapping'],
+                                 report_ctx['ctx']['no_matrix_mapping'])[0]) == role_bucket
+    ]
+    roster.sort(key=lambda pair: (pair[1], pair[0]))
+    return roster
+
+
+def base_options_for_need(staff_name, day_label, period, report_ctx):
+    """
+    The bases this volunteer could be shown for a need — only those where everyone
+    already on that day keeps or improves their own ranked base (see
+    modules/nondisplacing_assignment.py).
+
+    Returns (options, blocked): options is [{'base', 'rank', 'moves'}] best-rank
+    first, blocked is {base: reason} for the ones deliberately withheld.
+    """
+    bid = report_ctx['bids_by_name'].get(staff_name)
+    if not bid:
+        return [], {}
+
+    role, _ = _bid_role_and_senior(bid, report_ctx['ctx']['role_mapping'],
+                                   report_ctx['ctx']['no_matrix_mapping'])
+    bucket = _bidding_role_bucket(role)
+
+    def compute():
+        roster = day_roster(day_label, period, bucket, report_ctx, exclude=staff_name)
+        options, _baseline, blocked = nondisplacing_bases(
+            roster, period, report_ctx['all_base_prefs'], report_ctx['base_shift_counts'])
+        return options, blocked
+
+    # Which bases survive depends only on the people already on the day, not on who
+    # the volunteer is, so it's computed once per day/period/role bucket and reused.
+    # A volunteer is off the need day by definition; the only way that isn't true is
+    # a stale offer, and then the roster really is different, so skip the cache.
+    if (bid['track_data'] or {}).get(day_label):
+        options, blocked = compute()
+    else:
+        cache = report_ctx.setdefault('_base_options_cache', {})
+        key = (day_label, period, bucket)
+        if key not in cache:
+            cache[key] = compute()
+        options, blocked = cache[key]
+
+    return rank_options(staff_name, options, period, report_ctx['all_base_prefs']), blocked
+
+
+def best_base_for_need(staff_name, day_label, period, report_ctx):
+    """The single base to show a volunteer for a need, or None if none can be promised."""
+    options, _blocked = base_options_for_need(staff_name, day_label, period, report_ctx)
+    return options[0] if options else None
+
+
+# ──────────────────────────────────────────────
 # Shared context
 # ──────────────────────────────────────────────
 
@@ -546,6 +622,49 @@ def _need_headline(need):
     return text
 
 
+def _rank_text(option):
+    """'#2' / 'unranked' / '—' for a base option the volunteer might be shown."""
+    if not option:
+        return "—"
+    return f"#{option['rank']}" if option['rank'] is not None else "unranked"
+
+
+def _render_base_outlook(staff_name, need, report_ctx):
+    """Where a volunteer would land on this need's day, and what's deliberately withheld."""
+    options, blocked = base_options_for_need(staff_name, need['day_label'], need['period'], report_ctx)
+
+    if not options:
+        full = any('spoken for' in reason for reason in blocked.values())
+        why = ("Every base slot on this day is already taken." if full else
+               "Every base is held by someone who ranks it at least as highly as anywhere "
+               "else they could move to, so none can be freed up without setting someone back.")
+        st.warning(
+            f"**No base can be promised on this day.** {why} You can still offer to move here "
+            "to cover the need — the shift counts either way — but your location can't be "
+            "predicted in advance."
+        )
+    else:
+        best = options[0]
+        moves = best['moves']
+        line = f"**Where you'd work: {best['base']}** ({_rank_text(best)} on your list)"
+        if moves:
+            line += " — " + "; ".join(
+                f"{m['staff']} shifts {m['from']} → {m['to']}, which they rank higher"
+                if (m['to_rank'] is not None and m['from_rank'] is not None and m['to_rank'] < m['from_rank'])
+                else f"{m['staff']} shifts {m['from']} → {m['to']}, no worse for them"
+                for m in moves)
+        st.markdown(line)
+
+        others = options[1:]
+        if others:
+            st.caption("Also open to you: " +
+                       ", ".join(f"{o['base']} ({_rank_text(o)})" for o in others))
+
+    if blocked:
+        st.caption("Not offered: " + ", ".join(sorted(blocked)) +
+                   " — taking those would move someone already on this day to a base they rank lower.")
+
+
 def _deficit_text(deficit):
     if not deficit:
         return ""
@@ -640,7 +759,12 @@ assign people to them, we're asking first.
    consecutive shifts, weekend group — and, on top of that, across the point where the track
    repeats: a Day at the start of Block A is checked for rest against the nights at the end of
    Block C. Nothing here can break your track.
-5. **Choose as many or as few as you like — or none at all.** For each need you're open to, pick
+5. **The base you're shown is one you could actually expect.** Volunteering doesn't let you take a
+   base off someone who bid that day. You're only shown a base where everyone already working it
+   either stays put or moves somewhere *they* rank higher — so if two people are sitting on their
+   first choice, that base won't be offered to you no matter how senior you are, and what you see
+   instead is what you'd really get.
+6. **Choose as many or as few as you like — or none at all.** For each need you're open to, pick
    the shifts you'd be willing to give up and rank them. Ranking 1 is what you'd prefer to give up
    first.
 
@@ -697,14 +821,25 @@ pairing, and you'll see the status of each offer here.
         return True
 
     st.caption(f"{len(menu)} of the {len(needs)} open need(s) are ones you could fill.")
+    for m in menu:
+        m['base'] = best_base_for_need(selected_staff, m['need']['day_label'],
+                                        m['need']['period'], report_ctx)
+
     st.dataframe(pd.DataFrame([{
         'Need': _shift_label(m['need']['day_label'], m['need']['period']),
         'Crews now': m['need']['achievable'],
         'Minimum': m['need']['minimum'],
         'Crew mix needed': _deficit_text(m['need']['deficit']),
         'Crews if you moved there': m['after'],
+        'Where you\'d work': m['base']['base'] if m['base'] else 'Not guaranteed',
+        'Your ranking there': _rank_text(m['base']),
         'Shifts you could give up': len(m['options']),
     } for m in menu]), use_container_width=True, hide_index=True)
+    st.caption(
+        "**Where you'd work** only ever shows a base you could take without pushing anyone "
+        "already on that day onto a base they rank lower — so it's a base you could actually "
+        "expect, not the one a straight seniority draft would hand you."
+    )
 
     # ── Build the offer ──
     st.markdown("#### Build your offer")
@@ -728,6 +863,8 @@ pairing, and you'll see the status of each offer here.
         need = m['need']
         with st.expander(f"🔁 {label}", expanded=True):
             st.markdown(_need_headline(need))
+            _render_base_outlook(selected_staff, need, report_ctx)
+            st.markdown("**Which of your shifts would you give up for it?**")
             rows = []
             for i, opt in enumerate(m['options'], start=1):
                 key = (need['day_label'], need['period'], opt['day_label'], opt['period'])
@@ -796,6 +933,12 @@ _STATUS_LABEL = {'pending': 'Pending', 'approved': 'Approved',
 def _offers_dataframe(offers, report_ctx):
     seniority = report_ctx['ctx']['seniority_mapping']
     roles = report_ctx['ctx']['role_mapping']
+
+    def where(offer):
+        base = best_base_for_need(offer['staff_name'], offer['need_day'],
+                                   offer['need_period'], report_ctx)
+        return f"{base['base']} ({_rank_text(base)})" if base else "Not guaranteed"
+
     return pd.DataFrame([{
         'Need': _shift_label(o['need_day'], o['need_period']),
         'Staff': o['staff_name'],
@@ -803,6 +946,7 @@ def _offers_dataframe(offers, report_ctx):
         'Seniority': seniority.get(o['staff_name']),
         'Would give up': _shift_label(o['give_up_day'], o['give_up_period']),
         'Their rank': o['preference_rank'],
+        'Where they\'d work': where(o),
         'Status': _STATUS_LABEL.get(o['status'], o['status']),
         'Still applies': '' if o['status'] != 'pending' else ('Yes' if o['still_valid'] else o['stale_reason']),
         'Notes': o['staff_notes'] or '',
@@ -905,9 +1049,13 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
                     cols = st.columns([5, 1, 1])
                     role = report_ctx['ctx']['role_mapping'].get(o['staff_name'], 'Unknown')
                     seniority = report_ctx['ctx']['seniority_mapping'].get(o['staff_name'], '?')
+                    base = best_base_for_need(o['staff_name'], o['need_day'],
+                                               o['need_period'], report_ctx)
+                    where = (f"would work {base['base']} ({_rank_text(base)})" if base
+                             else "no base can be promised")
                     line = (f"**{o['staff_name']}** ({role}, seniority {seniority}) — "
                             f"give up {_shift_label(o['give_up_day'], o['give_up_period'])} "
-                            f"· their rank {o['preference_rank']}")
+                            f"· their rank {o['preference_rank']} · {where}")
                     if not o['still_valid']:
                         line += f"  \n⚠️ {o['stale_reason']}"
                     if o['staff_notes']:
