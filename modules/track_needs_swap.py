@@ -614,11 +614,59 @@ def _shift_label(day_label, period):
 def _need_headline(need):
     """One-line description of a need, in the terms staff already know from bidding."""
     short = need['short_flex'] if need['short_flex'] is not None else need['short_raw']
-    text = f"**{_shift_label(need['day_label'], need['period'])}** — {need['achievable']} of {need['minimum']} crews"
+    text = (f"{_PRIORITY_LABEL[need_priority(need)]} · "
+            f"**{_shift_label(need['day_label'], need['period'])}** — "
+            f"{need['achievable']} of {need['minimum']} crews")
     if short:
         text += f", short by {short}"
     if need['period'] == 'Day' and need['short_flex'] == 0 and need['short_raw']:
         text += " (covered only if night staff get flexed to days)"
+    return text
+
+
+# Priority is what a staff member sees instead of raw crew counts: how badly this
+# shift needs a body, on a three-step scale. Colors carry the meaning, so each one
+# is paired with a word for anyone who can't rely on them.
+_PRIORITY_LABEL = {'high': '🔴 High', 'medium': '🟡 Medium', 'low': '🟢 Low'}
+_PRIORITY_STYLE = {
+    '🔴 High':   'background-color: #fdecea; color: #8a1c12; font-weight: 600',
+    '🟡 Medium': 'background-color: #fff4d6; color: #7a5200; font-weight: 600',
+    '🟢 Low':    'background-color: #e8f5e9; color: #1b5e20; font-weight: 600',
+}
+
+
+def need_priority(need):
+    """
+    'high' / 'medium' / 'low' for one need, from how many crews it's still short
+    once the N-to-D flex simulation has done what it can (for a Night, where flex
+    never applies, that's simply how short it is).
+
+    Low means the gap closes only if schedulers flex night staff over to days —
+    real, but the softest of the three.
+    """
+    short = need['short_flex'] if need['short_flex'] is not None else need['short_raw']
+    if short >= 2:
+        return 'high'
+    if short == 1:
+        return 'medium'
+    return 'low'
+
+
+def _compact_shift(day_label, period):
+    """'Sun A 1' + 'Night' -> 'Sun A1 N', short enough to list several in one cell."""
+    code = _PERIOD_CODE[period]
+    parts = day_label.split()
+    if len(parts) == 3:
+        return f"{parts[0]} {parts[1]}{parts[2]} {code}"
+    return f"{day_label} {code}"
+
+
+def _give_up_summary(options, limit=6):
+    """'3 — Sun A1 N, Wed A1 D, Thu B3 D' for the shifts on offer against a need."""
+    shown = [_compact_shift(o['day_label'], o['period']) for o in options[:limit]]
+    text = f"{len(options)} — " + ", ".join(shown)
+    if len(options) > limit:
+        text += f", +{len(options) - limit} more"
     return text
 
 
@@ -825,20 +873,29 @@ pairing, and you'll see the status of each offer here.
         m['base'] = best_base_for_need(selected_staff, m['need']['day_label'],
                                         m['need']['period'], report_ctx)
 
-    st.dataframe(pd.DataFrame([{
+    table = pd.DataFrame([{
         'Need': _shift_label(m['need']['day_label'], m['need']['period']),
-        'Crews now': m['need']['achievable'],
-        'Minimum': m['need']['minimum'],
-        'Crew mix needed': _deficit_text(m['need']['deficit']),
-        'Crews if you moved there': m['after'],
+        'Priority': _PRIORITY_LABEL[need_priority(m['need'])],
         'Where you\'d work': m['base']['base'] if m['base'] else 'Not guaranteed',
         'Your ranking there': _rank_text(m['base']),
-        'Shifts you could give up': len(m['options']),
-    } for m in menu]), use_container_width=True, hide_index=True)
+        'Shifts you could give up': _give_up_summary(m['options']),
+    } for m in menu])
+
+    st.dataframe(
+        table.style.map(lambda v: _PRIORITY_STYLE.get(v, ''), subset=['Priority']),
+        use_container_width=True, hide_index=True,
+        column_config={
+            'Priority': st.column_config.TextColumn(
+                help="How short this shift still is once schedulers have flexed what they can. "
+                     "Red needs the most help."),
+            'Shifts you could give up': st.column_config.TextColumn(width="large"),
+        },
+    )
     st.caption(
-        "**Where you'd work** only ever shows a base you could take without pushing anyone "
-        "already on that day onto a base they rank lower — so it's a base you could actually "
-        "expect, not the one a straight seniority draft would hand you."
+        "**Priority** is where the help is needed most — red first. **Where you'd work** only "
+        "ever shows a base you could take without pushing anyone already on that day onto a base "
+        "they rank lower, so it's a base you could actually expect, not the one a straight "
+        "seniority draft would hand you."
     )
 
     # ── Build the offer ──
