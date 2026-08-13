@@ -425,7 +425,6 @@ def _send_manual_bid_notification(staff_name, manual_email, bid_track_name):
 # on the Where Staff Are Bidding and Maximum Achievable Crews charts.
 _ROLE_COLORS = {'Nurse': '#f28b82', 'Medic': '#2a78d6', 'Dual': '#eda100'}
 _PERIOD_COLORS = {'Day': '#66bb6a', 'Night': '#1976d2'}
-_PERIOD_LINE_COLORS = {'Day': '#4c9950', 'Night': '#125aa3'}
 _SHIFT_COLORS = {'D': '#66bb6a', 'N': '#1976d2', 'AT': '#898781', 'Off': '#f0efec'}
 
 
@@ -725,28 +724,29 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
     layers = [bars, zero_line, day_refs_soft, day_ref_min, night_ref_min]
 
     if simulate:
+        # No stroke on either extra segment — a stroke paints centered on the path
+        # edge, so it bleeds half its width outside the bar's true footprint and
+        # makes that segment visibly wider than the plain (unstroked) main bars.
         ext_df = df[df['sim_day_max'] > df['day_max_shifts']].copy()
         if not ext_df.empty:
             ext_df['y0'] = ext_df['day_max_shifts']
             ext_df['y1'] = ext_df['sim_day_max']
-            day_extension = alt.Chart(ext_df).mark_bar(
-                fill=_PERIOD_COLORS['Night'], stroke=_PERIOD_LINE_COLORS['Night'], strokeWidth=1.2,
-            ).encode(x=shared_x, y='y0:Q', y2='y1:Q',
-                      tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
-                               alt.Tooltip('day_max_shifts:Q', title='Actual max'),
-                               alt.Tooltip('sim_day_max:Q', title='Simulated max')])
+            day_extension = alt.Chart(ext_df).mark_bar(fill=_PERIOD_COLORS['Night']).encode(
+                x=shared_x, y='y0:Q', y2='y1:Q',
+                tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
+                         alt.Tooltip('day_max_shifts:Q', title='Actual max'),
+                         alt.Tooltip('sim_day_max:Q', title='Simulated max')])
             layers.append(day_extension)
 
         sac_df = df[df['sacrificed']].copy()
         if not sac_df.empty:
             sac_df['y0'] = -sac_df['night_max_shifts']
             sac_df['y1'] = -sac_df['sim_night_max']
-            night_borrow_gap = alt.Chart(sac_df).mark_bar(
-                fill='url(#hatchNightBorrow)', stroke=_PERIOD_LINE_COLORS['Night'], strokeWidth=1.2,
-            ).encode(x=shared_x, y='y0:Q', y2='y1:Q',
-                      tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
-                               alt.Tooltip('night_max_shifts:Q', title='Actual night max'),
-                               alt.Tooltip('sim_night_max:Q', title='Simulated night max')])
+            night_borrow_gap = alt.Chart(sac_df).mark_bar(fill='url(#hatchNightBorrow)').encode(
+                x=shared_x, y='y0:Q', y2='y1:Q',
+                tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
+                         alt.Tooltip('night_max_shifts:Q', title='Actual night max'),
+                         alt.Tooltip('sim_night_max:Q', title='Simulated night max')])
             layers.append(night_borrow_gap)
 
     main = alt.layer(*layers).properties(height=340)
