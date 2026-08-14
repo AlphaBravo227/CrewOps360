@@ -806,6 +806,7 @@ Some shifts in **{track_name}** came out of bidding below the minimum crew count
    consecutive shifts, weekend group — and, on top of that, across the point where the track
    repeats: a Day at the start of Block A is checked for rest against the nights at the end of
    Block C. Nothing here can break your track.
+   **4 a.) if you are able to give up a night or weekend to fill a need here, you won't need to make it up elsewhere**
 5. **The base you're shown is one you could actually expect.** Volunteering doesn't let you take a
    base off someone who bid that day. You're only shown a base where everyone already working it
    either stays put or moves somewhere *they* rank higher — so if two people are sitting on their
@@ -815,8 +816,8 @@ Some shifts in **{track_name}** came out of bidding below the minimum crew count
    the shifts you'd be willing to give up and rank them. Ranking 1 is what you'd prefer to give up
    first.
 
-Submitting is an **offer, not a change**. Nothing moves until an administrator approves a specific
-pairing, and you'll see the status of each offer here.
+Submitting is an **offer, not a change**. Nothing moves until an management approves a specific
+pairing, and you'll see the status of each offer here and receive email when one is approved or declined. Approved offers are applied to your track immediately, and supersede any other offers for the same need.
 """)
 
     with st.spinner("Loading needs and your track..."):
