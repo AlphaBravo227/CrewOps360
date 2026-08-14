@@ -652,24 +652,6 @@ def _split_day_label(day_label):
     return day_label, ""
 
 
-# Vega-Lite has no declarative hatch-fill, so the flex-simulation's Night
-# "capacity given up" gap (see _build_max_shifts_chart) references a literal
-# url(#hatchNightBorrow) fill — this injects the matching SVG <pattern>
-# definition into the page. SVG patterns resolve by ID lookup anywhere in the
-# document, so this can live in its own tiny invisible <svg> rather than
-# needing to reach into the chart's own generated markup.
-_DIAGONAL_HATCH_PATTERN_HTML = """
-<svg width="0" height="0" style="position:absolute">
-  <defs>
-    <pattern id="hatchNightBorrow" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
-      <rect width="6" height="6" fill="white"></rect>
-      <line x1="0" y1="0" x2="0" y2="6" stroke="#6fa8dc" stroke-width="2"></line>
-    </pattern>
-  </defs>
-</svg>
-"""
-
-
 def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
     """
     Max achievable Day/Night crews (see _max_possible_shifts) across the 42
@@ -684,8 +666,10 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
     count could climb by flexing Night staff over. When a flex actually costs
     a full Night crew, the Night bar itself is drawn at its new, smaller
     height, and the gap it gave up (old max down to new max) is filled with a
-    white/light-blue hatch rather than solid blue, so it reads as "no longer
-    there" instead of double-counting.
+    pale, outlined version of Night's own color rather than solid, so it
+    reads as "no longer there" instead of double-counting. Hovering any
+    flexed day's bar, extension, or gap shows which role(s) moved and
+    whether the move was free or cost Night a crew (see _describe_flex_move).
     """
     df = day_stats.copy()
     split = df['day_label'].map(_split_day_label)
@@ -714,7 +698,7 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
 
     if simulate:
         # A sacrificed flex lowers Night's own max, so the main Night bar is
-        # drawn at that new, smaller height — the hatch gap below fills in
+        # drawn at that new, smaller height — the pale gap below fills in
         # what it gave up, instead of the bar overstating what Night can
         # still staff.
         sac_by_day = df.set_index('day_label_display')['sacrificed']
@@ -756,7 +740,7 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
     if simulate:
         # The day extension stays borderless — a stroke paints centered on the path
         # edge, so it'd bleed half its width outside the bar's true footprint and
-        # look wider than the plain (unstroked) main bars. The Night hatch gets a
+        # look wider than the plain (unstroked) main bars. The Night gap gets a
         # deliberately thin (1px) stroke instead of none — thin enough that the
         # half-pixel bleed is negligible, while still calling out visually that a
         # crew was lost there.
@@ -777,7 +761,8 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
             sac_df['y0'] = -sac_df['night_max_shifts']
             sac_df['y1'] = -sac_df['sim_night_max']
             night_borrow_gap = alt.Chart(sac_df).mark_bar(
-                fill='url(#hatchNightBorrow)', stroke=_PERIOD_COLORS['Night'], strokeWidth=1,
+                fill=_PERIOD_COLORS['Night'], fillOpacity=0.15,
+                stroke=_PERIOD_COLORS['Night'], strokeWidth=1,
             ).encode(
                 x=shared_x, y='y0:Q', y2='y1:Q',
                 tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
@@ -872,9 +857,8 @@ def _render_bid_analysis_tab(config_names, default_track_index):
             "Minimum Night Crews:", list(range(10)), index=4, key="bid_analysis_min_night_crews")
         st.caption("Solid blue extensions show how far a below-minimum Day count could climb by flexing "
                    "Night staff over, without dropping Night below this minimum. On any day where a flex "
-                   "actually costs a full night crew, Night is redrawn at its new level and the white/"
-                   "light-blue hatch marks the crew it gave up.")
-        st.markdown(_DIAGONAL_HATCH_PATTERN_HTML, unsafe_allow_html=True)
+                   "actually costs a full night crew, Night is redrawn at its new level and the pale-blue "
+                   "outlined box marks the crew it gave up. Hover any flexed day for exactly who moved.")
     # Split into 14-day blocks like Bid Roster/Base Analysis — at the full 42-day
     # width the two-row weekday/tag labels don't have enough room per column and
     # start overlapping.
