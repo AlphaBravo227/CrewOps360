@@ -242,20 +242,49 @@ def cycle_wrap_issues(track_data, preassignments, days):
             if _spans_seam(v, index_of)]
 
 
+# Rules a swap must satisfy to be offered at all. Everything here is either a hard
+# safety limit or the thing that keeps a swap net-zero within a pay period.
+ENFORCED_RULES = ('shifts_per_pay_period', 'shifts_per_week', 'rest_requirements',
+                  'consecutive_shifts', 'cycle_wrap')
+
+# Rules deliberately NOT enforced here, though a bid had to satisfy them. Covering a
+# need is worth giving up a night or a weekend for, so a volunteer is allowed to drop
+# below these — the whole point is to free them to move. They're still evaluated and
+# reported, so nobody gives one up without being told.
+ADVISORY_RULES = ('night_minimum', 'weekend_minimum', 'weekend_group_assignment')
+
+_ADVISORY_TEXT = {
+    'night_minimum': 'drops you below your night minimum',
+    'weekend_minimum': 'drops you below your weekend minimum',
+    'weekend_group_assignment': 'leaves one of your weekend-group periods short',
+}
+
+
+def failed_rules(validation):
+    """The enforced rules a validation result breaks — what actually blocks a swap."""
+    return [rule for rule in ENFORCED_RULES
+            if rule in validation and not validation[rule]['status']]
+
+
 def validate_track_for_staff(staff_name, track_data, report_ctx, baseline_track=None):
     """
     Run the full track validator over `track_data` using this staff member's own
     requirements and preassignments, plus the cycle-wrap check the shared validator
     doesn't cover.
 
-    `baseline_track`, when given, is the track this one is a modification of: seam
-    issues that were already there are not counted against the change. A bid that
-    was submitted with a wrap-around rest problem (nothing checked for one at bid
-    time) shouldn't leave that person unable to volunteer for anything.
+    'overall_valid' is recomputed over ENFORCED_RULES only — night minimum, weekend
+    minimum and weekend group are evaluated but never block a swap (see
+    ADVISORY_RULES). Anything they'd have blocked is listed under 'advisories'
+    instead, for the UI to warn about.
 
-    Returns the validate_track_comprehensive() result dict with an extra
-    'cycle_wrap' entry folded into 'overall_valid', or None when the staff member
-    can't be evaluated (no numeric requirements — e.g. management).
+    `baseline_track`, when given, is the track this one is a modification of: seam
+    issues and advisory shortfalls that were already there are not counted against
+    the change. Someone whose bid already sits below a minimum shouldn't be warned
+    about a swap that didn't cause it.
+
+    Returns the validate_track_comprehensive() result dict with extra 'cycle_wrap'
+    and 'advisories' entries, or None when the staff member can't be evaluated (no
+    numeric requirements — e.g. management).
     """
     from modules.enhanced_track_validator import validate_track_comprehensive
 
@@ -287,7 +316,26 @@ def validate_track_for_staff(staff_name, track_data, report_ctx, baseline_track=
                     "wrap" if not issues else f"{len(issues)} violation(s) where the cycle repeats"),
         'issues': issues,
     }
-    result['overall_valid'] = result['overall_valid'] and not issues
+
+    # Advisories: what this swap costs that a bid wouldn't have been allowed to cost.
+    # Only ones the swap itself introduces — a bid already sitting below a minimum
+    # isn't this move's doing.
+    already_short = set()
+    if baseline_track is not None:
+        base_result = validate_track_comprehensive(
+            baseline_track,
+            shifts_per_pay_period=req.get('shifts_per_pay_period') or 0,
+            night_minimum=req.get('night_minimum') or 0,
+            weekend_minimum=req.get('weekend_minimum') or 0,
+            preassignments=preassignments,
+            days=days,
+            weekend_group=req.get('weekend_group'),
+        )
+        already_short = {rule for rule in ADVISORY_RULES if not base_result[rule]['status']}
+
+    result['advisories'] = [rule for rule in ADVISORY_RULES
+                            if not result[rule]['status'] and rule not in already_short]
+    result['overall_valid'] = not failed_rules(result)
     return result
 
 
@@ -365,7 +413,9 @@ def swap_options_for_staff(staff_name, needs, report_ctx, surplus_buffer=0):
             validation = validate_swap(staff_name, shift['day_label'], need_day, period, report_ctx)
             if validation is None or not validation.get('overall_valid'):
                 continue
-            options.append(shift)
+            # Copied per need — the pool is shared across needs, but what a given
+            # swap costs depends on which need it's paired with.
+            options.append(dict(shift, advisories=validation.get('advisories', [])))
 
         if options:
             results.append({'need': need, 'before': before, 'after': after, 'options': options})
@@ -520,8 +570,7 @@ def apply_offer(offer, report_ctx, reviewed_by, review_notes=None):
     if validation is None:
         return False, f"Could not validate a swap for {staff_name} (no requirements on file)."
     if not validation.get('overall_valid'):
-        failed = [k.replace('_', ' ') for k, v in validation.items()
-                  if k != 'overall_valid' and not v['status']]
+        failed = [rule.replace('_', ' ') for rule in failed_rules(validation)]
         return False, f"Swap would now break {staff_name}'s track ({', '.join(failed)}). Not applied."
 
     saved, save_msg, _ = save_bid_track_to_db(staff_name, swapped, track_name,
@@ -577,8 +626,7 @@ def offers_with_status(track_name, report_ctx):
             if validation is None:
                 reason = 'Cannot be validated'
             elif not validation.get('overall_valid'):
-                failed = [k.replace('_', ' ') for k, v in validation.items()
-                          if k != 'overall_valid' and not v['status']]
+                failed = [rule.replace('_', ' ') for rule in failed_rules(validation)]
                 reason = 'Would now break: ' + ', '.join(failed)
 
         annotated.append({**offer, 'still_valid': not reason, 'stale_reason': reason})
@@ -668,6 +716,19 @@ def _give_up_summary(options, limit=6):
     if len(options) > limit:
         text += f", +{len(options) - limit} more"
     return text
+
+
+def _advisory_text(advisories):
+    """'drops you below your night minimum' — what a give-up costs, or '' if nothing."""
+    if not advisories:
+        return ""
+    parts = [_ADVISORY_TEXT[rule] for rule in advisories if rule in _ADVISORY_TEXT]
+    if not parts:
+        return ""
+    text = parts[0]
+    for extra in parts[1:]:
+        text += "; " + extra
+    return text[0].upper() + text[1:]
 
 
 def _rank_text(option):
@@ -802,17 +863,20 @@ assign people to them, we're asking first.
 3. **A shift only shows up as something you can give up if it's genuinely overstaffed** — it
    stays at or above its own minimum{f' plus {surplus_buffer}' if surplus_buffer else ''} once you come off it. Shifts that are
    themselves short never appear.
-4. **Everything on offer already passes validation.** Each pairing has been run through the same
-   rules your bid was checked against — shifts per pay period, night and weekend minimums, rest,
-   consecutive shifts, weekend group — and, on top of that, across the point where the track
-   repeats: a Day at the start of Block A is checked for rest against the nights at the end of
-   Block C. Nothing here can break your track.
-5. **The base you're shown is one you could actually expect.** Volunteering doesn't let you take a
+4. **Everything on offer already passes the rules that matter.** Each pairing is checked for
+   shifts per pay period, the weekly shift limit, rest, and consecutive shifts — including across
+   the point where the track repeats, so a Day at the start of Block A is checked for rest against
+   the nights at the end of Block C. Nothing here can put you over a limit.
+5. **You *can* give up a night or a weekend to cover a need.** Those minimums don't block a swap
+   here — covering the need is worth more. If a particular trade would put you under your night or
+   weekend minimum, or leave a weekend-group period short, it's flagged in the **Heads up** column
+   so you know what you're giving up before you offer it.
+6. **The base you're shown is one you could actually expect.** Volunteering doesn't let you take a
    base off someone who bid that day. You're only shown a base where everyone already working it
    either stays put or moves somewhere *they* rank higher — so if two people are sitting on their
    first choice, that base won't be offered to you no matter how senior you are, and what you see
    instead is what you'd really get.
-6. **Choose as many or as few as you like — or none at all.** For each need you're open to, pick
+7. **Choose as many or as few as you like — or none at all.** For each need you're open to, pick
    the shifts you'd be willing to give up and rank them. Ranking 1 is what you'd prefer to give up
    first.
 
@@ -931,6 +995,7 @@ pairing, and you'll see the status of each offer here.
                     'Crews now': opt['before'],
                     'Crews without you': opt['after'],
                     'Minimum': opt['minimum'],
+                    'Heads up': _advisory_text(opt.get('advisories')),
                     'Offer this': key in prior_ranks,
                     'Rank': prior_ranks.get(key, i),
                 })
@@ -942,6 +1007,10 @@ pairing, and you'll see the status of each offer here.
                     'Crews now': st.column_config.NumberColumn(disabled=True),
                     'Crews without you': st.column_config.NumberColumn(disabled=True, help="Stays at or above the minimum — that's why it's offered"),
                     'Minimum': st.column_config.NumberColumn(disabled=True),
+                    'Heads up': st.column_config.TextColumn(
+                        disabled=True, width="medium",
+                        help="Giving up this shift is allowed even if it puts you under your "
+                             "night or weekend minimum — this just tells you when it does"),
                     'Offer this': st.column_config.CheckboxColumn(help="Tick to offer this shift in exchange"),
                     'Rank': st.column_config.NumberColumn(min_value=1, max_value=99, step=1, help="1 = you'd give this one up first"),
                 },
