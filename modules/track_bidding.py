@@ -521,6 +521,26 @@ def _simulate_day_flex(day_nurse, day_medic, day_dual, day_senior,
             sim_day_nurse, sim_day_medic, sim_night_nurse, sim_night_medic)
 
 
+def _describe_flex_move(row):
+    """
+    Chart tooltip text for a flexed day: which role(s) moved to Day and
+    whether it was free or cost Night a crew. Empty string if nothing moved
+    (row wasn't a flex day) — row must have the sim_day_nurse/sim_day_medic/
+    sacrificed columns _build_max_shifts_chart adds when simulate=True.
+    """
+    medics_moved = row['sim_day_medic'] - row['day_medic']
+    nurses_moved = row['sim_day_nurse'] - row['day_nurse']
+    parts = []
+    if medics_moved > 0:
+        parts.append(f"{medics_moved} Medic" + ("s" if medics_moved > 1 else ""))
+    if nurses_moved > 0:
+        parts.append(f"{nurses_moved} Nurse" + ("s" if nurses_moved > 1 else ""))
+    if not parts:
+        return ''
+    text = ' + '.join(parts) + ' moved to Day'
+    return text + (' (−1 Night crew)' if row['sacrificed'] else ' — free, no Night crew lost')
+
+
 def _compute_bid_day_stats(days, bids, role_mapping, no_matrix_mapping):
     """One row per bid day with Nurse/Medic/Dual/Senior counts and Max Shifts, Day and Night."""
     resolved = [(_bid_role_and_senior(b, role_mapping, no_matrix_mapping), b) for b in bids]
@@ -682,6 +702,9 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
         df['sim_day_max'] = [s[0] for s in sim]
         df['sim_night_max'] = [s[1] for s in sim]
         df['sacrificed'] = [s[2] for s in sim]
+        df['sim_day_nurse'] = [s[3] for s in sim]
+        df['sim_day_medic'] = [s[4] for s in sim]
+        df['move_summary'] = df.apply(_describe_flex_move, axis=1)
 
     long_df = df.melt(id_vars=['day_label_display'], value_vars=['day_max_shifts', 'night_max_shifts'],
                        var_name='Period', value_name='Max Crews')
@@ -700,17 +723,24 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
         long_df.loc[sacrificed_rows, 'plot_value'] = \
             -long_df.loc[sacrificed_rows, 'day_label_display'].map(sim_night_by_day)
 
+        move_summary_by_day = df.set_index('day_label_display')['move_summary']
+        long_df['move_summary'] = long_df['day_label_display'].map(move_summary_by_day).fillna('')
+
     color_scale = alt.Scale(domain=list(_PERIOD_COLORS.keys()), range=list(_PERIOD_COLORS.values()))
     shared_x = alt.X('day_label_display:N', sort=order, title=None, axis=None)
+
+    bars_tooltip = [alt.Tooltip('day_label_display:N', title='Day'),
+                     alt.Tooltip('Period:N', title='Period'),
+                     alt.Tooltip('Max Crews:Q', title='Max Crews')]
+    if simulate:
+        bars_tooltip.append(alt.Tooltip('move_summary:N', title='Flex'))
 
     bars = alt.Chart(long_df).mark_bar().encode(
         x=shared_x,
         y=alt.Y('plot_value:Q', title='Max Crews  (Day above · Night below)',
                 axis=alt.Axis(labelExpr='abs(datum.value)', grid=False)),
         color=alt.Color('Period:N', scale=color_scale, legend=alt.Legend(title=None)),
-        tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
-                 alt.Tooltip('Period:N', title='Period'),
-                 alt.Tooltip('Max Crews:Q', title='Max Crews')],
+        tooltip=bars_tooltip,
     )
 
     zero_line = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(strokeWidth=1.5, color='#333').encode(y='y:Q')
@@ -724,9 +754,12 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
     layers = [bars, zero_line, day_refs_soft, day_ref_min, night_ref_min]
 
     if simulate:
-        # No stroke on either extra segment — a stroke paints centered on the path
-        # edge, so it bleeds half its width outside the bar's true footprint and
-        # makes that segment visibly wider than the plain (unstroked) main bars.
+        # The day extension stays borderless — a stroke paints centered on the path
+        # edge, so it'd bleed half its width outside the bar's true footprint and
+        # look wider than the plain (unstroked) main bars. The Night hatch gets a
+        # deliberately thin (1px) stroke instead of none — thin enough that the
+        # half-pixel bleed is negligible, while still calling out visually that a
+        # crew was lost there.
         ext_df = df[df['sim_day_max'] > df['day_max_shifts']].copy()
         if not ext_df.empty:
             ext_df['y0'] = ext_df['day_max_shifts']
@@ -735,17 +768,21 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
                 x=shared_x, y='y0:Q', y2='y1:Q',
                 tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
                          alt.Tooltip('day_max_shifts:Q', title='Actual max'),
-                         alt.Tooltip('sim_day_max:Q', title='Simulated max')])
+                         alt.Tooltip('sim_day_max:Q', title='Simulated max'),
+                         alt.Tooltip('move_summary:N', title='Flex')])
             layers.append(day_extension)
 
         sac_df = df[df['sacrificed']].copy()
         if not sac_df.empty:
             sac_df['y0'] = -sac_df['night_max_shifts']
             sac_df['y1'] = -sac_df['sim_night_max']
-            night_borrow_gap = alt.Chart(sac_df).mark_bar(fill='url(#hatchNightBorrow)').encode(
+            night_borrow_gap = alt.Chart(sac_df).mark_bar(
+                fill='url(#hatchNightBorrow)', stroke=_PERIOD_COLORS['Night'], strokeWidth=1,
+            ).encode(
                 x=shared_x, y='y0:Q', y2='y1:Q',
                 tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
                          alt.Tooltip('night_max_shifts:Q', title='Actual night max'),
+                         alt.Tooltip('move_summary:N', title='Flex'),
                          alt.Tooltip('sim_night_max:Q', title='Simulated night max')])
             layers.append(night_borrow_gap)
 
