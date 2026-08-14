@@ -850,8 +850,7 @@ def display_staff_needs_swap(track_name=None):
     st.markdown(f"**Open for: {track_name}**")
     with st.expander("📖 How this works"):
         st.markdown(f"""
-Some shifts in **{track_name}** came out of bidding below the minimum crew count. Rather than
-assign people to them, we're asking first.
+Some shifts in **{track_name}** came out of bidding below the minimum crew count. Here is a place that you can volunteer to move onto one of those needs, and give up a shift on your own track in exchange.
 
 1. **Pick your name.** You'll see your submitted track for this cycle, and every need you
    personally could move onto.
@@ -867,10 +866,10 @@ assign people to them, we're asking first.
    shifts per pay period, the weekly shift limit, rest, and consecutive shifts — including across
    the point where the track repeats, so a Day at the start of Block A is checked for rest against
    the nights at the end of Block C. Nothing here can put you over a limit.
-5. **You *can* give up a night or a weekend to cover a need.** Those minimums don't block a swap
-   here — covering the need is worth more. If a particular trade would put you under your night or
-   weekend minimum, or leave a weekend-group period short, it's flagged in the **Heads up** column
-   so you know what you're giving up before you offer it.
+5. **If you give up a night or a weekend to fill a need, you won't need to make it up elsewhere.**
+   Those minimums don't block a swap here — covering the need is worth more. If a particular trade
+   would put you under your night or weekend minimum, or leave a weekend-group period short, it's
+   flagged in the **Heads up** column so you know what you're giving up before you offer it.
 6. **The base you're shown is one you could actually expect.** Volunteering doesn't let you take a
    base off someone who bid that day. You're only shown a base where everyone already working it
    either stays put or moves somewhere *they* rank higher — so if two people are sitting on their
@@ -880,8 +879,8 @@ assign people to them, we're asking first.
    the shifts you'd be willing to give up and rank them. Ranking 1 is what you'd prefer to give up
    first.
 
-Submitting is an **offer, not a change**. Nothing moves until an administrator approves a specific
-pairing, and you'll see the status of each offer here.
+Submitting is an **offer, not a change**. Nothing moves until management approves a specific
+pairing, and you'll see the status of each offer here and receive email when one is approved or declined. Approved offers are applied to your track immediately, and supersede any other offers for the same need.
 """)
 
     with st.spinner("Loading needs and your track..."):
