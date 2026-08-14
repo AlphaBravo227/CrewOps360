@@ -880,9 +880,9 @@ Some shifts in **{track_name}** came out of bidding below the minimum crew count
    - Your role is what that shift is actually short of — moving you there raises the number
      of crews it can put in the air.
    - You have at least one shift you could give up in exchange.
-3. **A shift only shows up as something you can give up if it's genuinely overstaffed** — once you
-   come off it, it still has to hold **{floors['Day']} crews on a Day shift, or {floors['Night']} on a Night**. Shifts that
-   are already short, or that your leaving would leave short, never appear.
+3. **A shift only shows up as something you can give up if it's genuinely overstaffed** — it still
+   has to hold its staffing level once you come off it. Shifts that are already short, or that your
+   leaving would leave short, never appear.
 4. **Everything on offer already passes the rules that matter.** Each pairing is checked for
    shifts per pay period, the weekly shift limit, rest, and consecutive shifts — including across
    the point where the track repeats, so a Day at the start of Block A is checked for rest against
