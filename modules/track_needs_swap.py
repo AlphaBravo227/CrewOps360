@@ -789,8 +789,7 @@ def display_staff_needs_swap(track_name=None):
     st.markdown(f"**Open for: {track_name}**")
     with st.expander("📖 How this works"):
         st.markdown(f"""
-Some shifts in **{track_name}** came out of bidding below the minimum crew count. Rather than
-assign people to them, we're asking first.
+Some shifts in **{track_name}** came out of bidding below the minimum crew count. Here is a place that you can volunteer to move onto one of those needs, and give up a shift on your own track in exchange.
 
 1. **Pick your name.** You'll see your submitted track for this cycle, and every need you
    personally could move onto.
