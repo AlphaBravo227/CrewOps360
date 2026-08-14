@@ -772,21 +772,22 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
             ).encode(x=shared_x, y='y0:Q', y2='y1:Q', tooltip=gap_tooltip)
             layers.append(night_borrow_gap)
 
-            # Thin caps at the gap's top and bottom edges, standing in for the
-            # outline a stroke would otherwise bleed past. The top one is white,
-            # not Night blue — it sits directly against the solid Night bar above,
-            # so a same-color cap would just blend into it instead of reading as
-            # a boundary. The bottom one sits against the white page background,
-            # so full Night blue is what shows up there.
-            edge_h = 0.1
+            # Thin dark caps at the gap's top and bottom edges, standing in for
+            # the outline a stroke would otherwise bleed past. One dark color for
+            # both, since it needs to read clearly against the solid Night bar
+            # above (medium blue), the pale gap itself (mostly white), and the
+            # page background below — a white cap tested too close in value to
+            # the pale gap's near-white fill to read as a distinct line.
+            edge_h = 0.18
+            edge_color = '#0d3d70'
             edge_df = sac_df.copy()
             edge_df['top_y0'] = edge_df['y1']
             edge_df['top_y1'] = edge_df['y1'] - edge_h
             edge_df['bottom_y0'] = edge_df['y0']
             edge_df['bottom_y1'] = edge_df['y0'] + edge_h
-            night_borrow_top_edge = alt.Chart(edge_df).mark_bar(fill='white').encode(
+            night_borrow_top_edge = alt.Chart(edge_df).mark_bar(fill=edge_color).encode(
                 x=shared_x, y='top_y0:Q', y2='top_y1:Q', tooltip=gap_tooltip)
-            night_borrow_bottom_edge = alt.Chart(edge_df).mark_bar(fill=_PERIOD_COLORS['Night']).encode(
+            night_borrow_bottom_edge = alt.Chart(edge_df).mark_bar(fill=edge_color).encode(
                 x=shared_x, y='bottom_y0:Q', y2='bottom_y1:Q', tooltip=gap_tooltip)
             layers.append(night_borrow_top_edge)
             layers.append(night_borrow_bottom_edge)
