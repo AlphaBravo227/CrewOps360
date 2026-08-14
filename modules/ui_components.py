@@ -5,6 +5,50 @@ UI components for the Streamlit application
 
 import streamlit as st
 import pandas as pd
+import html
+
+
+def render_section_banner(title, subtitle=None, eyebrow=None, accent="#3498db", background="#eef5fc"):
+    """
+    Render a colored, left-bordered section header.
+
+    Used where one page carries two different things a staff member can do (e.g.
+    the Track Bidding page, which hosts both the bid itself and the Track Needs
+    swap offers) so it's obvious at a glance where one section ends and the next
+    begins. Give each section its own accent color.
+
+    Args:
+        title (str): Section heading text (emoji fine).
+        subtitle (str): Optional one-line description under the title.
+        eyebrow (str): Optional small uppercase label above the title.
+        accent (str): Border/eyebrow color.
+        background (str): Banner fill color.
+
+    All text is escaped — pass plain strings, not HTML.
+    """
+    # Built as a single line with no blank lines: CommonMark ends an HTML block at
+    # the first blank line, which would dump the rest out as literal escaped text.
+    parts = []
+    if eyebrow:
+        parts.append(
+            f'<div style="font-size:0.72rem; font-weight:700; letter-spacing:0.09em; '
+            f'text-transform:uppercase; color:{accent};">{html.escape(str(eyebrow))}</div>'
+        )
+    parts.append(
+        f'<div style="font-size:1.45rem; font-weight:700; color:#2c3e50; line-height:1.3; '
+        f'margin-top:2px;">{html.escape(str(title))}</div>'
+    )
+    if subtitle:
+        parts.append(
+            f'<div style="font-size:0.95rem; color:#4b5563; margin-top:6px; line-height:1.4;">'
+            f'{html.escape(str(subtitle))}</div>'
+        )
+    st.markdown(
+        f'<div style="border-left:6px solid {accent}; background:{background}; '
+        f'border-radius:8px; padding:14px 18px; margin:6px 0 18px 0;">' + "".join(parts) + '</div>',
+        unsafe_allow_html=True
+    )
+
 
 def display_roster_results(staff_info, actual_shifts, the_list, role_col, staff_col, no_matrix_col):
     """

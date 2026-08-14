@@ -867,8 +867,19 @@ def display_staff_needs_swap(track_name=None):
     track_name = cfg['track_name']
     floors = needs_swap_floors(cfg)
 
-    st.markdown("## 🔁 Track Needs — Swap Opportunities")
-    st.markdown(f"**Open for: {track_name}**")
+    # Distinct green banner — this section shares the Track Bidding page with the
+    # bid itself (blue), and the two are easy to confuse. Bidding builds a track;
+    # this trades a shift on a track that's already bid.
+    from modules.ui_components import render_section_banner
+    render_section_banner(
+        "🔁 Track Needs — Swap Opportunities",
+        subtitle=f"Open for {track_name}. Bidding for {track_name} is already done — this is where you "
+                 f"volunteer to move onto a shift that came out short, and give up one of your own in "
+                 f"exchange. It does not change or replace your bid.",
+        eyebrow="Post-bid · volunteer to cover a need",
+        accent="#28a745",
+        background="#eefaf1",
+    )
     with st.expander("📖 How this works"):
         st.markdown(f"""
 Some shifts in **{track_name}** came out of bidding below the minimum crew count. Here is a place that you can volunteer to move onto one of those needs, and give up a shift on your own track in exchange.

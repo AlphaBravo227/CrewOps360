@@ -2289,11 +2289,13 @@ def display_bidding_admin_interface():
 
 def _render_bidding_instructions():
     """
-    Full step-by-step bidding walkthrough, shown at the top of the staff-facing
-    Track Bidding page. This is the page the "bid access opened" notification
-    email points to ("Detailed instructions are found linked at the top in the
-    Track Bidding module.") — keep the tab names/emoji below in sync with the
-    tab_labels in _display_bidding_staff_interface if those ever change.
+    Full step-by-step bidding walkthrough, shown directly under the blue Track
+    Bidding banner on the staff-facing page — i.e. with the bidding section it
+    describes, below the Track Needs swap section rather than above it. This is
+    the page the "bid access opened" notification email points to ("Detailed
+    instructions are linked at the top of the Track Bidding section.") — keep the
+    tab names/emoji below in sync with the tab_labels in
+    _display_bidding_staff_interface if those ever change.
     """
     with st.expander("📖 **Bidding Instructions — click to view the full step-by-step guide**"):
         st.markdown("""
@@ -2351,28 +2353,49 @@ def display_track_bidding():
         display_bidding_admin_interface()
         return
 
-    _render_bidding_instructions()
-
     # Check if there is an open bidding track
     bid_cfg = get_bidding_track_config()
     active_cfg = get_active_track_config()
 
     # Track Needs Swap — opens after bidding closes and the shortfalls are known, so
     # it renders on its own regardless of whether a bidding cycle is currently open.
+    # It goes first, above the divider, and carries its own green banner; everything
+    # below the divider is the bid itself.
     from modules.track_needs_swap import display_staff_needs_swap
     swap_shown = display_staff_needs_swap()
-    if swap_shown:
-        st.markdown("---")
 
     if not bid_cfg:
-        if not swap_shown:
+        # Nothing to divide off when there's no bidding section below — but if the
+        # swap section is up, say why bidding isn't, so the page doesn't just stop.
+        if swap_shown:
+            st.markdown("---")
+            st.caption("There is no bidding cycle open right now — the section above is the only "
+                       "thing to act on here.")
+        else:
             st.info("Bidding is currently closed. Check back later for the next bidding cycle.")
             if active_cfg:
                 st.markdown(f"**Current active track:** {active_cfg['track_name']}")
         return
 
+    if swap_shown:
+        st.markdown("---")
+
     bid_track_name = bid_cfg['track_name']
-    st.markdown(f"### Bidding open for: **{bid_track_name}**")
+
+    # Blue banner marks the start of the bidding section proper. The instructions
+    # live here rather than at the top of the page so the walkthrough sits with the
+    # bidding it describes, not above the unrelated swap section.
+    from modules.ui_components import render_section_banner
+    render_section_banner(
+        f"🗳️ Track Bidding — {bid_track_name}",
+        subtitle=f"Build and submit your own six-week track for {bid_track_name}. This is the bid itself — "
+                 f"start here, then select your name below.",
+        eyebrow="Bidding open",
+        accent="#3498db",
+        background="#eef5fc",
+    )
+
+    _render_bidding_instructions()
 
     # Show capacity info
     cap = get_track_capacity(bid_track_name)
