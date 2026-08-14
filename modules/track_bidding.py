@@ -657,9 +657,10 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
     Max achievable Day/Night crews (see _max_possible_shifts) across the 42
     days, as a diverging bar chart — Day bars above the zero line, Night bars
     below. Solid lines mark the Day (7) and Night (min_night_crews) minimums;
-    dashed lines mark the secondary Day references (5, 9). Day labels are a
-    two-row weekday/tag strip (see _split_day_label) kept below the chart on
-    a shared x-scale, since Vega-Lite axis labels can't reliably line-break.
+    dashed lines mark the secondary Day (5, 9) and Night (5) references. Day
+    labels are a two-row weekday/tag strip (see _split_day_label) kept below
+    the chart on a shared x-scale, since Vega-Lite axis labels can't reliably
+    line-break.
 
     When simulate=True, days below the Day minimum get a solid blue extension
     (see _simulate_day_flex) — Night's own color — showing how far the day
@@ -732,18 +733,20 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
         strokeDash=[4, 3], strokeWidth=1, color=_PERIOD_COLORS['Day'], opacity=0.6).encode(y='y:Q')
     day_ref_min = alt.Chart(pd.DataFrame({'y': [7]})).mark_rule(
         strokeWidth=2, color=_PERIOD_COLORS['Day'], opacity=0.95).encode(y='y:Q')
+    night_ref_soft = alt.Chart(pd.DataFrame({'y': [-5]})).mark_rule(
+        strokeDash=[4, 3], strokeWidth=1, color=_PERIOD_COLORS['Night'], opacity=0.6).encode(y='y:Q')
     night_ref_min = alt.Chart(pd.DataFrame({'y': [-min_night_crews]})).mark_rule(
         strokeWidth=2, color=_PERIOD_COLORS['Night'], opacity=0.95).encode(y='y:Q')
 
-    layers = [bars, zero_line, day_refs_soft, day_ref_min, night_ref_min]
+    layers = [bars, zero_line, day_refs_soft, day_ref_min, night_ref_soft, night_ref_min]
 
     if simulate:
-        # The day extension stays borderless — a stroke paints centered on the path
-        # edge, so it'd bleed half its width outside the bar's true footprint and
-        # look wider than the plain (unstroked) main bars. The Night gap gets a
-        # deliberately thin (1px) stroke instead of none — thin enough that the
-        # half-pixel bleed is negligible, while still calling out visually that a
-        # crew was lost there.
+        # No stroke anywhere here — a stroke paints centered on the bar's edge, so
+        # it always bleeds outward and reads as wider than the plain (unstroked)
+        # main bars, no matter how thin. The Night gap below gets its "outline"
+        # from two ordinary thin fill-only bars at its top/bottom edges instead —
+        # those share the exact same band width as every other bar, so they can't
+        # ever render wider.
         ext_df = df[df['sim_day_max'] > df['day_max_shifts']].copy()
         if not ext_df.empty:
             ext_df['y0'] = ext_df['day_max_shifts']
@@ -760,16 +763,33 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
         if not sac_df.empty:
             sac_df['y0'] = -sac_df['night_max_shifts']
             sac_df['y1'] = -sac_df['sim_night_max']
+            gap_tooltip = [alt.Tooltip('day_label_display:N', title='Day'),
+                           alt.Tooltip('night_max_shifts:Q', title='Actual night max'),
+                           alt.Tooltip('move_summary:N', title='Flex'),
+                           alt.Tooltip('sim_night_max:Q', title='Simulated night max')]
             night_borrow_gap = alt.Chart(sac_df).mark_bar(
                 fill=_PERIOD_COLORS['Night'], fillOpacity=0.15,
-                stroke=_PERIOD_COLORS['Night'], strokeWidth=1,
-            ).encode(
-                x=shared_x, y='y0:Q', y2='y1:Q',
-                tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
-                         alt.Tooltip('night_max_shifts:Q', title='Actual night max'),
-                         alt.Tooltip('move_summary:N', title='Flex'),
-                         alt.Tooltip('sim_night_max:Q', title='Simulated night max')])
+            ).encode(x=shared_x, y='y0:Q', y2='y1:Q', tooltip=gap_tooltip)
             layers.append(night_borrow_gap)
+
+            # Thin caps at the gap's top and bottom edges, standing in for the
+            # outline a stroke would otherwise bleed past. The top one is white,
+            # not Night blue — it sits directly against the solid Night bar above,
+            # so a same-color cap would just blend into it instead of reading as
+            # a boundary. The bottom one sits against the white page background,
+            # so full Night blue is what shows up there.
+            edge_h = 0.1
+            edge_df = sac_df.copy()
+            edge_df['top_y0'] = edge_df['y1']
+            edge_df['top_y1'] = edge_df['y1'] - edge_h
+            edge_df['bottom_y0'] = edge_df['y0']
+            edge_df['bottom_y1'] = edge_df['y0'] + edge_h
+            night_borrow_top_edge = alt.Chart(edge_df).mark_bar(fill='white').encode(
+                x=shared_x, y='top_y0:Q', y2='top_y1:Q', tooltip=gap_tooltip)
+            night_borrow_bottom_edge = alt.Chart(edge_df).mark_bar(fill=_PERIOD_COLORS['Night']).encode(
+                x=shared_x, y='bottom_y0:Q', y2='bottom_y1:Q', tooltip=gap_tooltip)
+            layers.append(night_borrow_top_edge)
+            layers.append(night_borrow_bottom_edge)
 
     main = alt.layer(*layers).properties(height=340)
 
@@ -849,7 +869,8 @@ def _render_bid_analysis_tab(config_names, default_track_index):
     st.markdown("#### Maximum Achievable Crews per Day")
     st.caption("The most complete Nurse+Medic crews that day's bidders could staff — letting dual-credentialed "
                "staff flex to whichever side is short, capped by how many no-matrix/senior staff bid that day. "
-               "Solid lines mark the Day (7) and Night minimums; dashed lines are secondary Day references (5, 9).")
+               "Solid lines mark the Day (7) and Night minimums; dashed lines are secondary Day (5, 9) "
+               "and Night (5) references.")
     simulate_flex = st.checkbox("Simulate N to D Flex?", value=False, key="bid_analysis_simulate_flex")
     min_night_crews = 4
     if simulate_flex:
