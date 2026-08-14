@@ -269,6 +269,8 @@ def initialize_database():
             auto_bid_progression INTEGER DEFAULT 0,
             needs_swap_open INTEGER DEFAULT 0,
             needs_swap_surplus_buffer INTEGER DEFAULT 0,
+            needs_swap_min_day INTEGER DEFAULT 7,
+            needs_swap_min_night INTEGER DEFAULT 5,
             created_date TEXT NOT NULL,
             modified_date TEXT NOT NULL
         )
@@ -330,6 +332,13 @@ def initialize_database():
             cursor.execute('ALTER TABLE track_configs ADD COLUMN needs_swap_open INTEGER DEFAULT 0')
         if 'needs_swap_surplus_buffer' not in tc_columns:
             cursor.execute('ALTER TABLE track_configs ADD COLUMN needs_swap_surplus_buffer INTEGER DEFAULT 0')
+        # Superseded needs_swap_surplus_buffer (a relative cushion on top of the
+        # cycle's own minimum) with the absolute crew floors a shift must keep to be
+        # given up, set per period. The old column is left in place but unused.
+        if 'needs_swap_min_day' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN needs_swap_min_day INTEGER DEFAULT 7')
+        if 'needs_swap_min_night' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN needs_swap_min_night INTEGER DEFAULT 5')
 
         # Check if we need to add the new columns to existing tracks table
         cursor.execute("PRAGMA table_info(tracks)")
@@ -1985,7 +1994,8 @@ def update_track_config(track_name, **kwargs):
                     'min_day_staff', 'min_night_staff',
                     'day_kmht', 'day_klwm', 'day_kbed', 'day_1b9', 'day_kpym',
                     'night_klwm', 'night_kbed', 'night_kpym', 'use_weekday_capacity',
-                    'auto_bid_progression', 'needs_swap_open', 'needs_swap_surplus_buffer'}
+                    'auto_bid_progression', 'needs_swap_open',
+                    'needs_swap_min_day', 'needs_swap_min_night'}
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return False, "No valid fields to update"

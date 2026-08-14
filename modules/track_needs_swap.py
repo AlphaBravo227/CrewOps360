@@ -12,9 +12,11 @@ The eligibility rules, in one place:
   - A **need** is a below-minimum Day/Night shift from find_shortfalls().
   - A staff member can move onto a need only if they're completely off that day
     and the move would actually raise that shift's achievable crews.
-  - A shift they can **give up** must stay at or above the minimum (plus the
-    cycle's surplus buffer) once they're removed from it — i.e. genuinely
-    overstaffed, and never itself a need.
+  - A shift they can **give up** must still hold that period's configured crew
+    floor (needs_swap_min_day / needs_swap_min_night, default 7 Day / 5 Night)
+    once they're removed from it — i.e. genuinely overstaffed, and never itself
+    a need. Those floors are set apart from the cycle's own minimums, which are
+    what decide whether a shift counts as a need at all.
   - Every (need, give-up) pairing is run through validate_track_comprehensive()
     on the resulting hypothetical track, so nothing on offer can break the staff
     member's own shifts/rest/weekend rules — plus cycle_wrap_issues() for the rest
@@ -143,18 +145,37 @@ def achievable_change(row, period, role, is_senior, delta):
 # Per-staff eligibility
 # ──────────────────────────────────────────────
 
-def surplus_shifts(staff_name, report_ctx, surplus_buffer=0):
+DEFAULT_SWAP_FLOORS = {'Day': 7, 'Night': 5}
+
+
+def needs_swap_floors(cfg):
+    """
+    The crew floors a shift has to keep to be given up, per period, from a track
+    config. Set separately from the cycle's own min_day_staff/min_night_staff, which
+    decide what counts as a *need* — the two answer different questions, and the
+    floor for leaving a shift is usually the stricter of the pair.
+    """
+    return {
+        'Day': (cfg or {}).get('needs_swap_min_day') or DEFAULT_SWAP_FLOORS['Day'],
+        'Night': (cfg or {}).get('needs_swap_min_night') or DEFAULT_SWAP_FLOORS['Night'],
+    }
+
+
+def surplus_shifts(staff_name, report_ctx, floors=None):
     """
     Every shift in this staff member's bid track that they'd be allowed to come off
     of: a D or N day (never a preassignment) whose achievable crews stay at or above
-    that period's minimum plus `surplus_buffer` once they're removed.
+    that period's floor (see needs_swap_floors) once they're removed.
 
-    Returns a list of dicts: day_label, period, code, before, after, minimum.
+    Returns a list of dicts: day_label, period, code, before, after, minimum — where
+    'minimum' is the floor actually applied, so what the staff member is shown is the
+    number the decision was made on.
     """
     bid = report_ctx['bids_by_name'].get(staff_name)
     if not bid:
         return []
 
+    floors = floors or DEFAULT_SWAP_FLOORS
     role, is_senior = _bid_role_and_senior(
         bid, report_ctx['ctx']['role_mapping'], report_ctx['ctx']['no_matrix_mapping'])
     preassignments = _staff_preassignments(staff_name, report_ctx)
@@ -168,13 +189,13 @@ def surplus_shifts(staff_name, report_ctx, surplus_buffer=0):
         if row is None:
             continue
         period = _CODE_PERIOD[code]
-        minimum = report_ctx['min_day'] if period == 'Day' else report_ctx['min_night']
+        floor = floors.get(period, DEFAULT_SWAP_FLOORS[period])
         before, after = achievable_change(row, period, role, is_senior, -1)
-        if after < minimum + surplus_buffer:
-            continue  # this shift isn't overstaffed — losing them would make it a need
+        if after < floor:
+            continue  # not enough left behind — losing them would leave this shift short
         shifts.append({
             'day_label': day, 'period': period, 'code': code,
-            'before': before, 'after': after, 'minimum': minimum,
+            'before': before, 'after': after, 'minimum': floor,
         })
 
     day_order = {d: i for i, d in enumerate(report_ctx['days'])}
@@ -363,7 +384,7 @@ def validate_swap(staff_name, give_up_day, need_day, need_period, report_ctx):
         report_ctx, baseline_track=bid['track_data'])
 
 
-def swap_options_for_staff(staff_name, needs, report_ctx, surplus_buffer=0):
+def swap_options_for_staff(staff_name, needs, report_ctx, floors=None):
     """
     The staff member's whole menu: every need they could move onto, each with the
     ranked-able list of shifts they could give up to do it.
@@ -387,7 +408,7 @@ def swap_options_for_staff(staff_name, needs, report_ctx, surplus_buffer=0):
     preassignments = _staff_preassignments(staff_name, report_ctx)
     by_label = report_ctx['day_stats'].set_index('day_label').to_dict('index')
 
-    give_up_pool = surplus_shifts(staff_name, report_ctx, surplus_buffer)
+    give_up_pool = surplus_shifts(staff_name, report_ctx, floors)
     if not give_up_pool:
         return []
 
@@ -844,7 +865,7 @@ def display_staff_needs_swap(track_name=None):
         return False
 
     track_name = cfg['track_name']
-    surplus_buffer = cfg.get('needs_swap_surplus_buffer') or 0
+    floors = needs_swap_floors(cfg)
 
     st.markdown("## 🔁 Track Needs — Swap Opportunities")
     st.markdown(f"**Open for: {track_name}**")
@@ -859,9 +880,9 @@ Some shifts in **{track_name}** came out of bidding below the minimum crew count
    - Your role is what that shift is actually short of — moving you there raises the number
      of crews it can put in the air.
    - You have at least one shift you could give up in exchange.
-3. **A shift only shows up as something you can give up if it's genuinely overstaffed** — it
-   stays at or above its own minimum{f' plus {surplus_buffer}' if surplus_buffer else ''} once you come off it. Shifts that are
-   themselves short never appear.
+3. **A shift only shows up as something you can give up if it's genuinely overstaffed** — once you
+   come off it, it still has to hold **{floors['Day']} crews on a Day shift, or {floors['Night']} on a Night**. Shifts that
+   are already short, or that your leaving would leave short, never appear.
 4. **Everything on offer already passes the rules that matter.** Each pairing is checked for
    shifts per pay period, the weekly shift limit, rest, and consecutive shifts — including across
    the point where the track repeats, so a Day at the start of Block A is checked for rest against
@@ -906,11 +927,11 @@ pairing, and you'll see the status of each offer here and receive email when one
     existing = _render_existing_offers(track_name, selected_staff)
 
     with st.spinner("Working out which needs you could cover..."):
-        menu = swap_options_for_staff(selected_staff, needs, report_ctx, surplus_buffer)
+        menu = swap_options_for_staff(selected_staff, needs, report_ctx, floors)
 
     st.markdown("#### Needs you could move onto")
     if not menu:
-        surplus = surplus_shifts(selected_staff, report_ctx, surplus_buffer)
+        surplus = surplus_shifts(selected_staff, report_ctx, floors)
         if not surplus:
             st.info(
                 "None of the shifts on your track can be given up right now — every one of them "
@@ -1083,27 +1104,47 @@ def _offers_dataframe(offers, report_ctx):
 
 
 def _render_needs_swap_window_controls(cfg):
-    """Open/close the staff window and set the surplus buffer for one track cycle."""
+    """Open/close the staff window and set the per-period crew floors for one cycle."""
     tn = cfg['track_name']
     is_open = bool(cfg.get('needs_swap_open'))
-    buffer_now = cfg.get('needs_swap_surplus_buffer') or 0
+    floors = needs_swap_floors(cfg)
 
-    c1, c2 = st.columns([1, 2])
+    c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         new_open = st.checkbox("Swap window open to staff", value=is_open, key=f"needs_swap_open_{tn}")
         if new_open != is_open:
             update_track_config(tn, needs_swap_open=1 if new_open else 0)
             st.rerun()
     with c2:
-        new_buffer = st.number_input(
-            "Surplus buffer (crews above minimum)", min_value=0, max_value=5,
-            value=int(buffer_now), step=1, key=f"needs_swap_buffer_{tn}",
-            help="How much cushion a shift must keep to be offered as one a staff member can "
-                 "leave. 0 means it only has to stay at its minimum without them; 1 means it "
-                 "must stay a full crew above it.")
-        if new_buffer != buffer_now:
-            update_track_config(tn, needs_swap_surplus_buffer=int(new_buffer))
-            st.rerun()
+        new_day = st.number_input(
+            "Day floor (crews)", min_value=0, max_value=20, value=int(floors['Day']), step=1,
+            key=f"needs_swap_min_day_{tn}",
+            help="A Day shift is only offered as one a staff member can leave if it still holds "
+                 "this many crews once they come off it.")
+    with c3:
+        new_night = st.number_input(
+            "Night floor (crews)", min_value=0, max_value=20, value=int(floors['Night']), step=1,
+            key=f"needs_swap_min_night_{tn}",
+            help="Same for Night shifts. Usually set above the cycle's own night minimum, so "
+                 "nights are harder to leave than they are to flag as a need.")
+
+    if new_day != floors['Day'] or new_night != floors['Night']:
+        update_track_config(tn, needs_swap_min_day=int(new_day), needs_swap_min_night=int(new_night))
+        st.rerun()
+
+    st.caption(
+        f"Staff can come off a Day shift only while it keeps **{floors['Day']}** crews, and off a "
+        f"Night only while it keeps **{floors['Night']}**. Separate from this cycle's own minimums "
+        f"({cfg.get('min_day_staff')} Day / {cfg.get('min_night_staff')} Night), which decide what "
+        "counts as a need in the first place."
+    )
+    for period, config_min in (('Day', cfg.get('min_day_staff')), ('Night', cfg.get('min_night_staff'))):
+        if config_min is not None and floors[period] < config_min:
+            st.warning(
+                f"The {period} floor ({floors[period]}) is below this cycle's {period.lower()} "
+                f"minimum ({config_min}) — staff could come off a {period} shift and leave it "
+                "short enough to become a need itself."
+            )
 
 
 def _render_needs_swap_admin_tab(config_names, default_track_index):
