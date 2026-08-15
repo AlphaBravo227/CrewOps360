@@ -830,14 +830,24 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
             # the pale gap's near-white fill to read as a distinct line.
             edge_h = 0.18
             edge_color = '#0d3d70'
+            # Each cap gets its own frame carrying a constant marker column, for
+            # the same reason the reference lines do: both caps used to be built
+            # from one shared DataFrame, so they serialised to identical bytes and
+            # Streamlit — which names every layer's dataset by a hash of its
+            # contents — collapsed the two layers onto one shared dataset. That
+            # only ever bites once a flex actually costs a Night crew, so it needs
+            # real bids across the block and a Night minimum high enough to force
+            # the sacrifice; it never appears on a lightly-bid track.
             edge_df = sac_df.copy()
             edge_df['top_y0'] = edge_df['y1']
             edge_df['top_y1'] = edge_df['y1'] - edge_h
             edge_df['bottom_y0'] = edge_df['y0']
             edge_df['bottom_y1'] = edge_df['y0'] + edge_h
-            night_borrow_top_edge = alt.Chart(edge_df).mark_bar(fill=edge_color).encode(
+            night_borrow_top_edge = alt.Chart(edge_df.assign(_edge='top')).mark_bar(
+                fill=edge_color).encode(
                 x=shared_x, y=alt.Y('top_y0:Q', scale=y_scale), y2='top_y1:Q', tooltip=gap_tooltip)
-            night_borrow_bottom_edge = alt.Chart(edge_df).mark_bar(fill=edge_color).encode(
+            night_borrow_bottom_edge = alt.Chart(edge_df.assign(_edge='bottom')).mark_bar(
+                fill=edge_color).encode(
                 x=shared_x, y=alt.Y('bottom_y0:Q', scale=y_scale), y2='bottom_y1:Q', tooltip=gap_tooltip)
             layers.append(night_borrow_top_edge)
             layers.append(night_borrow_bottom_edge)
