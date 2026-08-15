@@ -1302,29 +1302,38 @@ _NSWP_STYLE = """
 .nswp-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
 
 /* Schedule Details: the staff view's own current-track table (Assignment +
-   Open Needs rows), text-style cells to match this table's existing look
-   rather than the big-letter Preview track cells above. */
+   Open Needs rows). Bordered like the st.dataframe grid it replaces — every
+   cell keeps its own 1px border with zero gap between them, the same trick
+   an HTML <table> gets for free, so the block still reads as one gridded
+   table instead of a row of loose boxes. */
 .nswp-track-wrap { font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
 .nswp-track-block { margin-bottom: 20px; }
 .nswp-track-block-label { font-size: 14px; font-weight: 700; margin: 4px 0 8px; }
-.nswp-track-grid { display: grid; grid-template-columns: 92px repeat(14, minmax(0, 1fr)); gap: 3px; }
+.nswp-track-grid {
+  display: grid; grid-template-columns: 92px repeat(14, minmax(0, 1fr)); gap: 0;
+  border-top: 1px solid #d5d8dc; border-left: 1px solid #d5d8dc;
+}
+.nswp-track-rowhead, .nswp-track-daylabel, .nswp-track-cell {
+  border-right: 1px solid #d5d8dc; border-bottom: 1px solid #d5d8dc; box-sizing: border-box;
+}
+.nswp-track-rowhead, .nswp-track-daylabel { background: #f0f2f6; }
 .nswp-track-rowhead {
-  display: flex; align-items: center; font-size: 11px; font-weight: 600; color: #4b5c6b;
+  display: flex; align-items: center; font-size: 12px; font-weight: 600; color: #31333f;
+  padding: 4px 8px; min-height: 26px;
 }
 .nswp-track-daylabel {
-  text-align: center; font-size: 10px; font-weight: 600; color: #384552; padding-bottom: 3px;
+  text-align: center; font-size: 11px; font-weight: 600; color: #31333f; padding: 5px 2px;
 }
 .nswp-track-cell {
-  min-height: 30px; border-radius: 5px; border: 1px solid transparent;
-  display: flex; align-items: center; justify-content: center; flex-direction: row;
-  text-align: center; font-size: 10px; padding: 2px; line-height: 1.25;
+  min-height: 32px; display: flex; align-items: center; justify-content: center;
+  text-align: center; font-size: 11px; padding: 2px; line-height: 1.25; color: #31333f;
 }
 .nswp-track-cell.day { background: #d4edda; }
 .nswp-track-cell.night { background: #cce5ff; }
 .nswp-track-cell.pre { background: #e2e3e5; font-weight: 700; }
 .nswp-track-cell.need {
-  border: 1.5px dashed var(--need-color); background: var(--need-tint);
-  cursor: help; font-weight: 600; color: #16232e;
+  box-shadow: inset 0 0 0 1.5px var(--need-color); background: var(--need-tint);
+  cursor: help; font-weight: 700; color: #16232e;
 }
 </style>
 """
