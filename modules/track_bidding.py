@@ -811,11 +811,20 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
             layers.append(night_borrow_top_edge)
             layers.append(night_borrow_bottom_edge)
 
-    main = alt.layer(*layers).properties(height=340)
+    # Fixed pixel width rather than use_container_width's JS-measured one: that
+    # measurement runs against the container's rendered size at mount time, and
+    # inside a tab this chart can mount before the tab panel has actually been
+    # laid out (0-width container mid-transition), which compiles into a
+    # degenerate width and renders the whole chart — bars included, not just
+    # the reference lines — completely blank. A number baked into the spec up
+    # front has nothing to race.
+    chart_width = 1100
+
+    main = alt.layer(*layers).properties(height=340, width=chart_width)
 
     weekday_row = alt.Chart(df).mark_text(fontSize=11, fontWeight='bold', dy=0).encode(x=shared_x, text='weekday:N')
     tag_row = alt.Chart(df).mark_text(fontSize=11, dy=16).encode(x=shared_x, text='tag:N')
-    label_strip = (weekday_row + tag_row).properties(height=40)
+    label_strip = (weekday_row + tag_row).properties(height=40, width=chart_width)
 
     return alt.vconcat(main, label_strip, spacing=2).resolve_scale(x='shared')
 
@@ -906,8 +915,7 @@ def _render_bid_analysis_tab(config_names, default_track_index):
     for block_letter, block_start in (('A', 0), ('B', 14), ('C', 28)):
         st.markdown(f"##### Block {block_letter}")
         block_day_stats = day_stats.iloc[block_start:block_start + 14]
-        st.altair_chart(_build_max_shifts_chart(block_day_stats, simulate_flex, min_night_crews),
-                         use_container_width=True)
+        st.altair_chart(_build_max_shifts_chart(block_day_stats, simulate_flex, min_night_crews))
 
     st.markdown("#### Bid Composition by Day")
     st.altair_chart(_build_composition_chart(day_stats, 'Day'), use_container_width=True)
