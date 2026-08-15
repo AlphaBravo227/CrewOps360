@@ -869,7 +869,15 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
     tag_row = alt.Chart(df).mark_text(fontSize=11, dy=16).encode(x=shared_x, text='tag:N')
     label_strip = (weekday_row + tag_row).properties(height=40, width=chart_width)
 
-    return alt.vconcat(main, label_strip, spacing=2).resolve_scale(x='shared')
+    # Declare autosize here rather than letting Streamlit infer it. Streamlit only
+    # fills one in when the spec hasn't already got one, and the deployed version
+    # picks "fit" — which Vega-Lite does not support for concatenated views, and
+    # says so on every render: WARN Autosize "fit" only works for single views and
+    # layered views. Newer Streamlit special-cases nested compositions to "pad",
+    # so this only misbehaves in production. Saying "pad" outright makes both
+    # versions render this chart the same way.
+    return alt.vconcat(main, label_strip, spacing=2).resolve_scale(x='shared').properties(
+        autosize=alt.AutoSizeParams(type='pad', contains='padding'))
 
 
 def _build_bid_summary_table(day_stats):
@@ -948,10 +956,26 @@ def _render_bid_analysis_tab(config_names, default_track_index):
     # page at any width, without Python ever needing to know that width. Applies
     # to every Vega chart on the page; it only ever shrinks one that would
     # otherwise overflow, so charts that already fit are untouched.
+    #
+    # Matched on the .marks class rather than a direct child, because the two
+    # Streamlit versions this runs against nest it differently: the deployed one
+    # renders <canvas class="marks"> under a .chart-wrapper, a newer local one
+    # renders <svg class="marks"> as a direct child. A `> svg` rule matches
+    # nothing at all on the deployed structure, which is exactly why these charts
+    # kept running off the page in production while measuring clean locally.
+    # !important is required because vega-embed writes width and height straight
+    # onto the element's style attribute; capping the width without also freeing
+    # the height squashes the canvas instead of scaling it.
     st.markdown("""
         <style>
-        div[data-testid="stVegaLiteChart"] { max-width: 100%; }
-        div[data-testid="stVegaLiteChart"] > svg { max-width: 100%; height: auto; }
+        div[data-testid="stVegaLiteChart"],
+        div[data-testid="stVegaLiteChart"] .chart-wrapper { max-width: 100%; }
+        div[data-testid="stVegaLiteChart"] canvas.marks,
+        div[data-testid="stVegaLiteChart"] svg.marks,
+        div[data-testid="stVegaLiteChart"] > canvas,
+        div[data-testid="stVegaLiteChart"] > svg {
+            max-width: 100% !important; height: auto !important;
+        }
         </style>
     """, unsafe_allow_html=True)
 
