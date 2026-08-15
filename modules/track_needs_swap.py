@@ -277,8 +277,8 @@ ENFORCED_RULES = ('shifts_per_pay_period', 'shifts_per_week', 'rest_requirements
 ADVISORY_RULES = ('night_minimum', 'weekend_minimum', 'weekend_group_assignment')
 
 _ADVISORY_TEXT = {
-    'night_minimum': 'drops you below your night minimum',
-    'weekend_minimum': 'drops you below your weekend minimum',
+    'night_minimum': 'drops you below your night requirement',
+    'weekend_minimum': 'drops you below your weekend requirement',
     'weekend_group_assignment': 'leaves one of your weekend-group periods short',
 }
 
@@ -758,7 +758,7 @@ def _give_up_summary(options, limit=6):
 
 
 def _advisory_text(advisories):
-    """'drops you below your night minimum' — what a give-up costs, or '' if nothing."""
+    """'drops you below your night requirement' — what a give-up costs, or '' if nothing."""
     if not advisories:
         return ""
     parts = [_ADVISORY_TEXT[rule] for rule in advisories if rule in _ADVISORY_TEXT]
