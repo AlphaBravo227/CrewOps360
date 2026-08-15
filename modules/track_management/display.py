@@ -353,38 +353,41 @@ def display_schedule_by_blocks(track_data, days, preassignments=None):
                 # Otherwise empty
                 data["Assignment"].append("")
         
-        # Create dataframe with days as columns
-        df = pd.DataFrame(data, index=day_headers)
-        
-        # Custom styling function - handles AT preassignments
-        def custom_highlight_cells(val):
-            """
-            Apply highlighting to cells based on cell value
-            
-            Args:
-                val: Cell value (could be string, float, or other type)
-                
-            Returns:
-                str: CSS style string
-            """
-            # Convert val to string to handle all types safely
-            val_str = str(val) if val is not None else ""
-            
+        # Rendered as a plain HTML table rather than st.dataframe: the interactive
+        # grid lets a user drag-reorder columns, which would let the Sun-Sat day
+        # order drift. A plain table has no such drag handles, and column widths/
+        # font here are left to match st.dataframe's own defaults as closely as
+        # possible so the only thing that changed is that they're now frozen.
+        def _cell_style(val):
+            val_str = "" if val is None else str(val)
             if val_str == "D":
-                return 'background-color: #d4edda'  # Green for day shifts
+                return "background-color: #d4edda;"  # Green for day shifts
             elif val_str == "N":
-                return 'background-color: #cce5ff'  # Blue for night shifts
-            elif isinstance(val, str) and val.startswith("Pre:"):
-                return 'background-color: #e2e3e5; font-weight: bold'  # Gray for preassignments
-            else:
-                return ''  # No background for off days
-        
-        # Display the dataframe with styles - transpose to show days as columns
-        st.dataframe(
-            df.T.style.map(custom_highlight_cells),
-            use_container_width=True
+                return "background-color: #cce5ff;"  # Blue for night shifts
+            elif val_str.startswith("Pre:"):
+                return "background-color: #e2e3e5; font-weight: bold;"  # Gray for preassignments
+            return ""
+
+        header_cells = "".join(
+            f'<th style="border:1px solid rgba(49,51,63,0.2); padding:4px 8px; '
+            f'font-weight:400; text-align:center; white-space:nowrap;">{h}</th>'
+            for h in day_headers
         )
-        
+        assignment_cells = "".join(
+            f'<td style="border:1px solid rgba(49,51,63,0.2); padding:4px 8px; '
+            f'text-align:center; white-space:nowrap; {_cell_style(val)}">{"" if val is None else val}</td>'
+            for val in data["Assignment"]
+        )
+        st.markdown(
+            '<div style="overflow-x:auto;">'
+            '<table style="border-collapse:collapse; width:100%; font-size:14px;">'
+            f'<thead><tr><th style="border:1px solid rgba(49,51,63,0.2); padding:4px 8px;"></th>{header_cells}</tr></thead>'
+            f'<tbody><tr><td style="border:1px solid rgba(49,51,63,0.2); padding:4px 8px; '
+            f'font-weight:400; white-space:nowrap;">Assignment</td>{assignment_cells}</tr></tbody>'
+            '</table></div>',
+            unsafe_allow_html=True,
+        )
+
         # Add some spacing between blocks
         st.write("")
 
