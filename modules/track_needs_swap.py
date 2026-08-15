@@ -843,15 +843,89 @@ def offers_from_editor(edited, need, options):
     return offers
 
 
-def _render_staff_current_track(staff_name, report_ctx):
-    from modules.track_management.display import display_schedule_by_blocks
+_WEEKDAY_ABBR = list(_WEEKDAY_ORDER)
 
+
+def _render_staff_track_table(staff_name, report_ctx, menu):
+    """
+    HTML for the staff view's 'Schedule Details': the usual Assignment row —
+    each worked D/N now followed by its expected base, from the same per-day
+    seniority draft the admin Preview track panel uses — plus a new Open Needs
+    row marking any day/period this staff member is eligible to move onto, with
+    the hypothetical base and, on hover, the same give-up summary shown in the
+    'Needs you could move onto' table below.
+    """
     bid = report_ctx['bids_by_name'][staff_name]
-    with st.expander("📍 My current track for this cycle", expanded=False):
+    track_data = bid['track_data'] or {}
+    preassignments = _staff_preassignments(staff_name, report_ctx)
+    role, _is_senior = _bid_role_and_senior(
+        bid, report_ctx['ctx']['role_mapping'], report_ctx['ctx']['no_matrix_mapping'])
+    role_bucket = _bidding_role_bucket(role)
+
+    need_by_cell = {(m['need']['day_label'], m['need']['period']): m for m in menu}
+    days = report_ctx['days']
+
+    parts = [_NSWP_STYLE, '<div class="nswp-track-wrap">']
+    for block_idx, block in enumerate(['A', 'B', 'C']):
+        block_days = days[block_idx * 14: block_idx * 14 + 14]
+        if not block_days:
+            continue
+
+        parts.append(f'<div class="nswp-track-block"><div class="nswp-track-block-label">'
+                     f'Block {block}</div><div class="nswp-track-grid">')
+        parts.append('<div class="nswp-track-rowhead"></div>')
+        for i, day in enumerate(block_days):
+            parts.append(f'<div class="nswp-track-daylabel" title="{html.escape(day)}">'
+                         f'{_WEEKDAY_ABBR[i % 7]}</div>')
+
+        parts.append('<div class="nswp-track-rowhead">Assignment</div>')
+        for day in block_days:
+            code = track_data.get(day)
+            if code == 'D':
+                base = _expected_base_for_day(staff_name, day, 'Day', role_bucket, report_ctx)
+                text = f'D ({html.escape(base)})' if base else 'D'
+                parts.append(f'<div class="nswp-track-cell day">{text}</div>')
+            elif code == 'N':
+                base = _expected_base_for_day(staff_name, day, 'Night', role_bucket, report_ctx)
+                text = f'N ({html.escape(base)})' if base else 'N'
+                parts.append(f'<div class="nswp-track-cell night">{text}</div>')
+            elif day in preassignments:
+                parts.append(f'<div class="nswp-track-cell pre">Pre: {html.escape(str(preassignments[day]))}</div>')
+            else:
+                parts.append('<div class="nswp-track-cell"></div>')
+
+        parts.append('<div class="nswp-track-rowhead">Open Needs</div>')
+        for i, day in enumerate(block_days):
+            m = need_by_cell.get((day, 'Day')) or need_by_cell.get((day, 'Night'))
+            if not m:
+                parts.append('<div class="nswp-track-cell"></div>')
+                continue
+            period = m['need']['period']
+            code_letter = 'D' if period == 'Day' else 'N'
+            base = best_base_for_need(staff_name, day, period, report_ctx)
+            text = f'{code_letter} ({html.escape(base["base"])})' if base else code_letter
+            give_up_text = html.escape(_give_up_summary(m['options']))
+            color = '#66bb6a' if period == 'Day' else '#1976d2'
+            tint = 'rgba(102,187,106,0.14)' if period == 'Day' else 'rgba(25,118,210,0.14)'
+            tip_cls = 'nswp-tooltip-left' if i < 2 else ('nswp-tooltip-right' if i > 11 else '')
+            parts.append(
+                f'<div class="nswp-cell nswp-track-cell need" tabindex="0" '
+                f'style="--need-color:{color}; --need-tint:{tint}">{text}'
+                f'<span class="nswp-tooltip {tip_cls}">Shifts you could give up: {give_up_text}</span>'
+                f'</div>'
+            )
+        parts.append('</div></div>')  # .nswp-track-grid, .nswp-track-block
+
+    parts.append('</div>')  # .nswp-track-wrap
+    return ''.join(parts)
+
+
+def _render_staff_current_track(staff_name, report_ctx, menu):
+    bid = report_ctx['bids_by_name'][staff_name]
+    with st.expander("📍 My current track for this cycle", expanded=True):
         st.caption(f"Submitted {bid['submission_date']} (version {bid['version']}). "
                    "This is the track your swap options are measured against.")
-        display_schedule_by_blocks(bid['track_data'], report_ctx['days'],
-                                   _staff_preassignments(staff_name, report_ctx))
+        st.markdown(_render_staff_track_table(staff_name, report_ctx, menu), unsafe_allow_html=True)
 
 
 def _render_existing_offers(track_name, staff_name):
@@ -952,11 +1026,12 @@ pairing, and you'll see the status of each offer here and receive email when one
         return True
 
     _render_flash(_STAFF_FLASH)
-    _render_staff_current_track(selected_staff, report_ctx)
-    existing = _render_existing_offers(track_name, selected_staff)
 
     with st.spinner("Working out which needs you could cover..."):
         menu = swap_options_for_staff(selected_staff, needs, report_ctx, floors)
+
+    _render_staff_current_track(selected_staff, report_ctx, menu)
+    existing = _render_existing_offers(track_name, selected_staff)
 
     st.markdown("#### Needs you could move onto")
     if not menu:
@@ -1218,10 +1293,39 @@ _NSWP_STYLE = """
 }
 .nswp-tooltip-left { left: 0; transform: translateX(0) translateY(4px); }
 .nswp-tooltip-left::after { left: 16px; transform: translateX(-50%); }
+.nswp-tooltip-right { left: auto; right: 0; transform: translateX(0) translateY(4px); }
+.nswp-tooltip-right::after { left: auto; right: 16px; transform: translateX(50%); }
 .nswp-cell:hover .nswp-tooltip, .nswp-cell:focus-visible .nswp-tooltip { opacity: 1; transform: translateX(-50%) translateY(0); }
-.nswp-cell:hover .nswp-tooltip-left, .nswp-cell:focus-visible .nswp-tooltip-left { transform: translateX(0) translateY(0); }
+.nswp-cell:hover .nswp-tooltip-left, .nswp-cell:focus-visible .nswp-tooltip-left,
+.nswp-cell:hover .nswp-tooltip-right, .nswp-cell:focus-visible .nswp-tooltip-right { transform: translateX(0) translateY(0); }
 .nswp-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; font-size: 11px; color: #6b7a86; }
 .nswp-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+
+/* Schedule Details: the staff view's own current-track table (Assignment +
+   Open Needs rows), text-style cells to match this table's existing look
+   rather than the big-letter Preview track cells above. */
+.nswp-track-wrap { font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+.nswp-track-block { margin-bottom: 20px; }
+.nswp-track-block-label { font-size: 14px; font-weight: 700; margin: 4px 0 8px; }
+.nswp-track-grid { display: grid; grid-template-columns: 92px repeat(14, minmax(0, 1fr)); gap: 3px; }
+.nswp-track-rowhead {
+  display: flex; align-items: center; font-size: 11px; font-weight: 600; color: #4b5c6b;
+}
+.nswp-track-daylabel {
+  text-align: center; font-size: 10px; font-weight: 600; color: #384552; padding-bottom: 3px;
+}
+.nswp-track-cell {
+  min-height: 30px; border-radius: 5px; border: 1px solid transparent;
+  display: flex; align-items: center; justify-content: center; flex-direction: row;
+  text-align: center; font-size: 10px; padding: 2px; line-height: 1.25;
+}
+.nswp-track-cell.day { background: #d4edda; }
+.nswp-track-cell.night { background: #cce5ff; }
+.nswp-track-cell.pre { background: #e2e3e5; font-weight: 700; }
+.nswp-track-cell.need {
+  border: 1.5px dashed var(--need-color); background: var(--need-tint);
+  cursor: help; font-weight: 600; color: #16232e;
+}
 </style>
 """
 
