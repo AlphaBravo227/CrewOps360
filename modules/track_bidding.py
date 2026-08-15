@@ -3016,22 +3016,36 @@ def _display_bid_submission(
     else:
         st.error("This bid has validation issues. Please fix them in Track Selection before submitting.")
 
-    # Admin-only escape hatch: some staff (e.g. someone whose track is being
-    # hand-built a few shifts at a time rather than to a full requirement) will
-    # never clear night/weekend/shift-count validation on their own. Only an
-    # admin can see or set this — staff always still need a clean bid.
+    # Admin-only controls. Admin Override is an escape hatch: some staff (e.g.
+    # someone whose track is being hand-built a few shifts at a time rather
+    # than to a full requirement) will never clear night/weekend/shift-count
+    # validation on their own. Covert Mode skips the submission notification
+    # email entirely — for saves that shouldn't page anyone. Only an admin can
+    # see or set either — staff always still need a clean bid, and always still
+    # trigger the normal notification.
     admin_override = False
-    if is_admin and not valid:
-        admin_override = st.checkbox(
-            "⚠️ Admin Override — submit anyway",
-            key=f"admin_override_{bid_track_name}_{selected_staff}",
-            help="Bypasses the validation failures above so this bid can still be saved on "
-                 "the staff member's behalf — for tracks that are intentionally being built "
-                 "under their normal requirement.",
+    covert_mode = False
+    if is_admin:
+        if not valid:
+            admin_override = st.checkbox(
+                "⚠️ Admin Override — submit anyway",
+                key=f"admin_override_{bid_track_name}_{selected_staff}",
+                help="Bypasses the validation failures above so this bid can still be saved on "
+                     "the staff member's behalf — for tracks that are intentionally being built "
+                     "under their normal requirement.",
+            )
+            if admin_override:
+                st.warning("Admin override is on — this bid will be saved even though it "
+                           "doesn't meet all requirements.")
+
+        covert_mode = st.checkbox(
+            "🕶️ Covert Mode — do not email a copy of this submission to the user or admins",
+            key=f"covert_mode_{bid_track_name}_{selected_staff}",
+            help="Skips the submission notification entirely — neither the staff member's "
+                 "own email (if on file) nor the admin recipients get a copy of this save.",
         )
-        if admin_override:
-            st.warning("Admin override is on — this bid will be saved even though it doesn't "
-                       "meet all requirements.")
+        if covert_mode:
+            st.info("Covert Mode is on — no notification email will be sent for this submission.")
 
     # Schedule preview
     st.markdown("### Schedule Preview")
@@ -3089,40 +3103,46 @@ def _display_bid_submission(
 
                 # Notify the admin recipients with bid summary statistics (sent from the admin
                 # account), also including the submitting staff member - with their bid summary
-                # PDF attached - when their email is on file in Requirements.xlsx.
-                try:
-                    bid_result = get_bid_track_from_db(selected_staff, bid_track_name)
-                    if bid_result[0]:
-                        saved_bid = bid_result[1]
-                        weekend_group = st.session_state.get('weekend_group')
-                        validation_result = validate_track_comprehensive(
-                            saved_bid['track_data'], shifts_per_pay_period, night_minimum,
-                            weekend_minimum, preassignments, days, weekend_group,
-                            staff_name=selected_staff
-                        )
+                # PDF attached - when their email is on file in Requirements.xlsx. Skipped
+                # entirely under Covert Mode — nobody gets a copy of this save.
+                if covert_mode:
+                    st.session_state[admin_notice_key] = (
+                        "info", "Covert Mode was on — no submission notification email was sent.")
+                    st.session_state[staff_confirmation_key] = False
+                else:
+                    try:
+                        bid_result = get_bid_track_from_db(selected_staff, bid_track_name)
+                        if bid_result[0]:
+                            saved_bid = bid_result[1]
+                            weekend_group = st.session_state.get('weekend_group')
+                            validation_result = validate_track_comprehensive(
+                                saved_bid['track_data'], shifts_per_pay_period, night_minimum,
+                                weekend_minimum, preassignments, days, weekend_group,
+                                staff_name=selected_staff
+                            )
 
-                        staff_email = None
-                        req_ctx, _ = _load_bidding_data_files()
-                        if req_ctx is not None:
-                            staff_email = _load_requirements_map(req_ctx['requirements_df']).get(
-                                selected_staff, {}).get('email')
+                            staff_email = None
+                            req_ctx, _ = _load_bidding_data_files()
+                            if req_ctx is not None:
+                                staff_email = _load_requirements_map(req_ctx['requirements_df']).get(
+                                    selected_staff, {}).get('email')
 
-                        notice_pdf_bytes, notice_pdf_filename = generate_bid_summary_pdf(
-                            selected_staff, saved_bid['track_data'], days, bid_track_name,
-                            saved_bid['version'], saved_bid['submission_date'],
-                            shifts_per_pay_period, night_minimum, weekend_minimum,
-                            preassignments, validation_result, weekend_group
-                        )
+                            notice_pdf_bytes, notice_pdf_filename = generate_bid_summary_pdf(
+                                selected_staff, saved_bid['track_data'], days, bid_track_name,
+                                saved_bid['version'], saved_bid['submission_date'],
+                                shifts_per_pay_period, night_minimum, weekend_minimum,
+                                preassignments, validation_result, weekend_group
+                            )
 
-                        admin_ok, admin_msg = send_bid_submission_notification(
-                            selected_staff, bid_track_name, saved_bid['track_data'],
-                            saved_bid['version'], saved_bid['submission_date'], validation_result,
-                            staff_email=staff_email, pdf_bytes=notice_pdf_bytes, pdf_filename=notice_pdf_filename
-                        )
-                        st.session_state[admin_notice_key] = ("success", admin_msg) if admin_ok else ("warning", admin_msg)
-                        st.session_state[staff_confirmation_key] = bool(staff_email) and admin_ok
-                except Exception as e:
-                    st.session_state[admin_notice_key] = ("warning", f"Admin notification failed: {e}")
+                            admin_ok, admin_msg = send_bid_submission_notification(
+                                selected_staff, bid_track_name, saved_bid['track_data'],
+                                saved_bid['version'], saved_bid['submission_date'], validation_result,
+                                staff_email=staff_email, pdf_bytes=notice_pdf_bytes, pdf_filename=notice_pdf_filename
+                            )
+                            st.session_state[admin_notice_key] = ("success", admin_msg) if admin_ok else ("warning", admin_msg)
+                            st.session_state[staff_confirmation_key] = bool(staff_email) and admin_ok
+                    except Exception as e:
+                        st.session_state[admin_notice_key] = ("warning", f"Admin notification failed: {e}")
 
                 # Automatic bid access & notification: hand bid access to the next
                 # staff member in seniority rank order, if the feature is turned on.
