@@ -95,18 +95,18 @@ st.markdown("""
 <style>
 .crewops-header {
     text-align: center;
-    padding: 2rem 0;
+    padding: 0.75rem 0;
     background: linear-gradient(135deg, #E3F2FD 0%, #BBDEFB 100%);
     border-radius: 15px;
-    margin-bottom: 2rem;
+    margin-bottom: 1rem;
     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }
 
 .module-card {
     border: 2px solid #1E88E5;
     border-radius: 15px;
-    padding: 2rem;
-    margin-bottom: 2rem;
+    padding: 1.1rem 2rem;
+    margin-bottom: 0;
     background: linear-gradient(135deg, #E3F2FD 0%, #BBDEFB 100%);
     transition: transform 0.3s ease, box-shadow 0.3s ease;
     cursor: pointer;
@@ -120,6 +120,35 @@ st.markdown("""
 .module-card-secondary {
     background: linear-gradient(135deg, #F3E5F5 0%, #E1BEE7 100%);
     border-color: #9C27B0;
+}
+
+/* Click-anywhere module cards: the real navigation control is an st.button,
+   stretched invisibly over the whole card via its st.container(key=...)
+   wrapper, so clicking the card itself (not just a separate label below it)
+   triggers it. Streamlit has no click-handler for plain markdown, so the
+   button has to be the actual target underneath. */
+div[class*="st-key-"][class*="_card"] {
+    position: relative;
+}
+/* Streamlit wraps every element (including the button) in its own
+   .element-container, which is itself position:relative with zero height —
+   left alone, that becomes the button's containing block instead of the
+   card, collapsing the overlay to nothing. Neutralize it so the button's
+   position:absolute below resolves against the card wrapper instead. */
+div[class*="st-key-"][class*="_card"] div.element-container {
+    position: static !important;
+}
+div[class*="st-key-"][class*="_card"] div[data-testid="stButton"] {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    margin: 0;
+}
+div[class*="st-key-"][class*="_card"] div[data-testid="stButton"] button {
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
 }
 
 .back-button {
@@ -172,8 +201,6 @@ if 'show_main_landing' not in st.session_state:
     st.session_state.show_main_landing = False
 
 def display_crewops360_header():
-    st.markdown("")
-    st.markdown("")
     st.markdown("""
     <div class="crewops-header">
         <h1 style="color: #1E88E5; font-size: 3.5rem; font-weight: 700; margin-bottom: 0.5rem;">
@@ -201,143 +228,143 @@ def display_training_header():
 def display_module_selection():
     """Display the main module selection page"""
     display_crewops360_header()
-    
+
     # Create centered layout
     col1, col2, col3 = st.columns([1, 3, 1])
-    
+
     with col2:
         st.markdown("### 🎯 Select Module")
         st.markdown("---")
 
         # Track Bidding Module
-        st.markdown("""
-        <div class="module-card" style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border: 2px solid #FF9800;">
-            <div style="text-align: center;">
-                <h2 style="color: #E65100; margin-bottom: 1rem;">🗳️ Track Bidding</h2>
-                <p style="color: #333; font-size: 1.1rem; margin-bottom: 1.5rem; line-height: 1.6;">
-                    Bid on your preferred shifts for the upcoming track cycle.
-                    Review availability, select your schedule, and submit your bid.
-                </p>
-                <ul style="text-align: left; color: #555; margin-bottom: 2rem;">
-                    <li>🔄 Select shifts for the next bidding cycle</li>
-                    <li>📊 View real-time staffing availability</li>
-                    <li>🔍 Validate your bid against requirements</li>
-                    <li>📤 Submit your bid</li>
-                </ul>
+        with st.container(key="track_bidding_card"):
+            st.markdown("""
+            <div class="module-card" style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border: 2px solid #FF9800;">
+                <div style="text-align: center;">
+                    <h2 style="color: #E65100; margin-bottom: 0.4rem;">🗳️ Track Bidding</h2>
+                    <p style="color: #333; font-size: 1.1rem; margin-bottom: 0.6rem; line-height: 1.6;">
+                        Bid on your preferred shifts for the upcoming track cycle.
+                        Review availability, select your schedule, and submit your bid.
+                    </p>
+                    <ul style="text-align: left; color: #555; margin-bottom: 0.5rem;">
+                        <li>🔄 Select shifts for the next bidding cycle</li>
+                        <li>📊 View real-time staffing availability</li>
+                        <li>🔍 Validate your bid against requirements</li>
+                        <li>📤 Submit your bid</li>
+                    </ul>
+                </div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if st.button("🗳️ Enter Track Bidding", use_container_width=True, key="track_bidding_btn"):
+            """, unsafe_allow_html=True)
+            clicked_track_bidding = st.button(
+                "🗳️ Enter Track Bidding", use_container_width=True, key="track_bidding_btn")
+        if clicked_track_bidding:
             st.session_state.selected_module = "track_bidding"
             st.rerun()
 
-        st.markdown("<br>", unsafe_allow_html=True)
-                
         # Clinical Track Hub Module
         _landing_active_cfg = get_active_track_config()
         _landing_active_label = _landing_active_cfg['track_name'] if _landing_active_cfg else "FY26"
-        st.markdown(f"""
-        <div class="module-card">
-            <div style="text-align: center;">
-                <h2 style="color: #1E88E5; margin-bottom: 1rem;">🚁 Clinical Track Hub</h2>
-                <p style="color: #4CAF50; font-weight: 600; margin-bottom: 0.5rem;">Active Track: {_landing_active_label}</p>
-                <p style="color: #333; font-size: 1.1rem; margin-bottom: 1.5rem; line-height: 1.6;">
-                    Manage your active clinical staff schedule, track preferences, validate shift assignments,
-                    and generate calendar exports for flight operations.
-                </p>
-                <ul style="text-align: left; color: #555; margin-bottom: 2rem;">
-                    <li>📋 Staff track management and validation</li>
-                    <li>📅 Calendar export functionality</li>
-                    <li>🔄 Track swapping and modifications</li>
-                    <li>📊 Comprehensive reporting and analytics</li>
-                </ul>
+        with st.container(key="clinical_hub_card"):
+            st.markdown(f"""
+            <div class="module-card">
+                <div style="text-align: center;">
+                    <h2 style="color: #1E88E5; margin-bottom: 0.4rem;">🚁 Clinical Track Hub</h2>
+                    <p style="color: #4CAF50; font-weight: 600; margin-bottom: 0.4rem;">Active Track: {_landing_active_label}</p>
+                    <p style="color: #333; font-size: 1.1rem; margin-bottom: 0.6rem; line-height: 1.6;">
+                        Manage your active clinical staff schedule, track preferences, validate shift assignments,
+                        and generate calendar exports for flight operations.
+                    </p>
+                    <ul style="text-align: left; color: #555; margin-bottom: 0.5rem;">
+                        <li>📋 Staff track management and validation</li>
+                        <li>📅 Calendar export functionality</li>
+                        <li>🔄 Track swapping and modifications</li>
+                        <li>📊 Comprehensive reporting and analytics</li>
+                    </ul>
+                </div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        if st.button("🚁 Enter Clinical Track Hub", use_container_width=True, key="clinical_hub_btn"):
+            """, unsafe_allow_html=True)
+            clicked_clinical_hub = st.button(
+                "🚁 Enter Clinical Track Hub", use_container_width=True, key="clinical_hub_btn")
+        if clicked_clinical_hub:
             st.session_state.selected_module = "clinical_track_hub"
             st.rerun()
 
-        st.markdown("<br>", unsafe_allow_html=True)
-
-
-
         # Training & Events Registration Module
         training_status = "Available" if TRAINING_MODULES_AVAILABLE else "Setup Required"
-        st.markdown(f"""
-        <div class="module-card module-card-secondary">
-            <div style="text-align: center;">
-                <h2 style="color: #9C27B0; margin-bottom: 1rem;">📚 Training & Events Registration</h2>
-                <p style="color: #333; font-size: 1.1rem; margin-bottom: 1.5rem; line-height: 1.6;">
-                    Register for training programs, continuing education, and company events. 
-                    Track certifications and compliance requirements.
-                </p>
-                <ul style="text-align: left; color: #555; margin-bottom: 2rem;">
-                    <li>🎓 Training course registration</li>
-                    <li>🎉 Company event sign-ups</li>
-                    <li>📈 Progress monitoring</li>
-                </ul>
+        with st.container(key="training_card"):
+            st.markdown(f"""
+            <div class="module-card module-card-secondary">
+                <div style="text-align: center;">
+                    <h2 style="color: #9C27B0; margin-bottom: 0.4rem;">📚 Training & Events Registration</h2>
+                    <p style="color: #333; font-size: 1.1rem; margin-bottom: 0.6rem; line-height: 1.6;">
+                        Register for training programs, continuing education, and company events.
+                        Track certifications and compliance requirements.
+                    </p>
+                    <ul style="text-align: left; color: #555; margin-bottom: 0.5rem;">
+                        <li>🎓 Training course registration</li>
+                        <li>🎉 Company event sign-ups</li>
+                        <li>📈 Progress monitoring</li>
+                    </ul>
+                </div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        training_button_disabled = not TRAINING_MODULES_AVAILABLE
-        if st.button("📚 Enter Training & Events", use_container_width=True,
-                    key="training_btn", disabled=training_button_disabled):
+            """, unsafe_allow_html=True)
+            training_button_disabled = not TRAINING_MODULES_AVAILABLE
+            clicked_training = st.button(
+                "📚 Enter Training & Events", use_container_width=True,
+                key="training_btn", disabled=training_button_disabled)
+        if clicked_training:
             if TRAINING_MODULES_AVAILABLE:
                 st.session_state.selected_module = "training_events"
                 st.rerun()
             else:
                 st.error("Training modules are not properly configured. Please check the training folder setup.")
 
-        st.markdown("<br>", unsafe_allow_html=True)
-
         # Shift Location Preferences Module
-        st.markdown("""
-        <div class="module-card" style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 2px solid #4CAF50;">
-            <div style="text-align: center;">
-                <h2 style="color: #2E7D32; margin-bottom: 1rem;">📍 Shift Location Preferences</h2>
-                <p style="color: #333; font-size: 1.1rem; margin-bottom: 1.5rem; line-height: 1.6;">
-                    Set your preferred work locations for day and night shifts.
-                    Rank locations by preference to help with scheduling.
-                </p>
-                <ul style="text-align: left; color: #555; margin-bottom: 2rem;">
-                    <li>☀️ Day shift location preferences (5 locations)</li>
-                    <li>🌙 Night shift location preferences (3 locations)</li>
-                    <li>📊 First Choice = most desirable</li>
-                </ul>
+        with st.container(key="location_pref_card"):
+            st.markdown("""
+            <div class="module-card" style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 2px solid #4CAF50;">
+                <div style="text-align: center;">
+                    <h2 style="color: #2E7D32; margin-bottom: 0.4rem;">📍 Shift Location Preferences</h2>
+                    <p style="color: #333; font-size: 1.1rem; margin-bottom: 0.6rem; line-height: 1.6;">
+                        Set your preferred work locations for day and night shifts.
+                        Rank locations by preference to help with scheduling.
+                    </p>
+                    <ul style="text-align: left; color: #555; margin-bottom: 0.5rem;">
+                        <li>☀️ Day shift location preferences (5 locations)</li>
+                        <li>🌙 Night shift location preferences (3 locations)</li>
+                        <li>📊 First Choice = most desirable</li>
+                    </ul>
+                </div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if st.button("📍 Enter Shift Location Preferences", use_container_width=True, key="location_pref_btn"):
+            """, unsafe_allow_html=True)
+            clicked_location_pref = st.button(
+                "📍 Enter Shift Location Preferences", use_container_width=True, key="location_pref_btn")
+        if clicked_location_pref:
             st.session_state.selected_module = "shift_location_preferences"
             st.rerun()
 
-        st.markdown("<br>", unsafe_allow_html=True)
-
         # Summer Leave Requests Module
-        st.markdown("""
-        <div class="module-card">
-            <div style="text-align: center;">
-                <h2 style="color: #FF9800; margin-bottom: 0.5rem;">☀️ Summer Leave Requests</h2>
-                <p style="color: #333; font-size: 1.1rem; margin-bottom: 1.5rem; line-height: 1.6;">
-                    Select your week for summer vacation leave time.
-                    View available weeks and manage your selection.
-                </p>
-                <ul style="text-align: left; color: #555; margin-bottom: 2rem;">
-                    <li>📅 View available weeks (May 31 - Sep 12, 2026)</li>
-                    <li>✅ Select your preferred week</li>
-                    <li>📊 View your work schedule for each week</li>
-                    <li>🔄 Change or cancel your selection</li>
-                </ul>
+        with st.container(key="summer_leave_card"):
+            st.markdown("""
+            <div class="module-card">
+                <div style="text-align: center;">
+                    <h2 style="color: #FF9800; margin-bottom: 0.4rem;">☀️ Summer Leave Requests</h2>
+                    <p style="color: #333; font-size: 1.1rem; margin-bottom: 0.6rem; line-height: 1.6;">
+                        Select your week for summer vacation leave time.
+                        View available weeks and manage your selection.
+                    </p>
+                    <ul style="text-align: left; color: #555; margin-bottom: 0.5rem;">
+                        <li>📅 View available weeks (May 31 - Sep 12, 2026)</li>
+                        <li>✅ Select your preferred week</li>
+                        <li>📊 View your work schedule for each week</li>
+                        <li>🔄 Change or cancel your selection</li>
+                    </ul>
+                </div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if st.button("☀️ Enter Summer Leave Requests", use_container_width=True, key="summer_leave_btn"):
+            """, unsafe_allow_html=True)
+            clicked_summer_leave = st.button(
+                "☀️ Enter Summer Leave Requests", use_container_width=True, key="summer_leave_btn")
+        if clicked_summer_leave:
             st.session_state.selected_module = "summer_leave"
             st.rerun()
 
