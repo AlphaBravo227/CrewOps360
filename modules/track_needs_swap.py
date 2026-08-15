@@ -525,10 +525,20 @@ def best_base_for_need(staff_name, day_label, period, report_ctx):
 # Shared context
 # ──────────────────────────────────────────────
 
+@st.cache_data(ttl=15, show_spinner=False)
 def load_swap_context(track_name, min_night_crews_for_sim=None):
     """
     Everything both the staff and admin views need: the Staffing Rebalance report
     context plus per-staff preassignments and the consolidated need list.
+
+    Cached for 15s — this reloads every bid, recomputes day_stats for the full
+    42-day cycle, and re-derives every need from scratch, so a pure UI toggle
+    (Preview/Hide track, expanding a section) that triggers Streamlit's usual
+    whole-script rerun was paying that full cost for no reason every time.
+    Anything that actually changes the underlying data (an approval or a
+    decline) explicitly clears this cache immediately after, so it's never
+    more than one real action stale — see the two call sites in
+    _render_needs_swap_admin_tab.
 
     Returns (context, error). context is None on failure.
     """
@@ -1255,6 +1265,7 @@ _NSWP_STYLE = """
   color: #6b7a86; margin-bottom: 6px; font-weight: 600;
 }
 .nswp-grid { display: grid; grid-template-columns: 42px repeat(7, 1fr); gap: 4px; }
+.nswp-grid-wide-label { grid-template-columns: 80px repeat(7, 1fr); }
 .nswp-rowhead {
   display: flex; align-items: center; font-size: 10px; letter-spacing: 0.05em;
   text-transform: uppercase; color: #8592a0;
@@ -1359,32 +1370,35 @@ def _track_preview_html(offer, report_ctx, by_label):
     need_week = _week_key(offer['need_day'])
     weeks = [give_up_week] if give_up_week == need_week else [give_up_week, need_week]
 
-    def cell(day_label, period):
-        is_drop = day_label == offer['give_up_day'] and period == offer['give_up_period']
-        is_pickup = day_label == offer['need_day'] and period == offer['need_period']
-        code_letter = 'D' if period == 'Day' else 'N'
-
-        if is_drop:
+    def cell(day_label):
+        """One cell per day — a person only ever works one period on a given
+        day, so Day/Night share a single row instead of each getting their
+        own (mostly-empty) row."""
+        if day_label == offer['give_up_day']:
+            period = offer['give_up_period']
+            code_letter = 'D' if period == 'Day' else 'N'
             return (f'<div class="nswp-cell nswp-drop" tabindex="0">'
                     f'<span class="nswp-code">{code_letter}</span>'
                     f'<span class="nswp-tooltip nswp-tooltip-left">Dropping this shift: {drop_text}</span>'
                     f'</div>')
-        if is_pickup:
+        if day_label == offer['need_day']:
+            period = offer['need_period']
+            code_letter = 'D' if period == 'Day' else 'N'
             return (f'<div class="nswp-cell nswp-pickup" tabindex="0">'
                     f'<span class="nswp-code">{code_letter}</span>'
                     f'<span class="nswp-tooltip">Picking this up: {pickup_text}</span>'
                     f'</div>')
 
         code = track_data.get(day_label)
-        if code == 'D' and period == 'Day':
+        if code == 'D':
             base = _expected_base_for_day(staff_name, day_label, 'Day', role_bucket, report_ctx)
             base_html = f'<span class="nswp-base">{html.escape(base)}</span>' if base else ''
             return f'<div class="nswp-cell nswp-day"><span class="nswp-code">D</span>{base_html}</div>'
-        if code == 'N' and period == 'Night':
+        if code == 'N':
             base = _expected_base_for_day(staff_name, day_label, 'Night', role_bucket, report_ctx)
             base_html = f'<span class="nswp-base">{html.escape(base)}</span>' if base else ''
             return f'<div class="nswp-cell nswp-night"><span class="nswp-code">N</span>{base_html}</div>'
-        if code == 'AT' and period == 'Day':
+        if code == 'AT':
             return '<div class="nswp-cell nswp-at"><span class="nswp-code">AT</span></div>'
         return '<div class="nswp-cell"></div>'
 
@@ -1400,16 +1414,15 @@ def _track_preview_html(offer, report_ctx, by_label):
         block, week_num = wk
         parts.append(f'<div class="nswp-week"><div class="nswp-week-label">'
                      f'Week · Block {html.escape(block)}, Week {html.escape(week_num)}</div>')
-        parts.append('<div class="nswp-grid">')
+        parts.append('<div class="nswp-grid nswp-grid-wide-label">')
         parts.append('<div class="nswp-rowhead"></div>')
         for d in week_days:
-            parts.append(f'<div class="nswp-daylabel">{d.split()[0]}</div>')
-        parts.append('<div class="nswp-rowhead">Day</div>')
+            d_parts = d.split()
+            tag = f"{d_parts[0]} {d_parts[1]}{d_parts[2]}" if len(d_parts) == 3 else d
+            parts.append(f'<div class="nswp-daylabel">{html.escape(tag)}</div>')
+        parts.append('<div class="nswp-rowhead">Assignment</div>')
         for d in week_days:
-            parts.append(cell(d, 'Day'))
-        parts.append('<div class="nswp-rowhead">Night</div>')
-        for d in week_days:
-            parts.append(cell(d, 'Night'))
+            parts.append(cell(d))
         parts.append('</div></div>')
 
     parts.append(
@@ -1592,10 +1605,16 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
                     if cols[2].button("Approve", key=f"needs_swap_approve_{o['id']}",
                                       disabled=not o['still_valid'], use_container_width=True):
                         ok, msg = apply_offer(o, report_ctx, reviewer)
+                        if ok:
+                            load_report_context.clear()
+                            load_swap_context.clear()
                         _flash(_ADMIN_FLASH, 'success' if ok else 'error', msg)
                         st.rerun()
                     if cols[3].button("Decline", key=f"needs_swap_decline_{o['id']}",
                                       use_container_width=True):
+                        # No cache to clear here — declining only changes the offer's
+                        # own status (fetched fresh every render regardless), never
+                        # the bid track the day_stats/needs cache is keyed on.
                         ok, msg = update_need_swap_offer_status(o['id'], 'declined', reviewer)
                         _flash(_ADMIN_FLASH, 'info' if ok else 'error',
                                f"{o['staff_name']} — {msg}")

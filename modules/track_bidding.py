@@ -3124,6 +3124,14 @@ def _display_bid_submission(
                 # Bid is now officially submitted — clear any saved in-progress draft
                 delete_bid_draft(selected_staff, bid_track_name)
 
+                # This staff member's track just changed, so the cached day_stats/
+                # needs snapshot every admin tab shares (Staffing Rebalance, Needs
+                # Swap Requests) is now stale — drop it rather than wait out the TTL.
+                from modules.staffing_rebalance import load_report_context
+                from modules.track_needs_swap import load_swap_context
+                load_report_context.clear()
+                load_swap_context.clear()
+
                 # Notify the admin recipients with bid summary statistics (sent from the admin
                 # account), also including the submitting staff member - with their bid summary
                 # PDF attached - when their email is on file in Requirements.xlsx. Skipped

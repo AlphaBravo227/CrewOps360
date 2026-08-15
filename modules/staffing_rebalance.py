@@ -209,11 +209,22 @@ def rank_candidate(name, target_day, period, preferences_df, staff_col_prefs, ro
     )
 
 
+@st.cache_data(ttl=15, show_spinner=False)
 def load_report_context(track_name):
     """
     Everything needed to compute shortfalls and, later, candidates for one track
     cycle. Loaded once per render (or once per standalone script run) and reused —
     each candidate lookup is cheap in-memory work after this.
+
+    Cached for 15s: every one of the Track Bidding admin's tabs runs its full
+    Python on every single interaction anywhere on the page — that's how
+    st.tabs() works, it's not lazy about the hidden ones — and this function
+    (loading every bid, recomputing day_stats for the full 42-day cycle) is
+    the single most expensive shared step, called separately by Staffing
+    Rebalance and (via load_swap_context) Needs Swap Requests. Anywhere that
+    actually changes bid data clears this cache immediately after — see
+    save_bid_track_to_db()'s callers and the approve/decline handlers in
+    track_needs_swap.py — so it's never more than one real edit stale.
 
     Returns (context_dict, error_message). context_dict is None on failure.
     """
