@@ -729,128 +729,131 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
     color_scale = alt.Scale(domain=list(_PERIOD_COLORS.keys()), range=list(_PERIOD_COLORS.values()))
     shared_x = alt.X('day_label_display:N', sort=order, title=None, axis=None)
 
+    # ------------------------------------------------------------------
+    # One dataset for the entire chart.
+    #
+    # Every layer below reads this same frame and picks its own rows with a
+    # filter on `_layer`. That is the whole point of the structure: Streamlit
+    # ships each distinct layer dataset separately, names it by a hash of its
+    # contents, and on every rerun diffs those names against the ones already in
+    # the live Vega view — inserting the new and calling view.remove() on the
+    # old. Because the names are content hashes they all change together the
+    # moment any number in the chart changes, and when that diff races the view
+    # being rebuilt Vega throws "Unrecognized data set: <hash>". That throw is
+    # unhandled inside Streamlit's chart component, so the update aborts
+    # part-done and the chart is left blank with no error shown — captured from
+    # the production console with Block A blank and Blocks B and C fine.
+    #
+    # Built as separate layers this chart shipped eleven such datasets. Sharing
+    # one leaves a single name to agree on, so there is no set of names to fall
+    # out of step. Filtering happens in Vega over a couple of hundred rows,
+    # which costs nothing.
+    # ------------------------------------------------------------------
+    bar_cols = ['day_label_display', 'Period', 'Max Crews'] + (['move_summary'] if simulate else [])
+    parts = [long_df.rename(columns={'plot_value': 'y'})[bar_cols + ['y']].assign(_layer='bar')]
+
+    def _add_ref(name, y_values):
+        """One row per day per y-value, on the same x scale the bars use.
+
+        Drawn as mark_line across real x categories rather than a channel-less
+        mark_rule relying on Vega-Lite's "no x = span the plot" behaviour, which
+        did not render reliably inside this chart. `_series` keeps multiple
+        y-values (the two soft Day references) as separate paths.
+        """
+        parts.append(pd.DataFrame([{'day_label_display': d, 'y': yv, '_series': i, '_layer': name}
+                                   for i, yv in enumerate(y_values) for d in order]))
+
+    _add_ref('zero', [0])
+    _add_ref('day_soft', [5, 9])
+    _add_ref('day_min', [7])
+    # Only add a Night reference where it says something the other lines don't.
+    # The dashed Night-5 reference is fixed, so at min_night_crews == 5 it lands
+    # on exactly the same y as the solid minimum and the thicker solid line hides
+    # it completely — which reads as the dashed line having gone missing. Same
+    # story at a minimum of 0, where the solid line would sit on the zero line.
+    if min_night_crews != 5:
+        _add_ref('night_soft', [-5])
+    if min_night_crews > 0:
+        _add_ref('night_min', [-min_night_crews])
+
+    edge_h = 0.18
+    ext_df = df[df['sim_day_max'] > df['day_max_shifts']] if simulate else df.iloc[0:0]
+    sac_df = df[df['sacrificed']] if simulate else df.iloc[0:0]
+
+    if not ext_df.empty:
+        parts.append(ext_df[['day_label_display', 'day_max_shifts', 'sim_day_max', 'move_summary']]
+                     .assign(_layer='ext', y=ext_df['day_max_shifts'].values,
+                             y2=ext_df['sim_day_max'].values))
+    if not sac_df.empty:
+        gap_cols = ['day_label_display', 'night_max_shifts', 'sim_night_max', 'move_summary']
+        top, bottom = -sac_df['sim_night_max'].values, -sac_df['night_max_shifts'].values
+        parts.append(sac_df[gap_cols].assign(_layer='gap', y=bottom, y2=top))
+        # Thin dark caps at the gap's top and bottom edges, standing in for the
+        # outline a stroke would otherwise bleed past. One dark colour for both,
+        # since it needs to read against the solid Night bar above (medium blue),
+        # the pale gap itself (mostly white), and the page background below.
+        parts.append(sac_df[gap_cols].assign(_layer='edge_top', y=top, y2=top - edge_h))
+        parts.append(sac_df[gap_cols].assign(_layer='edge_bottom', y=bottom, y2=bottom + edge_h))
+
+    parts.append(df[['day_label_display', 'weekday', 'tag']].assign(_layer='label'))
+    unified = pd.concat(parts, ignore_index=True)
+
+    def _from(name):
+        return alt.Chart(unified).transform_filter(
+            alt.FieldEqualPredicate(field='_layer', equal=name))
+
     bars_tooltip = [alt.Tooltip('day_label_display:N', title='Day'),
                      alt.Tooltip('Period:N', title='Period'),
                      alt.Tooltip('Max Crews:Q', title='Max Crews')]
     if simulate:
         bars_tooltip.append(alt.Tooltip('move_summary:N', title='Flex'))
 
-    bars = alt.Chart(long_df).mark_bar().encode(
+    layers = [_from('bar').mark_bar().encode(
         x=shared_x,
-        y=alt.Y('plot_value:Q', title='Max Crews  (Day above · Night below)',
+        y=alt.Y('y:Q', title='Max Crews  (Day above · Night below)',
                 scale=y_scale, axis=alt.Axis(labelExpr='abs(datum.value)', grid=False)),
         color=alt.Color('Period:N', scale=color_scale, legend=alt.Legend(title=None)),
         tooltip=bars_tooltip,
-    )
+    )]
 
-    def _ref_line(name, y_values, **mark_kwargs):
-        """
-        Horizontal reference line(s) at one or more y-values, drawn as mark_line
-        across every real x category rather than a channel-less mark_rule left to
-        span the plot via Vega-Lite's documented "no x = full width" behavior.
-        That worked in isolation, but proved not to reliably render here once
-        nested inside this chart's vconcat + resolve_scale(x='shared') under
-        Streamlit's chart component — real spec pulled from a broken render
-        showed every invisible layer lacked an x encoding while every visible
-        one had one, bars included. A mark_line with one genuine data point per
-        day, positioned by the exact same shared_x scale as the bars, sidesteps
-        that implicit-width path entirely. `detail` keeps multiple y-values
-        (e.g. the two soft Day references) as separate line paths without
-        adding them to the legend.
-
-        `name` is carried as a constant column that nothing encodes, purely so
-        no two reference layers can serialise to identical bytes. Streamlit names
-        each chart dataset by a hash of its contents, so two layers holding the
-        same numbers silently collapse into one shared dataset — which really
-        happened at min_night_crews == 5, where this Night minimum and the fixed
-        dashed Night-5 reference held byte-identical data.
-        """
-        rows = [{'day_label_display': day, 'y': y, '_series': i, '_ref': name}
-                for i, y in enumerate(y_values) for day in order]
-        return alt.Chart(pd.DataFrame(rows)).mark_line(**mark_kwargs).encode(
+    def _ref_line(name, **mark_kwargs):
+        return _from(name).mark_line(**mark_kwargs).encode(
             x=shared_x, y=alt.Y('y:Q', scale=y_scale), detail='_series:N')
 
-    layers = [
-        bars,
-        _ref_line('zero', [0], strokeWidth=1.5, color='#333'),
-        _ref_line('day_soft', [5, 9], strokeDash=[4, 3], strokeWidth=1,
-                  color=_PERIOD_COLORS['Day'], opacity=0.6),
-        _ref_line('day_min', [7], strokeWidth=2, color=_PERIOD_COLORS['Day'], opacity=0.95),
-    ]
-
-    # Only draw a Night reference where it says something the other lines don't.
-    # The dashed Night-5 reference is fixed, so at min_night_crews == 5 it lands
-    # on exactly the same y as the solid minimum and the thicker solid line hides
-    # it completely — which reads as the dashed line having gone missing. Same
-    # story at a minimum of 0, where the solid line would sit on the zero line.
+    layers.append(_ref_line('zero', strokeWidth=1.5, color='#333'))
+    layers.append(_ref_line('day_soft', strokeDash=[4, 3], strokeWidth=1,
+                            color=_PERIOD_COLORS['Day'], opacity=0.6))
+    layers.append(_ref_line('day_min', strokeWidth=2, color=_PERIOD_COLORS['Day'], opacity=0.95))
     if min_night_crews != 5:
-        layers.append(_ref_line('night_soft', [-5], strokeDash=[4, 3], strokeWidth=1,
+        layers.append(_ref_line('night_soft', strokeDash=[4, 3], strokeWidth=1,
                                 color=_PERIOD_COLORS['Night'], opacity=0.6))
     if min_night_crews > 0:
-        layers.append(_ref_line('night_min', [-min_night_crews], strokeWidth=2,
+        layers.append(_ref_line('night_min', strokeWidth=2,
                                 color=_PERIOD_COLORS['Night'], opacity=0.95))
 
-    if simulate:
-        # No stroke anywhere here — a stroke paints centered on the bar's edge, so
-        # it always bleeds outward and reads as wider than the plain (unstroked)
-        # main bars, no matter how thin. The Night gap below gets its "outline"
-        # from two ordinary thin fill-only bars at its top/bottom edges instead —
-        # those share the exact same band width as every other bar, so they can't
-        # ever render wider.
-        ext_df = df[df['sim_day_max'] > df['day_max_shifts']].copy()
-        if not ext_df.empty:
-            ext_df['y0'] = ext_df['day_max_shifts']
-            ext_df['y1'] = ext_df['sim_day_max']
-            day_extension = alt.Chart(ext_df).mark_bar(fill=_PERIOD_COLORS['Night']).encode(
-                x=shared_x, y=alt.Y('y0:Q', scale=y_scale), y2='y1:Q',
-                tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
-                         alt.Tooltip('day_max_shifts:Q', title='Actual max'),
-                         alt.Tooltip('sim_day_max:Q', title='Simulated max'),
-                         alt.Tooltip('move_summary:N', title='Flex')])
-            layers.append(day_extension)
+    # No stroke anywhere below — a stroke paints centred on the bar's edge, so it
+    # bleeds outward and reads as wider than the plain main bars however thin it
+    # is. The Night gap gets its outline from two ordinary fill-only bars at its
+    # top and bottom edges instead, which share the exact same band width.
+    if not ext_df.empty:
+        layers.append(_from('ext').mark_bar(fill=_PERIOD_COLORS['Night']).encode(
+            x=shared_x, y=alt.Y('y:Q', scale=y_scale), y2='y2:Q',
+            tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
+                     alt.Tooltip('day_max_shifts:Q', title='Actual max'),
+                     alt.Tooltip('sim_day_max:Q', title='Simulated max'),
+                     alt.Tooltip('move_summary:N', title='Flex')]))
 
-        sac_df = df[df['sacrificed']].copy()
-        if not sac_df.empty:
-            sac_df['y0'] = -sac_df['night_max_shifts']
-            sac_df['y1'] = -sac_df['sim_night_max']
-            gap_tooltip = [alt.Tooltip('day_label_display:N', title='Day'),
-                           alt.Tooltip('night_max_shifts:Q', title='Actual night max'),
-                           alt.Tooltip('move_summary:N', title='Flex'),
-                           alt.Tooltip('sim_night_max:Q', title='Simulated night max')]
-            night_borrow_gap = alt.Chart(sac_df).mark_bar(
-                fill=_PERIOD_COLORS['Night'], fillOpacity=0.15,
-            ).encode(x=shared_x, y=alt.Y('y0:Q', scale=y_scale), y2='y1:Q', tooltip=gap_tooltip)
-            layers.append(night_borrow_gap)
-
-            # Thin dark caps at the gap's top and bottom edges, standing in for
-            # the outline a stroke would otherwise bleed past. One dark color for
-            # both, since it needs to read clearly against the solid Night bar
-            # above (medium blue), the pale gap itself (mostly white), and the
-            # page background below — a white cap tested too close in value to
-            # the pale gap's near-white fill to read as a distinct line.
-            edge_h = 0.18
-            edge_color = '#0d3d70'
-            # Each cap gets its own frame carrying a constant marker column, for
-            # the same reason the reference lines do: both caps used to be built
-            # from one shared DataFrame, so they serialised to identical bytes and
-            # Streamlit — which names every layer's dataset by a hash of its
-            # contents — collapsed the two layers onto one shared dataset. That
-            # only ever bites once a flex actually costs a Night crew, so it needs
-            # real bids across the block and a Night minimum high enough to force
-            # the sacrifice; it never appears on a lightly-bid track.
-            edge_df = sac_df.copy()
-            edge_df['top_y0'] = edge_df['y1']
-            edge_df['top_y1'] = edge_df['y1'] - edge_h
-            edge_df['bottom_y0'] = edge_df['y0']
-            edge_df['bottom_y1'] = edge_df['y0'] + edge_h
-            night_borrow_top_edge = alt.Chart(edge_df.assign(_edge='top')).mark_bar(
-                fill=edge_color).encode(
-                x=shared_x, y=alt.Y('top_y0:Q', scale=y_scale), y2='top_y1:Q', tooltip=gap_tooltip)
-            night_borrow_bottom_edge = alt.Chart(edge_df.assign(_edge='bottom')).mark_bar(
-                fill=edge_color).encode(
-                x=shared_x, y=alt.Y('bottom_y0:Q', scale=y_scale), y2='bottom_y1:Q', tooltip=gap_tooltip)
-            layers.append(night_borrow_top_edge)
-            layers.append(night_borrow_bottom_edge)
+    if not sac_df.empty:
+        gap_tooltip = [alt.Tooltip('day_label_display:N', title='Day'),
+                       alt.Tooltip('night_max_shifts:Q', title='Actual night max'),
+                       alt.Tooltip('move_summary:N', title='Flex'),
+                       alt.Tooltip('sim_night_max:Q', title='Simulated night max')]
+        layers.append(_from('gap').mark_bar(
+            fill=_PERIOD_COLORS['Night'], fillOpacity=0.15).encode(
+            x=shared_x, y=alt.Y('y:Q', scale=y_scale), y2='y2:Q', tooltip=gap_tooltip))
+        for edge in ('edge_top', 'edge_bottom'):
+            layers.append(_from(edge).mark_bar(fill='#0d3d70').encode(
+                x=shared_x, y=alt.Y('y:Q', scale=y_scale), y2='y2:Q', tooltip=gap_tooltip))
 
     # Fixed pixel width, and every st.altair_chart on this tab is rendered with
     # use_container_width=False, because container width is what made these
@@ -865,8 +868,9 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
 
     main = alt.layer(*layers).properties(height=340, width=chart_width)
 
-    weekday_row = alt.Chart(df).mark_text(fontSize=11, fontWeight='bold', dy=0).encode(x=shared_x, text='weekday:N')
-    tag_row = alt.Chart(df).mark_text(fontSize=11, dy=16).encode(x=shared_x, text='tag:N')
+    weekday_row = _from('label').mark_text(fontSize=11, fontWeight='bold', dy=0).encode(
+        x=shared_x, text='weekday:N')
+    tag_row = _from('label').mark_text(fontSize=11, dy=16).encode(x=shared_x, text='tag:N')
     label_strip = (weekday_row + tag_row).properties(height=40, width=chart_width)
 
     # Declare autosize here rather than letting Streamlit infer it. Streamlit only
