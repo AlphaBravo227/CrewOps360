@@ -843,9 +843,6 @@ def offers_from_editor(edited, need, options):
     return offers
 
 
-_WEEKDAY_ABBR = list(_WEEKDAY_ORDER)
-
-
 def _render_staff_track_table(staff_name, report_ctx, menu):
     """
     HTML for the staff view's 'Schedule Details': the usual Assignment row —
@@ -875,8 +872,10 @@ def _render_staff_track_table(staff_name, report_ctx, menu):
                      f'Block {block}</div><div class="nswp-track-grid">')
         parts.append('<div class="nswp-track-rowhead"></div>')
         for i, day in enumerate(block_days):
+            day_parts = day.split()
+            tag = f"{day_parts[0]} {day_parts[1]}{day_parts[2]}" if len(day_parts) == 3 else day
             parts.append(f'<div class="nswp-track-daylabel" title="{html.escape(day)}">'
-                         f'{_WEEKDAY_ABBR[i % 7]}</div>')
+                         f'{html.escape(tag)}</div>')
 
         parts.append('<div class="nswp-track-rowhead">Assignment</div>')
         for day in block_days:
@@ -905,12 +904,9 @@ def _render_staff_track_table(staff_name, report_ctx, menu):
             base = best_base_for_need(staff_name, day, period, report_ctx)
             text = f'{code_letter} ({html.escape(base["base"])})' if base else code_letter
             give_up_text = html.escape(_give_up_summary(m['options']))
-            color = '#66bb6a' if period == 'Day' else '#1976d2'
-            tint = 'rgba(102,187,106,0.14)' if period == 'Day' else 'rgba(25,118,210,0.14)'
             tip_cls = 'nswp-tooltip-left' if i < 2 else ('nswp-tooltip-right' if i > 11 else '')
             parts.append(
-                f'<div class="nswp-cell nswp-track-cell need" tabindex="0" '
-                f'style="--need-color:{color}; --need-tint:{tint}">{text}'
+                f'<div class="nswp-cell nswp-track-cell need" tabindex="0">{text}'
                 f'<span class="nswp-tooltip {tip_cls}">Shifts you could give up: {give_up_text}</span>'
                 f'</div>'
             )
@@ -1332,7 +1328,7 @@ _NSWP_STYLE = """
 .nswp-track-cell.night { background: #cce5ff; }
 .nswp-track-cell.pre { background: #e2e3e5; font-weight: 700; }
 .nswp-track-cell.need {
-  box-shadow: inset 0 0 0 1.5px var(--need-color); background: var(--need-tint);
+  box-shadow: inset 0 0 0 1.5px #e6b800; background: rgba(230, 184, 0, 0.18);
   cursor: help; font-weight: 700; color: #16232e;
 }
 </style>
