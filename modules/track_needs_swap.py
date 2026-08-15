@@ -24,6 +24,8 @@ The eligibility rules, in one place:
     validator walks past (see its docstring).
 """
 
+import html
+
 import pandas as pd
 import streamlit as st
 
@@ -38,7 +40,7 @@ from modules.db_utils import (
     update_need_swap_offer_status,
     update_track_config,
 )
-from modules.nondisplacing_assignment import nondisplacing_bases, rank_options
+from modules.nondisplacing_assignment import draft_assignment, nondisplacing_bases, rank_options
 from modules.staffing_rebalance import _excel_download_button, find_shortfalls, load_report_context
 from modules.track_bidding import _bid_role_and_senior, _bidding_role_bucket, _max_possible_shifts
 
@@ -730,6 +732,22 @@ def _compact_shift(day_label, period):
     return f"{day_label} {code}"
 
 
+_WEEKDAY_ORDER = {d: i for i, d in enumerate(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])}
+
+
+def _week_key(day_label):
+    """(block, week_num) e.g. ('B', '4') from 'Sun B 4' — identifies one Sun-Sat week."""
+    parts = day_label.split()
+    return (parts[1], parts[2]) if len(parts) == 3 else (day_label, '')
+
+
+def _week_days(week_key, all_days):
+    """Every day_label in `all_days` belonging to one Sun-Sat week, Sun-first."""
+    days = [d for d in all_days if _week_key(d) == week_key]
+    days.sort(key=lambda d: _WEEKDAY_ORDER.get(d.split()[0], 99))
+    return days
+
+
 def _give_up_summary(options, limit=6):
     """'3 — Sun A1 N, Wed A1 D, Thu B3 D' for the shifts on offer against a need."""
     shown = [_compact_shift(o['day_label'], o['period']) for o in options[:limit]]
@@ -1088,9 +1106,221 @@ _STATUS_LABEL = {'pending': 'Pending', 'approved': 'Approved',
                  'declined': 'Declined', 'superseded': 'Superseded'}
 
 
+def _give_up_impact(offer, report_ctx, by_label):
+    """
+    (before, after, role) achievable crews for the give-up shift's period if this
+    offer's staff member actually comes off it — recomputed against report_ctx's
+    live day_stats, not whatever the picture looked like when they submitted, so
+    an approval earlier in the same review pass is reflected. None if the staff
+    member's bid or the day itself can't be found.
+    """
+    bid = report_ctx['bids_by_name'].get(offer['staff_name'])
+    row = by_label.get(offer['give_up_day'])
+    if not bid or row is None:
+        return None
+    role, is_senior = _bid_role_and_senior(
+        bid, report_ctx['ctx']['role_mapping'], report_ctx['ctx']['no_matrix_mapping'])
+    before, after = achievable_change(row, offer['give_up_period'], role, is_senior, -1)
+    return before, after, role
+
+
+def _give_up_impact_text(impact):
+    """'−1 crew (6 → 5)' or 'No crew lost — extra medic' for a give-up shift's staffing cost."""
+    if impact is None:
+        return "Unknown"
+    before, after, role = impact
+    if after < before:
+        drop = before - after
+        return f"−{drop} crew{'s' if drop != 1 else ''} ({before} → {after})"
+    return f"No crew lost — extra {role}"
+
+
+def _pickup_impact(offer, report_ctx, by_label):
+    """(before, after) achievable crews for the need's period if this offer's staff
+    member actually moves onto it — the mirror of _give_up_impact for the other side
+    of the swap."""
+    bid = report_ctx['bids_by_name'].get(offer['staff_name'])
+    row = by_label.get(offer['need_day'])
+    if not bid or row is None:
+        return None
+    role, is_senior = _bid_role_and_senior(
+        bid, report_ctx['ctx']['role_mapping'], report_ctx['ctx']['no_matrix_mapping'])
+    before, after = achievable_change(row, offer['need_period'], role, is_senior, +1)
+    return before, after
+
+
+def _pickup_impact_text(impact):
+    """'4 → 5 crews' or 'No change — role isn't the bottleneck' for a pickup's staffing gain."""
+    if impact is None:
+        return "Unknown"
+    before, after = impact
+    if after > before:
+        return f"{before} → {after} crews"
+    return f"No change — role isn't the bottleneck ({before} crews)"
+
+
+def _expected_base_for_day(staff_name, day_label, period, role_bucket, report_ctx):
+    """
+    This staff member's expected base for a day/period they're actually working,
+    via the same seniority draft Bid Roster and Base Analysis use — cheap because
+    it only runs the draft for this one day/period, not the whole cycle.
+    """
+    roster = day_roster(day_label, period, role_bucket, report_ctx)
+    assignment = draft_assignment(roster, period, report_ctx['all_base_prefs'],
+                                  report_ctx['base_shift_counts'])
+    return (assignment.get(staff_name) or {}).get('base')
+
+
+_NSWP_STYLE = """
+<style>
+.nswp-wrap { font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+.nswp-stale {
+  font-size: 12px; color: #8a1c12; background: #fdecea; padding: 6px 10px;
+  border-radius: 6px; margin-bottom: 10px;
+}
+.nswp-week { margin-bottom: 14px; }
+.nswp-week-label {
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: #6b7a86; margin-bottom: 6px; font-weight: 600;
+}
+.nswp-grid { display: grid; grid-template-columns: 42px repeat(7, 1fr); gap: 4px; }
+.nswp-rowhead {
+  display: flex; align-items: center; font-size: 10px; letter-spacing: 0.05em;
+  text-transform: uppercase; color: #8592a0;
+}
+.nswp-daylabel { text-align: center; font-size: 11px; font-weight: 600; color: #384552; padding-bottom: 4px; }
+.nswp-cell {
+  position: relative; min-height: 40px; border-radius: 6px; border: 1px dashed #d7dee3;
+  display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 1px;
+}
+.nswp-code { font-weight: 700; font-size: 16px; line-height: 1; }
+.nswp-base { font-size: 8px; opacity: 0.85; }
+.nswp-day { background: #66bb6a; color: #12300f; border-color: transparent; }
+.nswp-night { background: #1976d2; color: #fff; border-color: transparent; }
+.nswp-at { background: #898781; color: #fff; border-color: transparent; }
+.nswp-drop {
+  opacity: 0.55; border: 1.5px dashed #c9463a !important; cursor: help;
+  background-image: repeating-linear-gradient(-45deg, rgba(0,0,0,0.12) 0 6px, transparent 6px 12px);
+}
+.nswp-drop .nswp-code { text-decoration: line-through; text-decoration-color: #c9463a; text-decoration-thickness: 2px; }
+.nswp-pickup { background: rgba(102,187,106,0.14); border: 1.5px dashed #66bb6a; color: #12300f; cursor: help; }
+.nswp-pickup .nswp-code::after { content: "+"; margin-left: 1px; }
+.nswp-tooltip {
+  position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%) translateY(4px);
+  width: max-content; max-width: 180px; background: #16232e; color: #eef2f4; font-size: 11px;
+  font-weight: 400; line-height: 1.4; text-align: left; padding: 8px 10px; border-radius: 8px;
+  box-shadow: 0 8px 24px -8px rgba(0,0,0,0.35); opacity: 0; pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease; z-index: 30;
+}
+.nswp-tooltip::after {
+  content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+  border: 5px solid transparent; border-top-color: #16232e;
+}
+.nswp-tooltip-left { left: 0; transform: translateX(0) translateY(4px); }
+.nswp-tooltip-left::after { left: 16px; transform: translateX(-50%); }
+.nswp-cell:hover .nswp-tooltip, .nswp-cell:focus-visible .nswp-tooltip { opacity: 1; transform: translateX(-50%) translateY(0); }
+.nswp-cell:hover .nswp-tooltip-left, .nswp-cell:focus-visible .nswp-tooltip-left { transform: translateX(0) translateY(0); }
+.nswp-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; font-size: 11px; color: #6b7a86; }
+.nswp-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+</style>
+"""
+
+
+def _track_preview_html(offer, report_ctx, by_label):
+    """
+    HTML for the 'Preview track' panel under one offer: the real Sun-Sat week(s)
+    around the swap, the give-up shift struck through, the need shown as a
+    hypothetical pickup, and everything else on the staff member's track for
+    context — same idea as the Bid Roster grid, scoped to just the days that
+    matter for this one offer instead of the whole cycle.
+    """
+    staff_name = offer['staff_name']
+    bid = report_ctx['bids_by_name'].get(staff_name)
+    if not bid:
+        return "<p>No bid on file for this staff member.</p>"
+    track_data = bid['track_data'] or {}
+    role, _is_senior = _bid_role_and_senior(
+        bid, report_ctx['ctx']['role_mapping'], report_ctx['ctx']['no_matrix_mapping'])
+    role_bucket = _bidding_role_bucket(role)
+
+    drop_text = html.escape(_give_up_impact_text(_give_up_impact(offer, report_ctx, by_label)))
+    pickup_text = html.escape(_pickup_impact_text(_pickup_impact(offer, report_ctx, by_label)))
+
+    give_up_week = _week_key(offer['give_up_day'])
+    need_week = _week_key(offer['need_day'])
+    weeks = [give_up_week] if give_up_week == need_week else [give_up_week, need_week]
+
+    def cell(day_label, period):
+        is_drop = day_label == offer['give_up_day'] and period == offer['give_up_period']
+        is_pickup = day_label == offer['need_day'] and period == offer['need_period']
+        code_letter = 'D' if period == 'Day' else 'N'
+
+        if is_drop:
+            return (f'<div class="nswp-cell nswp-drop" tabindex="0">'
+                    f'<span class="nswp-code">{code_letter}</span>'
+                    f'<span class="nswp-tooltip nswp-tooltip-left">Dropping this shift: {drop_text}</span>'
+                    f'</div>')
+        if is_pickup:
+            return (f'<div class="nswp-cell nswp-pickup" tabindex="0">'
+                    f'<span class="nswp-code">{code_letter}</span>'
+                    f'<span class="nswp-tooltip">Picking this up: {pickup_text}</span>'
+                    f'</div>')
+
+        code = track_data.get(day_label)
+        if code == 'D' and period == 'Day':
+            base = _expected_base_for_day(staff_name, day_label, 'Day', role_bucket, report_ctx)
+            base_html = f'<span class="nswp-base">{html.escape(base)}</span>' if base else ''
+            return f'<div class="nswp-cell nswp-day"><span class="nswp-code">D</span>{base_html}</div>'
+        if code == 'N' and period == 'Night':
+            base = _expected_base_for_day(staff_name, day_label, 'Night', role_bucket, report_ctx)
+            base_html = f'<span class="nswp-base">{html.escape(base)}</span>' if base else ''
+            return f'<div class="nswp-cell nswp-night"><span class="nswp-code">N</span>{base_html}</div>'
+        if code == 'AT' and period == 'Day':
+            return '<div class="nswp-cell nswp-at"><span class="nswp-code">AT</span></div>'
+        return '<div class="nswp-cell"></div>'
+
+    parts = [_NSWP_STYLE, '<div class="nswp-wrap">']
+    if offer.get('status') == 'pending' and not offer.get('still_valid', True):
+        reason = html.escape(offer.get('stale_reason') or "This offer no longer applies cleanly.")
+        parts.append(f'<div class="nswp-stale">⚠️ {reason}</div>')
+
+    for wk in weeks:
+        week_days = _week_days(wk, report_ctx['days'])
+        if not week_days:
+            continue
+        block, week_num = wk
+        parts.append(f'<div class="nswp-week"><div class="nswp-week-label">'
+                     f'Week · Block {html.escape(block)}, Week {html.escape(week_num)}</div>')
+        parts.append('<div class="nswp-grid">')
+        parts.append('<div class="nswp-rowhead"></div>')
+        for d in week_days:
+            parts.append(f'<div class="nswp-daylabel">{d.split()[0]}</div>')
+        parts.append('<div class="nswp-rowhead">Day</div>')
+        for d in week_days:
+            parts.append(cell(d, 'Day'))
+        parts.append('<div class="nswp-rowhead">Night</div>')
+        for d in week_days:
+            parts.append(cell(d, 'Night'))
+        parts.append('</div></div>')
+
+    parts.append(
+        '<div class="nswp-legend">'
+        '<span><span class="nswp-swatch" style="background:#66bb6a"></span>Working — Day</span>'
+        '<span><span class="nswp-swatch" style="background:#1976d2"></span>Working — Night</span>'
+        '<span><span class="nswp-swatch" style="border:1px dashed #d7dee3"></span>Off</span>'
+        '<span><span class="nswp-swatch" style="border:1.5px dashed #c9463a"></span>Offering to drop</span>'
+        '<span><span class="nswp-swatch" style="border:1.5px dashed #66bb6a;background:rgba(102,187,106,0.14)"></span>'
+        'Offering to pick up</span>'
+        '</div>'
+    )
+    parts.append('</div>')
+    return ''.join(parts)
+
+
 def _offers_dataframe(offers, report_ctx):
     seniority = report_ctx['ctx']['seniority_mapping']
     roles = report_ctx['ctx']['role_mapping']
+    by_label = report_ctx['day_stats'].set_index('day_label').to_dict('index')
 
     def where(offer):
         base = best_base_for_need(offer['staff_name'], offer['need_day'],
@@ -1103,6 +1333,7 @@ def _offers_dataframe(offers, report_ctx):
         'Role': roles.get(o['staff_name'], 'Unknown'),
         'Seniority': seniority.get(o['staff_name']),
         'Would give up': _shift_label(o['give_up_day'], o['give_up_period']),
+        'Give-up impact': _give_up_impact_text(_give_up_impact(o, report_ctx, by_label)),
         'Their rank': o['preference_rank'],
         'Hypothetical Shift': where(o),
         'Status': _STATUS_LABEL.get(o['status'], o['status']),
@@ -1206,6 +1437,7 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
         st.info("Nothing pending — every offer has been decided.")
     else:
         needs_by_key = {(n['day_label'], n['period']): n for n in report_ctx['needs']}
+        by_label = report_ctx['day_stats'].set_index('day_label').to_dict('index')
         by_need = {}
         for o in pending:
             by_need.setdefault((o['need_day'], o['need_period']), []).append(o)
@@ -1224,32 +1456,44 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
 
                 group.sort(key=lambda o: (o['staff_name'], o['preference_rank']))
                 for o in group:
-                    cols = st.columns([5, 1, 1])
+                    cols = st.columns([4, 1.3, 1, 1])
                     role = report_ctx['ctx']['role_mapping'].get(o['staff_name'], 'Unknown')
                     seniority = report_ctx['ctx']['seniority_mapping'].get(o['staff_name'], '?')
                     base = best_base_for_need(o['staff_name'], o['need_day'],
                                                o['need_period'], report_ctx)
                     where = (f"hypothetical shift {base['base']} ({_rank_text(base)})" if base
                              else "no hypothetical shift can be promised")
+                    impact_text = _give_up_impact_text(_give_up_impact(o, report_ctx, by_label))
                     line = (f"**{o['staff_name']}** ({role}, seniority {seniority}) — "
                             f"give up {_shift_label(o['give_up_day'], o['give_up_period'])} "
+                            f"*({impact_text})* "
                             f"· their rank {o['preference_rank']} · {where}")
                     if not o['still_valid']:
                         line += f"  \n⚠️ {o['stale_reason']}"
                     if o['staff_notes']:
                         line += f"  \n💬 {o['staff_notes']}"
                     cols[0].markdown(line)
-                    if cols[1].button("Approve", key=f"needs_swap_approve_{o['id']}",
+
+                    preview_key = f"needs_swap_preview_open_{o['id']}"
+                    preview_open = st.session_state.get(preview_key, False)
+                    if cols[1].button("Hide track" if preview_open else "🔍 Preview track",
+                                      key=f"needs_swap_preview_btn_{o['id']}", use_container_width=True):
+                        st.session_state[preview_key] = not preview_open
+                        st.rerun()
+                    if cols[2].button("Approve", key=f"needs_swap_approve_{o['id']}",
                                       disabled=not o['still_valid'], use_container_width=True):
                         ok, msg = apply_offer(o, report_ctx, reviewer)
                         _flash(_ADMIN_FLASH, 'success' if ok else 'error', msg)
                         st.rerun()
-                    if cols[2].button("Decline", key=f"needs_swap_decline_{o['id']}",
+                    if cols[3].button("Decline", key=f"needs_swap_decline_{o['id']}",
                                       use_container_width=True):
                         ok, msg = update_need_swap_offer_status(o['id'], 'declined', reviewer)
                         _flash(_ADMIN_FLASH, 'info' if ok else 'error',
                                f"{o['staff_name']} — {msg}")
                         st.rerun()
+
+                    if preview_open:
+                        st.markdown(_track_preview_html(o, report_ctx, by_label), unsafe_allow_html=True)
 
     uncovered = [n for n in report_ctx['needs']
                  if not any(o['status'] == 'pending' and o['need_day'] == n['day_label']
