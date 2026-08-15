@@ -912,6 +912,23 @@ def _render_bid_analysis_tab(config_names, default_track_index):
             day_stats[f'{period}_cap_{role}'] = day_stats['weekday'].map(
                 lambda w: weekday_caps.get(w, {}).get(f'{cap_key_prefix}{role}s', 0))
 
+    # Every chart below is built at a fixed pixel width so it never depends on
+    # Streamlit's measured container width — see _build_max_shifts_chart for why
+    # that measurement leaves charts permanently blank inside st.tabs. A fixed
+    # width alone would overflow the page whenever the content area is narrower
+    # than the chart (most obviously with the sidebar open, or after dragging it
+    # wider). Vega renders to an SVG carrying a viewBox, so letting CSS cap it at
+    # the container and scale the height to match keeps the whole chart on the
+    # page at any width, without Python ever needing to know that width. Applies
+    # to every Vega chart on the page; it only ever shrinks one that would
+    # otherwise overflow, so charts that already fit are untouched.
+    st.markdown("""
+        <style>
+        div[data-testid="stVegaLiteChart"] { max-width: 100%; }
+        div[data-testid="stVegaLiteChart"] > svg { max-width: 100%; height: auto; }
+        </style>
+    """, unsafe_allow_html=True)
+
     st.markdown("#### Maximum Achievable Crews per Day")
     st.caption("The most complete Nurse+Medic crews that day's bidders could staff — letting dual-credentialed "
                "staff flex to whichever side is short, capped by how many no-matrix/senior staff bid that day. "
