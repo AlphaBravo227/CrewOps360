@@ -2632,21 +2632,21 @@ def _display_bidding_staff_interface(
 
     # ── Tab 0: Current Track ──
     with tabs[0]:
-        st.subheader("Current Track")
-        if has_active:
-            st.info(f"📊 Your active track: **{active_track_name}**")
-            display_schedule_by_blocks(active_result[1]['track_data'], days, staff_preassignments)
-        else:
-            st.info("You do not have an active track on file yet.")
-
-        st.markdown("---")
-
         st.subheader("Current Track Bid")
         if has_bid:
             st.info(f"📊 Your submitted bid for **{bid_track_name}** (version {bid_result[1]['version']}, submitted {bid_result[1]['submission_date']}).")
             display_schedule_by_blocks(bid_result[1]['track_data'], days, staff_preassignments)
         else:
             st.info(f"You have not submitted a bid for **{bid_track_name}** yet. Use the **Track Selection** tab to build your bid, then submit it from the **Submission** tab.")
+
+        st.markdown("---")
+
+        st.subheader("Current Track")
+        if has_active:
+            st.info(f"📊 Your active track: **{active_track_name}**")
+            display_schedule_by_blocks(active_result[1]['track_data'], days, staff_preassignments)
+        else:
+            st.info("You do not have an active track on file yet.")
 
     # ── Tab 1: Preferences ──
     with tabs[1]:
