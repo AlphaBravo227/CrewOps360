@@ -728,15 +728,34 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
         tooltip=bars_tooltip,
     )
 
-    zero_line = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(strokeWidth=1.5, color='#333').encode(y='y:Q')
-    day_refs_soft = alt.Chart(pd.DataFrame({'y': [5, 9]})).mark_rule(
-        strokeDash=[4, 3], strokeWidth=1, color=_PERIOD_COLORS['Day'], opacity=0.6).encode(y='y:Q')
-    day_ref_min = alt.Chart(pd.DataFrame({'y': [7]})).mark_rule(
-        strokeWidth=2, color=_PERIOD_COLORS['Day'], opacity=0.95).encode(y='y:Q')
-    night_ref_soft = alt.Chart(pd.DataFrame({'y': [-5]})).mark_rule(
-        strokeDash=[4, 3], strokeWidth=1, color=_PERIOD_COLORS['Night'], opacity=0.6).encode(y='y:Q')
-    night_ref_min = alt.Chart(pd.DataFrame({'y': [-min_night_crews]})).mark_rule(
-        strokeWidth=2, color=_PERIOD_COLORS['Night'], opacity=0.95).encode(y='y:Q')
+    def _ref_line(y_values, **mark_kwargs):
+        """
+        Horizontal reference line(s) at one or more y-values, drawn as mark_line
+        across every real x category rather than a channel-less mark_rule left to
+        span the plot via Vega-Lite's documented "no x = full width" behavior.
+        That worked in isolation, but proved not to reliably render here once
+        nested inside this chart's vconcat + resolve_scale(x='shared') under
+        Streamlit's chart component — real spec pulled from a broken render
+        showed every invisible layer lacked an x encoding while every visible
+        one had one, bars included. A mark_line with one genuine data point per
+        day, positioned by the exact same shared_x scale as the bars, sidesteps
+        that implicit-width path entirely. `detail` keeps multiple y-values
+        (e.g. the two soft Day references) as separate line paths without
+        adding them to the legend.
+        """
+        rows = [{'day_label_display': day, 'y': y, '_series': i}
+                for i, y in enumerate(y_values) for day in order]
+        return alt.Chart(pd.DataFrame(rows)).mark_line(**mark_kwargs).encode(
+            x=shared_x, y='y:Q', detail='_series:N')
+
+    zero_line = _ref_line([0], strokeWidth=1.5, color='#333')
+    day_refs_soft = _ref_line([5, 9], strokeDash=[4, 3], strokeWidth=1,
+                              color=_PERIOD_COLORS['Day'], opacity=0.6)
+    day_ref_min = _ref_line([7], strokeWidth=2, color=_PERIOD_COLORS['Day'], opacity=0.95)
+    night_ref_soft = _ref_line([-5], strokeDash=[4, 3], strokeWidth=1,
+                               color=_PERIOD_COLORS['Night'], opacity=0.6)
+    night_ref_min = _ref_line([-min_night_crews], strokeWidth=2,
+                              color=_PERIOD_COLORS['Night'], opacity=0.95)
 
     layers = [bars, zero_line, day_refs_soft, day_ref_min, night_ref_soft, night_ref_min]
 
