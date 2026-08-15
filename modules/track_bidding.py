@@ -743,7 +743,7 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
         tooltip=bars_tooltip,
     )
 
-    def _ref_line(y_values, **mark_kwargs):
+    def _ref_line(name, y_values, **mark_kwargs):
         """
         Horizontal reference line(s) at one or more y-values, drawn as mark_line
         across every real x category rather than a channel-less mark_rule left to
@@ -757,22 +757,38 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
         that implicit-width path entirely. `detail` keeps multiple y-values
         (e.g. the two soft Day references) as separate line paths without
         adding them to the legend.
+
+        `name` is carried as a constant column that nothing encodes, purely so
+        no two reference layers can serialise to identical bytes. Streamlit names
+        each chart dataset by a hash of its contents, so two layers holding the
+        same numbers silently collapse into one shared dataset — which really
+        happened at min_night_crews == 5, where this Night minimum and the fixed
+        dashed Night-5 reference held byte-identical data.
         """
-        rows = [{'day_label_display': day, 'y': y, '_series': i}
+        rows = [{'day_label_display': day, 'y': y, '_series': i, '_ref': name}
                 for i, y in enumerate(y_values) for day in order]
         return alt.Chart(pd.DataFrame(rows)).mark_line(**mark_kwargs).encode(
             x=shared_x, y=alt.Y('y:Q', scale=y_scale), detail='_series:N')
 
-    zero_line = _ref_line([0], strokeWidth=1.5, color='#333')
-    day_refs_soft = _ref_line([5, 9], strokeDash=[4, 3], strokeWidth=1,
-                              color=_PERIOD_COLORS['Day'], opacity=0.6)
-    day_ref_min = _ref_line([7], strokeWidth=2, color=_PERIOD_COLORS['Day'], opacity=0.95)
-    night_ref_soft = _ref_line([-5], strokeDash=[4, 3], strokeWidth=1,
-                               color=_PERIOD_COLORS['Night'], opacity=0.6)
-    night_ref_min = _ref_line([-min_night_crews], strokeWidth=2,
-                              color=_PERIOD_COLORS['Night'], opacity=0.95)
+    layers = [
+        bars,
+        _ref_line('zero', [0], strokeWidth=1.5, color='#333'),
+        _ref_line('day_soft', [5, 9], strokeDash=[4, 3], strokeWidth=1,
+                  color=_PERIOD_COLORS['Day'], opacity=0.6),
+        _ref_line('day_min', [7], strokeWidth=2, color=_PERIOD_COLORS['Day'], opacity=0.95),
+    ]
 
-    layers = [bars, zero_line, day_refs_soft, day_ref_min, night_ref_soft, night_ref_min]
+    # Only draw a Night reference where it says something the other lines don't.
+    # The dashed Night-5 reference is fixed, so at min_night_crews == 5 it lands
+    # on exactly the same y as the solid minimum and the thicker solid line hides
+    # it completely — which reads as the dashed line having gone missing. Same
+    # story at a minimum of 0, where the solid line would sit on the zero line.
+    if min_night_crews != 5:
+        layers.append(_ref_line('night_soft', [-5], strokeDash=[4, 3], strokeWidth=1,
+                                color=_PERIOD_COLORS['Night'], opacity=0.6))
+    if min_night_crews > 0:
+        layers.append(_ref_line('night_min', [-min_night_crews], strokeWidth=2,
+                                color=_PERIOD_COLORS['Night'], opacity=0.95))
 
     if simulate:
         # No stroke anywhere here — a stroke paints centered on the bar's edge, so
