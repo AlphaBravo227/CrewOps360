@@ -711,6 +711,21 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
         move_summary_by_day = df.set_index('day_label_display')['move_summary']
         long_df['move_summary'] = long_df['day_label_display'].map(move_summary_by_day).fillna('')
 
+    # Explicit, Python-computed y domain rather than leaving Vega-Lite to union
+    # it from up to 10 layers' worth of data each render — a block with no
+    # submitted bids at all (day_max_shifts/night_max_shifts uniformly 0, which
+    # is genuinely the case for most blocks this early in a cycle) hands the
+    # bars layer a completely flat contribution to that union, and a chart
+    # that's sometimes fully blank, sometimes fine, on identical data/settings
+    # is exactly what an unstable domain computation looks like from the
+    # outside. Pinning the same fixed domain on every layer removes any
+    # per-render ambiguity for Vega-Lite to resolve differently.
+    day_top = max([9, df['day_max_shifts'].max()] +
+                  ([df['sim_day_max'].max()] if simulate else [])) + 1
+    night_bottom = max([9, min_night_crews, df['night_max_shifts'].max()] +
+                       ([df['sim_night_max'].max()] if simulate else [])) + 1
+    y_scale = alt.Scale(domain=[-night_bottom, day_top])
+
     color_scale = alt.Scale(domain=list(_PERIOD_COLORS.keys()), range=list(_PERIOD_COLORS.values()))
     shared_x = alt.X('day_label_display:N', sort=order, title=None, axis=None)
 
@@ -723,7 +738,7 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
     bars = alt.Chart(long_df).mark_bar().encode(
         x=shared_x,
         y=alt.Y('plot_value:Q', title='Max Crews  (Day above · Night below)',
-                axis=alt.Axis(labelExpr='abs(datum.value)', grid=False)),
+                scale=y_scale, axis=alt.Axis(labelExpr='abs(datum.value)', grid=False)),
         color=alt.Color('Period:N', scale=color_scale, legend=alt.Legend(title=None)),
         tooltip=bars_tooltip,
     )
@@ -746,7 +761,7 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
         rows = [{'day_label_display': day, 'y': y, '_series': i}
                 for i, y in enumerate(y_values) for day in order]
         return alt.Chart(pd.DataFrame(rows)).mark_line(**mark_kwargs).encode(
-            x=shared_x, y='y:Q', detail='_series:N')
+            x=shared_x, y=alt.Y('y:Q', scale=y_scale), detail='_series:N')
 
     zero_line = _ref_line([0], strokeWidth=1.5, color='#333')
     day_refs_soft = _ref_line([5, 9], strokeDash=[4, 3], strokeWidth=1,
@@ -771,7 +786,7 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
             ext_df['y0'] = ext_df['day_max_shifts']
             ext_df['y1'] = ext_df['sim_day_max']
             day_extension = alt.Chart(ext_df).mark_bar(fill=_PERIOD_COLORS['Night']).encode(
-                x=shared_x, y='y0:Q', y2='y1:Q',
+                x=shared_x, y=alt.Y('y0:Q', scale=y_scale), y2='y1:Q',
                 tooltip=[alt.Tooltip('day_label_display:N', title='Day'),
                          alt.Tooltip('day_max_shifts:Q', title='Actual max'),
                          alt.Tooltip('sim_day_max:Q', title='Simulated max'),
@@ -788,7 +803,7 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
                            alt.Tooltip('sim_night_max:Q', title='Simulated night max')]
             night_borrow_gap = alt.Chart(sac_df).mark_bar(
                 fill=_PERIOD_COLORS['Night'], fillOpacity=0.15,
-            ).encode(x=shared_x, y='y0:Q', y2='y1:Q', tooltip=gap_tooltip)
+            ).encode(x=shared_x, y=alt.Y('y0:Q', scale=y_scale), y2='y1:Q', tooltip=gap_tooltip)
             layers.append(night_borrow_gap)
 
             # Thin dark caps at the gap's top and bottom edges, standing in for
@@ -805,9 +820,9 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
             edge_df['bottom_y0'] = edge_df['y0']
             edge_df['bottom_y1'] = edge_df['y0'] + edge_h
             night_borrow_top_edge = alt.Chart(edge_df).mark_bar(fill=edge_color).encode(
-                x=shared_x, y='top_y0:Q', y2='top_y1:Q', tooltip=gap_tooltip)
+                x=shared_x, y=alt.Y('top_y0:Q', scale=y_scale), y2='top_y1:Q', tooltip=gap_tooltip)
             night_borrow_bottom_edge = alt.Chart(edge_df).mark_bar(fill=edge_color).encode(
-                x=shared_x, y='bottom_y0:Q', y2='bottom_y1:Q', tooltip=gap_tooltip)
+                x=shared_x, y=alt.Y('bottom_y0:Q', scale=y_scale), y2='bottom_y1:Q', tooltip=gap_tooltip)
             layers.append(night_borrow_top_edge)
             layers.append(night_borrow_bottom_edge)
 
