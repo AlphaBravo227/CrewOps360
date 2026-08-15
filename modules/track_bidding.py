@@ -596,7 +596,7 @@ def _build_bid_heatmap(days, bids, role_mapping, no_matrix_mapping):
         color=alt.Color('shift:N', scale=color_scale, legend=alt.Legend(title='Shift')),
         tooltip=[alt.Tooltip('staff:N', title='Staff'), alt.Tooltip('role:N', title='Role'),
                  alt.Tooltip('day_label:N', title='Day'), alt.Tooltip('shift:N', title='Shift')],
-    ).properties(height=max(300, 15 * len(staff_order)))
+    ).properties(height=max(300, 15 * len(staff_order)), width=1060)
 
 
 def _build_composition_chart(day_stats, period):
@@ -618,7 +618,7 @@ def _build_composition_chart(day_stats, period):
         color=alt.Color('Category:N', scale=color_scale, legend=alt.Legend(title=None)),
         order=alt.Order('Category:N'),
         tooltip=['day_label:N', 'Category:N', 'Count:Q'],
-    ).properties(title=f'{period} Shift — Bid Composition', height=220)
+    ).properties(title=f'{period} Shift — Bid Composition', height=220, width=1100)
 
 
 def _build_demand_vs_cap_chart(day_stats, period, role):
@@ -640,7 +640,7 @@ def _build_demand_vs_cap_chart(day_stats, period, role):
     cap_line = alt.Chart(df).mark_line(strokeDash=[4, 3], strokeWidth=2, color=hue).encode(
         x=alt.X('day_label:N', sort=order), y='Cap:Q',
     )
-    return (bars + cap_line).properties(title=f'{period} · {role} (dashed = cap)', height=180)
+    return (bars + cap_line).properties(title=f'{period} · {role} (dashed = cap)', height=180, width=530)
 
 
 def _split_day_label(day_label):
@@ -826,13 +826,15 @@ def _build_max_shifts_chart(day_stats, simulate=False, min_night_crews=4):
             layers.append(night_borrow_top_edge)
             layers.append(night_borrow_bottom_edge)
 
-    # Fixed pixel width rather than use_container_width's JS-measured one: that
-    # measurement runs against the container's rendered size at mount time, and
-    # inside a tab this chart can mount before the tab panel has actually been
-    # laid out (0-width container mid-transition), which compiles into a
-    # degenerate width and renders the whole chart — bars included, not just
-    # the reference lines — completely blank. A number baked into the spec up
-    # front has nothing to race.
+    # Fixed pixel width, and every st.altair_chart on this tab is rendered with
+    # use_container_width=False, because container width is what made these
+    # charts render completely blank. Streamlit only builds the Vega view once
+    # its ResizeObserver has measured the container at >0 px wide; inside
+    # st.tabs the first measurement happens while the tab panel still has no
+    # layout box, so it comes back 0, Streamlit stores it as -1, and the view is
+    # never created at all — no bars, no reference lines, no SVG, permanently.
+    # Nothing in the Vega-Lite spec is involved, which is why spec-level fixes
+    # never helped. A chart with its own width skips that gate entirely.
     chart_width = 1100
 
     main = alt.layer(*layers).properties(height=340, width=chart_width)
@@ -930,22 +932,23 @@ def _render_bid_analysis_tab(config_names, default_track_index):
     for block_letter, block_start in (('A', 0), ('B', 14), ('C', 28)):
         st.markdown(f"##### Block {block_letter}")
         block_day_stats = day_stats.iloc[block_start:block_start + 14]
-        st.altair_chart(_build_max_shifts_chart(block_day_stats, simulate_flex, min_night_crews))
+        st.altair_chart(_build_max_shifts_chart(block_day_stats, simulate_flex, min_night_crews),
+                        use_container_width=False)
 
     st.markdown("#### Bid Composition by Day")
-    st.altair_chart(_build_composition_chart(day_stats, 'Day'), use_container_width=True)
-    st.altair_chart(_build_composition_chart(day_stats, 'Night'), use_container_width=True)
+    st.altair_chart(_build_composition_chart(day_stats, 'Day'), use_container_width=False)
+    st.altair_chart(_build_composition_chart(day_stats, 'Night'), use_container_width=False)
 
     st.markdown("#### Bid Demand vs. Configured Cap")
     st.caption("Solid bars are submitted bids; the dashed line is the current cap. "
                "A bar above the dashed line means more staff bid than there's room for.")
     dcol1, dcol2 = st.columns(2)
     with dcol1:
-        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Day', 'Nurse'), use_container_width=True)
-        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Night', 'Nurse'), use_container_width=True)
+        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Day', 'Nurse'), use_container_width=False)
+        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Night', 'Nurse'), use_container_width=False)
     with dcol2:
-        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Day', 'Medic'), use_container_width=True)
-        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Night', 'Medic'), use_container_width=True)
+        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Day', 'Medic'), use_container_width=False)
+        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Night', 'Medic'), use_container_width=False)
 
     with st.expander("Full Day/Night breakdown table (Max Shifts / Senior / Nurse / Dual / Medic)"):
         summary_table = _build_bid_summary_table(day_stats)
@@ -973,7 +976,7 @@ def _render_bid_analysis_tab(config_names, default_track_index):
 
     with st.expander("Where Staff Are Bidding", expanded=False):
         st.caption("One row per staff member (nurses A–Z, then medics A–Z), one column per bid day.")
-        st.altair_chart(_build_bid_heatmap(days, bids, role_mapping, no_matrix_mapping), use_container_width=True)
+        st.altair_chart(_build_bid_heatmap(days, bids, role_mapping, no_matrix_mapping), use_container_width=False)
 
 
 def _compute_bid_roster_table(analysis_track, ctx, bids):
