@@ -3016,6 +3016,23 @@ def _display_bid_submission(
     else:
         st.error("This bid has validation issues. Please fix them in Track Selection before submitting.")
 
+    # Admin-only escape hatch: some staff (e.g. someone whose track is being
+    # hand-built a few shifts at a time rather than to a full requirement) will
+    # never clear night/weekend/shift-count validation on their own. Only an
+    # admin can see or set this — staff always still need a clean bid.
+    admin_override = False
+    if is_admin and not valid:
+        admin_override = st.checkbox(
+            "⚠️ Admin Override — submit anyway",
+            key=f"admin_override_{bid_track_name}_{selected_staff}",
+            help="Bypasses the validation failures above so this bid can still be saved on "
+                 "the staff member's behalf — for tracks that are intentionally being built "
+                 "under their normal requirement.",
+        )
+        if admin_override:
+            st.warning("Admin override is on — this bid will be saved even though it doesn't "
+                       "meet all requirements.")
+
     # Schedule preview
     st.markdown("### Schedule Preview")
     blocks = ["A", "B", "C"]
@@ -3033,7 +3050,7 @@ def _display_bid_submission(
                 tdata.append({"Day": day, "Assignment": assignment if assignment else ""})
             st.dataframe(pd.DataFrame(tdata), use_container_width=True, hide_index=True)
 
-    if not valid:
+    if not valid and not admin_override:
         st.error("Cannot submit — fix validation issues first.")
         return
 
