@@ -51,90 +51,53 @@ from modules.shift_definitions import day_shifts, night_shifts
 
 
 # ──────────────────────────────────────────────
-# Shared data loading (staff roster + Excel files used by the bidding editor)
+# Shared data loading (staff roster, requirements, tracks and preassignments —
+# all from the database)
 # ──────────────────────────────────────────────
 
-def _get_preassignment_day_columns(path):
+def _load_bidding_data_files(track_name=None):
     """
-    Read the ordered list of day-pattern columns (e.g. "Sun A 1" ... "Sat C 6")
-    straight from the preassignments file's header row.
+    Load the data the bidding interface needs — all of it from the database now: staff
+    attributes and requirements from the staff roster, the active track grid from the
+    submitted tracks, and the cycle's preassignments from the preassignment table.
+    Shared by the staff-facing flow and the admin "Add/Update Selection" /
+    "Manage Bid Access" tabs.
 
-    Read independently of load_preassignments() (which may collapse the file into
-    a plain dict when duplicate staff names are present) so the day schema is
-    always derived directly from the file's own columns, never from Tracks.xlsx.
-    """
-    header_df = pd.read_excel(path, nrows=0)
-    cols = list(header_df.columns)
-    staff_col = cols[0]
-    for col in cols:
-        if isinstance(col, str) and "name" in col.lower() and "staff" in col.lower():
-            staff_col = col
-            break
-    return [c for c in cols if c != staff_col]
-
-
-def _load_bidding_data_files():
-    """
-    Load the data the bidding interface needs: staff attributes from the staff database,
-    plus the Excel files still used per bid cycle (tracks, requirements,
-    preassignments). Shared by the staff-facing flow and the admin
-    "Add/Update Selection" / "Manage Bid Access" tabs.
+    Args:
+        track_name (str, optional): the bid cycle whose preassignments to load. Defaults
+            to the cycle bidding is open on, then the active cycle.
 
     Returns:
         tuple: (ctx, error) — ctx is a dict with everything the bidding staff
         interface needs (minus the selected staff and track-specific capacity),
-        or None if a required file/column is missing, in which case error is a
-        message describing what's wrong.
+        or None if the roster is missing, in which case error is a message
+        describing what's wrong.
     """
-    import os
     from modules.column_mapper import auto_detect_columns
+    from modules.day_pattern import PATTERN_DAYS
     from modules.staff_database import (
         build_preferences_df,
+        build_requirements_df,
         get_no_matrix_mapping,
         get_role_mapping,
         get_seniority_mapping,
     )
     from modules.track_management.preassignment import load_preassignments
+    from modules.track_roster import build_current_tracks_df
 
-    excel_files = {
-        "current_tracks": None,
-        "requirements": None,
-        "preassignments": None,
-    }
-    upload_dir = "upload files"
-    if os.path.exists(upload_dir):
-        for f in os.listdir(upload_dir):
-            fl = f.lower()
-            fp = os.path.join(upload_dir, f)
-            if 'preference' in fl:
-                continue  # staff attributes now come from the staff database
-            elif 'track' in fl and fl.endswith('.xlsx'):
-                excel_files['current_tracks'] = fp
-            elif 'requirement' in fl and fl.endswith('.xlsx'):
-                excel_files['requirements'] = fp
-            elif 'preassignment' in fl and fl.endswith('.xlsx'):
-                excel_files['preassignments'] = fp
-
-    if not excel_files['current_tracks']:
-        return None, "Current tracks file not found in 'upload files' folder."
-
-    if not excel_files['preassignments']:
-        return None, "Preassignments file not found in 'upload files' folder."
-
-    def load_excel(path):
-        return pd.read_excel(path) if path else None
-
-    # Preferences-shaped frame built from the staff database, so everything downstream
-    # (validators, PDF generation, the hypothetical scheduler) is unchanged.
+    # Preferences- and requirements-shaped frames built from the staff database, so
+    # everything downstream (validators, PDF generation, the hypothetical scheduler) is
+    # unchanged.
     preferences_df = build_preferences_df()
-    current_tracks_df = load_excel(excel_files['current_tracks'])
-    requirements_df = load_excel(excel_files['requirements'])
+    requirements_df = build_requirements_df()
 
-    # NOTE: preassignments must be loaded via load_preassignments() rather than a bare
-    # load_excel() — get_staff_preassignments() looks staff up via
-    # preassignment_df.loc[staff_name], which requires the staff-name index (and
-    # duplicate-row handling) that only load_preassignments() sets up.
-    preassignment_df = load_preassignments()
+    # The prior cycle's active tracks, used as reference data (capacity/options and the
+    # "Your Active Track" comparison) — read from the tracks table rather than a
+    # spreadsheet copy of it.
+    current_tracks_df = build_current_tracks_df()
+
+    # Preassignments are authored per bid cycle in the Track Bidding admin.
+    preassignment_df = load_preassignments(track_name)
 
     if preferences_df is None or preferences_df.empty:
         return None, ("No clinical staff found in the staff database. An administrator "
@@ -146,11 +109,9 @@ def _load_bidding_data_files():
     staff_col_prefs = mappings['staff_col_prefs']
     staff_col_tracks = mappings.get('staff_col_tracks')
     role_col = mappings['role_col']
-    # The bid cycle's day schema comes from Preassignments.xlsx (the file authored
-    # per bid cycle), not from Tracks.xlsx (last cycle's active roster) — Tracks.xlsx
-    # is still used below only as reference data (capacity/options + "Your Active
-    # Track" comparison), never as the source of which day columns exist.
-    days = _get_preassignment_day_columns(excel_files['preassignments'])
+    # The 42-day schema is fixed (six weeks, blocks A/B/C) rather than read from a
+    # spreadsheet header.
+    days = list(PATTERN_DAYS)
     no_matrix_col = mappings.get('no_matrix_col')
     reduced_rest_col = mappings.get('reduced_rest_col')
     seniority_col = mappings.get('seniority_col')
@@ -192,14 +153,15 @@ def _load_bidding_data_files():
 
 def _load_requirements_map(requirements_df):
     """
-    Parse Requirements.xlsx into {staff_name: {shifts_per_pay_period, night_minimum,
+    Parse a requirements frame into {staff_name: {shifts_per_pay_period, night_minimum,
     weekend_minimum, weekend_group, email}}.
 
-    Column layout is positional (STAFF NAME, SHIFTS PER PAY PERIOD, NIGHT MINIMUM,
-    WEEKEND MINIMUM, WEEKEND GROUP, EMAIL), matching the per-staff parsing in
-    _display_bidding_staff_interface. Staff with a blank SHIFTS PER PAY PERIOD are
-    management who don't bid on tracks — shifts_per_pay_period stays None for them,
-    which is what callers use to exclude them from the bidding roster.
+    The frame comes from the staff database (see staff_database.build_requirements_df)
+    and keeps Requirements.xlsx's positional column layout (STAFF NAME, SHIFTS PER PAY
+    PERIOD, NIGHT MINIMUM, WEEKEND MINIMUM, WEEKEND GROUP, EMAIL), matching the
+    per-staff parsing in _display_bidding_staff_interface. Staff with a blank SHIFTS PER
+    PAY PERIOD are management who don't bid on tracks — shifts_per_pay_period stays None
+    for them, which is what callers use to exclude them from the bidding roster.
     """
     result = {}
     if requirements_df is None or requirements_df.empty:
@@ -249,7 +211,7 @@ def _bidding_role_bucket(role):
 # treated like management for bidding purposes: skipped in the bid order so they
 # never get auto-notified/auto-opened when the person ahead of them bids. Unlike
 # real management they still work clinical shifts, so — unlike management — they
-# keep a normal SHIFTS PER PAY PERIOD in Requirements.xlsx (Summer Leave, PDF
+# keep a normal shifts-per-pay-period on the staff roster (Summer Leave, PDF
 # generation, and the track validators all depend on that field being accurate).
 _BID_INELIGIBLE_STAFF = {"O'Flaherty", "Phelan", "VanderKooi"}
 
@@ -258,7 +220,7 @@ def _ordered_bidding_roster(staff_names, role_mapping, seniority_mapping, requir
     """
     Seniority-ascending (most senior first) list of staff in one role bucket ('nurse'
     or 'medic'), excluding anyone with no SHIFTS PER PAY PERIOD on file in
-    Requirements.xlsx (management/non-bidding staff) or in _BID_INELIGIBLE_STAFF
+    the staff roster (management/non-bidding staff) or in _BID_INELIGIBLE_STAFF
     (probationary staff not yet eligible to bid) — both are skipped.
     """
     def _seniority_key(name):
@@ -349,7 +311,7 @@ def _run_auto_bid_progression(staff_name, bid_track_name):
             note = ("Admins have been emailed to enable access and notify them manually."
                     if alert_ok else f"The admin alert email also failed to send: {alert_msg}")
             return _log(next_staff, "warning",
-                        f"{next_staff} is next in rank, but has no email on file in Requirements.xlsx — "
+                        f"{next_staff} is next in rank, but has no email on file in the staff database — "
                         f"bid access was NOT automatically enabled. {note}")
 
         ok, _ = set_bid_access(next_staff, bid_track_name, True)
@@ -376,7 +338,7 @@ def _send_manual_bid_notification(staff_name, manual_email, bid_track_name):
     otherwise wants to notify someone by hand.
 
     Unlike the automatic cascade, the recipient address is whatever the admin types
-    in — never looked up from Requirements.xlsx — and bid access is left untouched
+    in — never looked up from the staff database — and bid access is left untouched
     (use Toggle Access below for that). Always logged, with trigger_type='manual' so
     it's distinguishable from automatic events in the notification log.
 
@@ -1812,10 +1774,21 @@ def display_bidding_admin_interface():
         if bid_cfg and bid_cfg['track_name'] in config_names else 0
     )
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
-        "📊 Overview", "🛠️ Track Configs", "👥 Manage Bid Access", "➕ Add/Remove Selection", "📈 Bid Analysis",
-        "📋 Bid Roster", "🏢 Base Analysis", "⚖️ Staffing Rebalance", "🔁 Needs Swap Requests"
+    tab1, tab2, tab_pre, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+        "📊 Overview", "🛠️ Track Configs", "📌 Preassignments", "👥 Manage Bid Access",
+        "➕ Add/Remove Selection", "📈 Bid Analysis", "📋 Bid Roster", "🏢 Base Analysis",
+        "⚖️ Staffing Rebalance", "🔁 Needs Swap Requests"
     ])
+
+    # ── Preassignments: authored per bid cycle, alongside where the cycle is created ──
+    with tab_pre:
+        st.markdown("### Preassignments")
+        st.markdown("The days staff are already committed elsewhere before bidding opens. "
+                    "They count as day shifts and are locked in the bid editor. Each "
+                    "cycle has its own set — copy the previous cycle's over as a starting "
+                    "point when you create a new one.")
+        from modules.track_data_admin_ui import display_preassignment_editor
+        display_preassignment_editor(key_prefix="bid_admin_preassign")
 
     # ── Tab 1: Overview ──
     with tab1:
@@ -2125,7 +2098,7 @@ def display_bidding_admin_interface():
                     key=_seniority_key)
 
                 # Eligible-to-bid rosters (management staff — blank SHIFTS PER PAY PERIOD
-                # in Requirements.xlsx — and _BID_INELIGIBLE_STAFF excluded), for the
+                # on the staff roster — and _BID_INELIGIBLE_STAFF excluded), for the
                 # submitted/remaining counters below. Same helpers the auto bid progression
                 # cascade uses, so the counts
                 # stay consistent with who actually gets skipped there.
@@ -2163,7 +2136,7 @@ def display_bidding_admin_interface():
                     "When enabled, submitting a bid automatically grants bid access to the next "
                     "staff member in seniority rank order (same role — Nurse/Dual or Medic) and "
                     "emails them that their bid is now open, along with the admins. Staff with a "
-                    "blank **SHIFTS PER PAY PERIOD** in Requirements.xlsx are management, not "
+                    "no **shifts per pay period** on the staff roster are management, not "
                     "bidding on tracks, and are skipped. If that next staff member already has bid "
                     "access enabled (e.g. a revision to an earlier/more senior staff member's bid "
                     "after the cascade already passed them), they're skipped — no duplicate "
@@ -2183,7 +2156,7 @@ def display_bidding_admin_interface():
                 st.caption(
                     "Send the \"your bid is open\" notification to a specific staff member right "
                     "now, using an email address you enter below (not looked up from "
-                    "Requirements.xlsx). This does not change their bid access — use "
+                    "the staff roster). This does not change their bid access — use "
                     "**Toggle Access** below for that."
                 )
                 manual_col1, manual_col2 = st.columns(2)
@@ -2537,7 +2510,7 @@ def display_track_bidding():
 
 def _run_bidding_interface(bid_track_name, capacity):
     """Run the bidding interface — mirrors run_clinical_track_hub but for bids."""
-    ctx, error = _load_bidding_data_files()
+    ctx, error = _load_bidding_data_files(bid_track_name)
     if ctx is None:
         st.error(error)
         return
@@ -3198,7 +3171,7 @@ def _display_bid_submission(
 
                 # Notify the admin recipients with bid summary statistics (sent from the admin
                 # account), also including the submitting staff member - with their bid summary
-                # PDF attached - when their email is on file in Requirements.xlsx. Skipped
+                # PDF attached - when their email is on file in the staff database. Skipped
                 # entirely under Covert Mode — nobody gets a copy of this save.
                 if covert_mode:
                     st.session_state[admin_notice_key] = (

@@ -107,15 +107,29 @@ def get_staff_role_based_ranking(staff_name, preferences_df, staff_col_prefs, ro
             }
         
         staff_role = staff_info.iloc[0][role_col]
-        staff_seniority = int(staff_info.iloc[0][seniority_col])
+        staff_seniority_raw = staff_info.iloc[0][seniority_col]
+        if pd.isna(staff_seniority_raw):
+            # No seniority rank on file (management and other non-bidding staff), so
+            # there is no position in the rank order to report.
+            return {
+                'overall_rank': 999,
+                'role_rank': 999,
+                'role': staff_role,
+                'total_in_role': 0,
+                'effective_role': "nurse" if staff_role == "dual" else staff_role
+            }
+        staff_seniority = int(staff_seniority_raw)
         effective_role = "nurse" if staff_role == "dual" else staff_role
-        
+
         # Fully vectorized: compute effective roles for all staff at once, then filter
         _eff_roles = preferences_df[role_col].apply(lambda r: "nurse" if r == "dual" else r)
         _filtered = preferences_df[_eff_roles == effective_role]
         same_role_staff = (
             _filtered[[staff_col_prefs, seniority_col, role_col]]
             .rename(columns={staff_col_prefs: 'name', seniority_col: 'seniority', role_col: 'role'})
+            # Staff without a rank aren't part of the rank order at all — dropping them
+            # keeps the cast safe and the ranking meaningful.
+            .dropna(subset=['seniority'])
             .assign(seniority=lambda df: df['seniority'].astype(int))
             .to_dict('records')
         )

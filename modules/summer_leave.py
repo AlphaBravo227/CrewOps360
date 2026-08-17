@@ -37,52 +37,30 @@ ROLE_CAPS = {
 # Roles that use shift-based caps (others use person-based caps)
 SHIFT_BASED_ROLES = {'NURSE', 'MEDIC'}
 
-# Cache for staff shifts read from Requirements.xlsx. Roles are not cached here — they
-# come from the staff database, which manages its own cache.
-_staff_shifts_cache = None
+# Shift requirements and roles both come from the staff database, which manages its own
+# cache and drops it when an admin edits the roster, so nothing is cached here.
 
 def load_staff_shifts_from_excel():
     """
-    Load staff shifts per pay period from Requirements.xlsx
+    Load shifts per pay period from the staff database.
+
+    Named for the spreadsheet it used to read — Requirements.xlsx — which the staff
+    database has replaced as the source of shift requirements. Staff with none on file
+    (management and other non-bidding staff) map to None, as the blank cells did.
 
     Returns:
         dict: Dictionary mapping staff_name to shifts_per_pay_period
     """
-    global _staff_shifts_cache
-
-    if _staff_shifts_cache is not None:
-        return _staff_shifts_cache
-
+    # Not cached here: the staff database caches its own reads and drops that cache when
+    # an admin edits the roster, so a requirements change takes effect without a restart.
     try:
-        # Use glob pattern like the rest of the app to find Requirements file
-        import glob
-        upload_dir = "upload files"
+        from .staff_database import get_all_staff
 
-        # Find Requirements file
-        requirements_files = glob.glob(os.path.join(upload_dir, "*equirement*.xlsx"))
-        if not requirements_files:
-            print("No Requirements file found in upload files directory")
-            return {}
-
-        requirements_path = requirements_files[0]
-
-        # Use pandas with openpyxl engine in read-only mode to avoid file locks
-        df = pd.read_excel(requirements_path, engine='openpyxl')
-
-        staff_shifts = {}
-        # Iterate through rows (skip header)
-        for idx in range(len(df)):
-            row = df.iloc[idx]
-            if pd.notna(row.iloc[0]):  # Staff name exists
-                staff_name = str(row.iloc[0]).strip()
-                shifts_per_pay_period = row.iloc[1] if len(row) > 1 and pd.notna(row.iloc[1]) else None
-                staff_shifts[staff_name] = shifts_per_pay_period
-
-        _staff_shifts_cache = staff_shifts
-        return staff_shifts
+        return {record['staff_name']: record['shifts_per_pay_period']
+                for record in get_all_staff()}
 
     except Exception as e:
-        print(f"Error loading staff shifts from Requirements.xlsx: {e}")
+        print(f"Error loading staff shifts from the staff database: {e}")
         import traceback
         traceback.print_exc()
         return {}
@@ -970,7 +948,7 @@ def display_admin_interface(staff_list, role_mapping, track_manager=None):
 
             # Check for shift data only for NURSE/MEDIC
             if is_admin_shift_based and staff_shifts_per_week is None:
-                st.warning(f"⚠️ {admin_selected_staff} does not have shift information in Requirements.xlsx")
+                st.warning(f"⚠️ {admin_selected_staff} does not have shift requirements on file in the staff database")
                 st.info("Please update the Requirements file before adding a selection.")
             else:
                 if is_admin_shift_based:

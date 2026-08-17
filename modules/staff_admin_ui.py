@@ -20,6 +20,7 @@ from . import staff_database as staffdb
 from .security import check_admin_access
 from .staff_import import (
     DEFAULT_PREFERENCES_PATH,
+    DEFAULT_REQUIREMENTS_PATH,
     DEFAULT_ROSTER_PATH,
     format_import_report,
     import_staff_roster,
@@ -30,6 +31,47 @@ _eastern_tz = pytz.timezone('America/New_York')
 _ROLE_HELP = ("Base role from the education roster. Dual providers are NURSE with the "
               "dual flag set — that combination is what the track system reads as the "
               "'dual' role.")
+
+_SHIFTS_HELP = ("Required shifts per 14-day pay period. Leave blank for management and "
+                "anyone else who doesn't bid a track — blank is what keeps them out of "
+                "the bid order, and is different from 0.")
+
+_EMAIL_HELP = ("Used to notify this staff member when their bid opens, and to send bid "
+               "confirmations.")
+
+
+def _optional_number_input(label, value, key, help_text=None, placeholder="blank"):
+    """
+    Text input for a number that may legitimately be blank.
+
+    A blank requirement means something different from 0 (blank marks a staff member as
+    non-bidding; 0 is a real requirement), and a number input cannot express "empty", so
+    these are typed as text and parsed on save.
+    """
+    return st.text_input(
+        label,
+        value='' if value is None else str(value),
+        key=key,
+        help=help_text,
+        placeholder=placeholder,
+    )
+
+
+def _parse_optional_number(text):
+    """
+    Parse an optional-number field.
+
+    Returns:
+        tuple: (value, ok) — value is an int or None; ok is False when the text was
+        neither blank nor a number.
+    """
+    raw = (text or '').strip()
+    if not raw:
+        return None, True
+    try:
+        return int(float(raw)), True
+    except ValueError:
+        return None, False
 
 
 def _require_admin():
@@ -91,6 +133,15 @@ def _display_summary():
         detail = '; '.join(f"rank {rank}: {', '.join(names)}"
                            for rank, names in issues['duplicate_seniority'].items())
         st.error(f"❌ Duplicate seniority ranks — bid ordering will be ambiguous ({detail}).")
+    if issues['missing_requirements']:
+        st.warning(
+            f"⚠️ No shifts per pay period on file for: "
+            f"{', '.join(issues['missing_requirements'])}. Non-management clinical staff "
+            "without it are treated as non-bidding and are left out of the bid order.")
+    if issues['missing_email']:
+        st.info(
+            f"ℹ️ No email on file for: {', '.join(issues['missing_email'])}. "
+            "They cannot be auto-notified when their bid opens.")
 
 
 def _roster_tab():
@@ -134,6 +185,11 @@ def _roster_tab():
         'Educator AT': r['is_educator_at'],
         'No Matrix': r['no_matrix'],
         'Seniority': r['seniority'],
+        'Shifts/Pay Period': r['shifts_per_pay_period'],
+        'Night Min': r['night_minimum'],
+        'Weekend Min': r['weekend_minimum'],
+        'Weekend Group': r['weekend_group'] or '',
+        'Email': r['email'] or '',
         'Active': r['is_active'],
         'Notes': r['notes'] or '',
         'Last Modified': r['modified_date'],
@@ -175,12 +231,37 @@ def _add_tab():
             is_educator_at = st.checkbox("Educator AT (may sign up to teach)")
             no_matrix = st.checkbox("No Matrix")
             is_active = st.checkbox("Active", value=True)
+
+        st.markdown("**Shift Requirements**")
+        req_cols = st.columns(4)
+        with req_cols[0]:
+            shifts_text = _optional_number_input("Shifts per pay period", None,
+                                                 "staff_db_add_shifts", _SHIFTS_HELP)
+        with req_cols[1]:
+            nights_text = _optional_number_input("Night minimum", None,
+                                                 "staff_db_add_nights")
+        with req_cols[2]:
+            weekends_text = _optional_number_input("Weekend minimum", None,
+                                                   "staff_db_add_weekends")
+        with req_cols[3]:
+            weekend_group = st.selectbox("Weekend group",
+                                        options=[''] + staffdb.WEEKEND_GROUPS,
+                                        key="staff_db_add_group")
+        email = st.text_input("Email", key="staff_db_add_email", help=_EMAIL_HELP)
         notes = st.text_input("Notes", placeholder="Optional")
 
         submitted = st.form_submit_button("➕ Add staff member", type="primary",
                                           use_container_width=True)
 
     if submitted:
+        shifts, shifts_ok = _parse_optional_number(shifts_text)
+        nights, nights_ok = _parse_optional_number(nights_text)
+        weekends, weekends_ok = _parse_optional_number(weekends_text)
+
+        if not (shifts_ok and nights_ok and weekends_ok):
+            st.error("❌ Shift requirements must be whole numbers, or left blank.")
+            return
+
         success, message = staffdb.add_staff(
             staff_name=name,
             role=role,
@@ -189,6 +270,11 @@ def _add_tab():
             is_educator_at=is_educator_at,
             no_matrix=no_matrix,
             seniority=seniority if seniority else None,
+            shifts_per_pay_period=shifts,
+            night_minimum=nights,
+            weekend_minimum=weekends,
+            weekend_group=weekend_group or None,
+            email=email or None,
             is_active=is_active,
             notes=notes or None,
             changed_by='admin',
@@ -264,12 +350,43 @@ def _edit_tab():
             is_educator_at = st.checkbox("Educator AT (may sign up to teach)",
                                          value=record['is_educator_at'])
             no_matrix = st.checkbox("No Matrix", value=record['no_matrix'])
+
+        st.markdown("**Shift Requirements**")
+        req_cols = st.columns(4)
+        with req_cols[0]:
+            shifts_text = _optional_number_input(
+                "Shifts per pay period", record['shifts_per_pay_period'],
+                "staff_db_edit_shifts", _SHIFTS_HELP)
+        with req_cols[1]:
+            nights_text = _optional_number_input(
+                "Night minimum", record['night_minimum'], "staff_db_edit_nights")
+        with req_cols[2]:
+            weekends_text = _optional_number_input(
+                "Weekend minimum", record['weekend_minimum'], "staff_db_edit_weekends")
+        with req_cols[3]:
+            group_options = [''] + staffdb.WEEKEND_GROUPS
+            current_group = record['weekend_group'] or ''
+            if current_group not in group_options:
+                group_options.append(current_group)
+            weekend_group = st.selectbox(
+                "Weekend group", options=group_options,
+                index=group_options.index(current_group), key="staff_db_edit_group")
+        email = st.text_input("Email", value=record['email'] or '',
+                              key="staff_db_edit_email", help=_EMAIL_HELP)
         notes = st.text_input("Notes", value=record['notes'] or '')
 
         saved = st.form_submit_button("💾 Save changes", type="primary",
                                       use_container_width=True)
 
     if saved:
+        shifts, shifts_ok = _parse_optional_number(shifts_text)
+        nights, nights_ok = _parse_optional_number(nights_text)
+        weekends, weekends_ok = _parse_optional_number(weekends_text)
+
+        if not (shifts_ok and nights_ok and weekends_ok):
+            st.error("❌ Shift requirements must be whole numbers, or left blank.")
+            return
+
         success, message = staffdb.update_staff(
             record['staff_name'],
             role=role,
@@ -278,6 +395,11 @@ def _edit_tab():
             is_educator_at=is_educator_at,
             no_matrix=no_matrix,
             seniority=seniority if seniority else None,
+            shifts_per_pay_period=shifts,
+            night_minimum=nights,
+            weekend_minimum=weekends,
+            weekend_group=weekend_group or None,
+            email=email or None,
             notes=notes,
             changed_by='admin',
         )
@@ -390,18 +512,23 @@ def _import_tab():
         "The roster's baseline comes from the **Education Classes Roster** "
         "(`Class_Enrollment` sheet): staff names plus Role, MGMT, DUAL and Educator AT. "
         "**No Matrix** and **Seniority** come from **Preferences v6**, along with each "
-        "staff member's saved base-shift preference scores. "
+        "staff member's saved base-shift preference scores. **Shifts per pay period, "
+        "night and weekend minimums, weekend group and email** come from "
+        "**Requirements**. "
         "Once imported, the app reads all of this from the database — these files are "
         "only re-read when you run an import here."
     )
 
-    cols = st.columns(2)
+    cols = st.columns(3)
     with cols[0]:
         roster_path = st.text_input("Education Classes Roster", value=DEFAULT_ROSTER_PATH,
                                     key="staff_db_import_roster")
     with cols[1]:
         preferences_path = st.text_input("Preferences v6", value=DEFAULT_PREFERENCES_PATH,
                                          key="staff_db_import_prefs")
+    with cols[2]:
+        requirements_path = st.text_input("Requirements", value=DEFAULT_REQUIREMENTS_PATH,
+                                          key="staff_db_import_reqs")
 
     option_cols = st.columns(2)
     with option_cols[0]:
@@ -413,8 +540,9 @@ def _import_tab():
         update_existing = st.checkbox(
             "Update staff already on the roster", value=False,
             key="staff_db_import_update",
-            help="Off by default so a re-import never overwrites edits you have made "
-                 "here. Turn it on to let the spreadsheets win.")
+            help="Fields the roster has nothing for yet are always filled in. This "
+                 "additionally lets the spreadsheets overwrite values that are already "
+                 "set and disagree — off by default so your edits stand.")
     with option_cols[1]:
         seed_preferences = st.checkbox(
             "Seed base-shift preferences from Preferences v6", value=True,
@@ -433,6 +561,7 @@ def _import_tab():
             report = import_staff_roster(
                 roster_path=roster_path,
                 preferences_path=preferences_path,
+                requirements_path=requirements_path,
                 include_secondary_names=include_secondary,
                 update_existing=update_existing,
                 seed_shift_preferences=seed_preferences,

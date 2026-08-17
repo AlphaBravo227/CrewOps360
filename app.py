@@ -63,11 +63,18 @@ from modules.track_bidding import display_track_bidding
 from modules.db_utils import get_active_track_config, get_track_capacity
 from modules.staff_database import (
     build_preferences_df,
+    build_requirements_df,
     get_staff_names,
     initialize_staff_tables,
     staff_count,
 )
 from modules.staff_admin_ui import display_staff_database_admin
+from modules.day_pattern import PATTERN_DAYS
+from modules.track_roster import active_track_count, build_current_tracks_df, get_active_track_rows
+from modules.preassignment_db import get_preassignments, initialize_preassignment_tables
+from modules.ccemt_schedule import initialize_ccemt_tables
+from modules.track_management.preassignment import load_preassignments
+from modules.track_data_admin_ui import display_track_data_admin
 
 # Import training modules with new unified database approach
 try:
@@ -190,15 +197,6 @@ div[class*="st-key-"][class*="_card"] div[data-testid="stButton"] button {
 }
 </style>
 """, unsafe_allow_html=True)
-
-@st.cache_data
-def _load_excel_file(path: str, mtime: float) -> pd.DataFrame:
-    return pd.read_excel(path)
-
-def load_excel_file(path: str) -> pd.DataFrame:
-    """Load an Excel file with automatic cache-busting on file modification."""
-    mtime = os.path.getmtime(path) if os.path.exists(path) else 0.0
-    return _load_excel_file(path, mtime)
 
 # Initialize session state for navigation
 if 'selected_module' not in st.session_state:
@@ -479,24 +477,12 @@ def display_training_events_app():
             st.session_state.training_track_manager = TrainingTrackManager('data/medflight_tracks.db')
             print("✓ Track Manager initialized")
 
-        # Initialize separate Excel Handler for Tracks.xlsx (CCEMT schedules)
-        if 'tracks_excel_handler' not in st.session_state:
-            tracks_excel_path = 'upload files/Tracks.xlsx'
-            if os.path.exists(tracks_excel_path):
-                st.session_state.tracks_excel_handler = ExcelHandler(tracks_excel_path)
-                print("✓ Tracks Excel Handler initialized")
-                
-                # Connect BOTH Excel handlers to Track Manager
-                # - tracks_excel_handler: for loading CCEMT schedules
-                # - training_excel_handler: for getting staff roles
-                st.session_state.training_track_manager.set_excel_handler(
-                    tracks_excel_handler=st.session_state.tracks_excel_handler,
-                    enrollment_excel_handler=st.session_state.training_excel_handler
-                )
-                print("✓ CCEMT schedules loaded")
-            else:
-                print(f"⚠ Tracks.xlsx not found at {tracks_excel_path} - CCEMT schedules unavailable")
-                st.session_state.tracks_excel_handler = None
+            # CCEMT schedules come from the database (Track Data admin); the enrollment
+            # workbook is still connected as the fallback source of staff roles.
+            st.session_state.training_track_manager.set_excel_handler(
+                enrollment_excel_handler=st.session_state.training_excel_handler
+            )
+            print("✓ CCEMT schedules loaded")
 
         # Initialize enrollment manager
         if 'training_enrollment_manager' not in st.session_state:
@@ -929,112 +915,6 @@ def run_clinical_track_hub():
             st.error(f"Validation error: {str(e)}")
             return False
 
-    def manually_convert_tracks_excel_to_db(tracks_file_path):
-        """
-        Manually convert Tracks.xlsx to medflight_tracks.db
-        Clears existing tracks and replaces with Excel data
-        """
-        try:
-            import json
-            from datetime import datetime
-            
-            tracks_df = pd.read_excel(tracks_file_path)
-            
-            if tracks_df.empty:
-                return False, "Excel file is empty or could not be read"
-            
-            columns = tracks_df.columns.tolist()
-            staff_col = columns[0]
-            day_columns = columns[1:]
-            
-            if len(day_columns) < 42:
-                return False, f"Expected at least 42 day columns, found {len(day_columns)}"
-            
-            initialize_database()
-            
-            db_path = 'data/medflight_tracks.db'
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute("DELETE FROM tracks")
-            cursor.execute("DELETE FROM track_history")
-            
-            submission_date = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
-            
-            conversion_count = 0
-            error_count = 0
-            
-            for index, row in tracks_df.iterrows():
-                try:
-                    staff_name = str(row[staff_col]).strip()
-                    
-                    if not staff_name or staff_name.lower() in ['nan', 'none', '']:
-                        continue
-                    
-                    track_data = {}
-                    
-                    for day_col in day_columns:
-                        day_value = row[day_col]
-                        
-                        if pd.isna(day_value):
-                            track_data[day_col] = ""
-                        else:
-                            track_data[day_col] = str(day_value).strip()
-                    
-                    track_json = json.dumps(track_data)
-                    
-                    cursor.execute('''
-                        INSERT INTO tracks (
-                            staff_name, track_data, submission_date, is_approved, 
-                            version, is_active, track_source, has_preassignments, 
-                            preassignment_count
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        staff_name,
-                        track_json,
-                        submission_date,
-                        1,
-                        1,
-                        1,
-                        "Preferred Track",
-                        0,
-                        0
-                    ))
-                    
-                    track_id = cursor.lastrowid
-                    cursor.execute('''
-                        INSERT INTO track_history (
-                            track_id, staff_name, track_data, submission_date, status
-                        ) VALUES (?, ?, ?, ?, ?)
-                    ''', (
-                        track_id,
-                        staff_name,
-                        track_json,
-                        submission_date,
-                        "Manual Import from Excel"
-                    ))
-                    
-                    conversion_count += 1
-                    
-                except Exception as row_error:
-                    error_count += 1
-                    print(f"Error processing row {index} for staff '{staff_name}': {str(row_error)}")
-                    continue
-            
-            conn.commit()
-            conn.close()
-            
-            if conversion_count > 0:
-                success_message = f"Successfully converted {conversion_count} staff tracks to database"
-                if error_count > 0:
-                    success_message += f" ({error_count} rows had errors and were skipped)"
-                return True, success_message
-            else:
-                return False, f"No tracks were converted. {error_count} rows had errors."
-                
-        except Exception as e:
-            return False, f"Error during manual conversion: {str(e)}"
-
     # Add verify_database_integrity function if it doesn't exist
     try:
         from modules.db_utils import verify_database_integrity
@@ -1228,83 +1108,6 @@ def run_clinical_track_hub():
         except Exception as e:
             st.error(f"Error loading calendar export: {str(e)}")
 
-    # Function to detect data source format
-    def detect_data_source_format(df):
-        """Detect whether the DataFrame follows Database or Excel File format."""
-        result = {
-            "is_database_format": False,
-            "staff_name_col": None,
-            "first_day_col": None,
-            "day_indices": []
-        }
-        
-        if df is None or df.empty:
-            return result
-        
-        cols = df.columns.tolist()
-        
-        if len(cols) > 1 and "STAFF NAME" in cols[0].upper():
-            result["is_database_format"] = False
-            result["staff_name_col"] = cols[0]
-            result["first_day_col"] = 1
-            result["day_indices"] = list(range(1, min(43, len(cols))))
-            return result
-        
-        result["is_database_format"] = True
-        result["staff_name_col"] = cols[0]
-        result["first_day_col"] = 5
-        result["day_indices"] = list(range(5, min(47, len(cols))))
-        return result
-
-    # Function to load Excel files
-    #
-    # Staff attributes (role, management, dual, educator, no matrix, seniority) are no
-    # longer read from Preferences v6 — they come from the staff database, so that file
-    # is not looked for here. Tracks/Requirements/Preassignments are still Excel.
-    def load_excel_files_from_directory():
-        upload_dir = "upload files"
-        files_found = {
-            "current_tracks": None,
-            "requirements": None,
-            "preassignments": None
-        }
-
-        if not os.path.exists(upload_dir):
-            st.warning(f"Directory '{upload_dir}' not found. Creating directory...")
-            os.makedirs(upload_dir)
-            return files_found
-
-        excel_files = glob.glob(os.path.join(upload_dir, "*.xlsx")) + glob.glob(os.path.join(upload_dir, "*.xls"))
-
-        if not excel_files:
-            st.warning(f"No Excel files found in '{upload_dir}' directory.")
-            return files_found
-
-        for file_path in excel_files:
-            file_name = os.path.basename(file_path).lower()
-
-            if "preference" in file_name:
-                continue  # superseded by the staff database
-            elif "track" in file_name and "preassign" not in file_name:
-                files_found["current_tracks"] = file_path
-            elif ("requirement" in file_name or "staff req" in file_name) and "preassign" not in file_name:
-                files_found["requirements"] = file_path
-            elif "preassign" in file_name:
-                files_found["preassignments"] = file_path
-
-        # Assign unidentified files to missing slots
-        unassigned_files = [f for f in excel_files
-                            if f not in files_found.values()
-                            and "preference" not in os.path.basename(f).lower()]
-
-        if not files_found["current_tracks"] and unassigned_files:
-            files_found["current_tracks"] = unassigned_files.pop(0)
-
-        if not files_found["requirements"] and unassigned_files:
-            files_found["requirements"] = unassigned_files.pop(0)
-
-        return files_found
-
     # Initialize database
     initialize_database()
     initialize_staff_tables()
@@ -1348,47 +1151,14 @@ def run_clinical_track_hub():
     if 'staff_track_active' not in st.session_state:
         st.session_state.staff_track_active = False
 
-    # Load Excel files
-    excel_files = load_excel_files_from_directory()
-
-    # Load preassignments
-    if excel_files["preassignments"]:
-        try:
-            preassignment_df = load_excel_file(excel_files["preassignments"])
-            
-            staff_col = None
-            for col in preassignment_df.columns:
-                if isinstance(col, str) and "name" in col.lower() and "staff" in col.lower():
-                    staff_col = col
-                    break
-                    
-            if staff_col is None:
-                staff_col = preassignment_df.columns[0]
-            
-            if preassignment_df.duplicated(staff_col).any():
-                st.warning(f"Duplicate staff entries found in preassignments file. Using the first entry for each staff member.")
-                
-                preassignment_dict = {}
-                for staff_name, group in preassignment_df.groupby(staff_col):
-                    staff_dict = {}
-                    first_row = group.iloc[0]
-                    for col in group.columns:
-                        if col != staff_col and pd.notna(first_row[col]) and str(first_row[col]).strip():
-                            staff_dict[col] = str(first_row[col]).strip()
-                    preassignment_dict[staff_name] = staff_dict
-                
-                preassignment_df = preassignment_dict
-            else:
-                preassignment_df = preassignment_df.set_index(staff_col)
-                
-            st.session_state.preassignment_df = preassignment_df
-        except Exception as e:
-            st.error(f"Error loading preassignments file: {str(e)}")
-            preassignment_df = None
-            st.session_state.preassignment_df = None
-    else:
+    # Preassignments for the active cycle, from the database (authored per bid cycle in
+    # the Track Bidding admin).
+    try:
+        preassignment_df = load_preassignments()
+    except Exception as e:
+        st.error(f"Error loading preassignments: {str(e)}")
         preassignment_df = None
-        st.session_state.preassignment_df = None
+    st.session_state.preassignment_df = preassignment_df
 
     # Sidebar with enhanced validation info and admin authentication
     with st.sidebar:
@@ -1418,23 +1188,26 @@ def run_clinical_track_hub():
                 st.session_state.selected_module = "staff_database"
                 st.rerun()
 
-            st.header("Data Files")
+            st.header("Data Sources")
+            st.caption("All track data comes from the database — there are no "
+                       "spreadsheet uploads left in this module.")
 
-            # Display file loading status
-            if excel_files["current_tracks"]:
-                st.success(f"✅ Current tracks file loaded: {os.path.basename(excel_files['current_tracks'])}")
+            _active_tracks = active_track_count()
+            if _active_tracks:
+                st.success(f"✅ {_active_tracks} active track(s) in the database")
             else:
-                st.error("❌ Current tracks file not found")
+                st.warning("⚠️ No active tracks in the database yet")
 
-            if excel_files["requirements"]:
-                st.success(f"✅ Requirements file loaded: {os.path.basename(excel_files['requirements'])}")
+            _preassigned_staff = len(get_preassignments())
+            if _preassigned_staff:
+                st.success(f"✅ Preassignments on file for {_preassigned_staff} staff member(s)")
             else:
-                st.warning("⚠️ Requirements file not found (optional)")
+                st.info("ℹ️ No preassignments configured for this cycle")
 
-            if excel_files["preassignments"]:
-                st.success(f"✅ Preassignments file loaded: {os.path.basename(excel_files['preassignments'])}")
-            else:
-                st.warning("⚠️ Preassignments file not found (optional)")
+            if st.button("📌 Manage Track Data", use_container_width=True,
+                         key="open_track_data_admin"):
+                st.session_state.selected_module = "track_data"
+                st.rerun()
 
             # Add export functionality
             if st.session_state.get('preferences_df') is not None:
@@ -1460,38 +1233,29 @@ def run_clinical_track_hub():
             - **Weekend Requirements**: Friday nights + Saturday/Sunday shifts
             """)
             
-            # Names in the tracks file that the staff database doesn't know about (and
-            # vice versa). A name only in the tracks file has no role or seniority, so
-            # it needs adding to the staff database before that staff member can be
-            # validated or bid.
-            if excel_files["current_tracks"]:
-                try:
-                    current_tracks_df = load_excel_file(excel_files["current_tracks"])
-                    staff_col_tracks = next(
-                        (col for col in current_tracks_df.columns
-                         if isinstance(col, str) and "name" in col.lower()),
-                        current_tracks_df.columns[0])
+            # Staff holding an active track who are no longer active clinical staff on the
+            # roster, and active clinical staff with no track. Both are worth knowing
+            # about: the first is usually someone who left without their track being
+            # retired, the second someone who hasn't submitted yet.
+            try:
+                track_staff = set(get_active_track_rows())
+                db_staff = set(get_staff_names(clinical_only=True))
 
-                    track_staff = {str(name).strip() for name in current_tracks_df[staff_col_tracks]
-                                   if pd.notna(name) and str(name).strip()}
-                    db_staff = set(get_staff_names(clinical_only=True))
+                without_roster = track_staff - db_staff
+                without_track = db_staff - track_staff
 
-                    only_in_db = db_staff - track_staff
-                    only_in_track = track_staff - db_staff
+                if without_roster or without_track:
+                    st.warning("⚠️ Staff / track mismatches")
 
-                    if only_in_db or only_in_track:
-                        st.warning("⚠️ Staff name differences between the staff database "
-                                   "and the tracks file")
+                    if without_roster:
+                        with st.expander("Have an active track but are not active clinical staff:"):
+                            st.write(", ".join(sorted(without_roster)))
 
-                        if only_in_track:
-                            with st.expander("In the tracks file but not active clinical staff:"):
-                                st.write(", ".join(sorted(only_in_track)))
-
-                        if only_in_db:
-                            with st.expander("Active clinical staff not in the tracks file:"):
-                                st.write(", ".join(sorted(only_in_db)))
-                except Exception as e:
-                    st.error(f"Error checking staff mismatches: {str(e)}")
+                    if without_track:
+                        with st.expander("Active clinical staff with no track in the database:"):
+                            st.write(", ".join(sorted(without_track)))
+            except Exception as e:
+                st.error(f"Error checking staff/track mismatches: {str(e)}")
 
             # Always use database-driven track mode
             st.session_state.track_source = "Annual Rebid"
@@ -1925,26 +1689,17 @@ def run_clinical_track_hub():
 
     # MAIN PROCESSING
     #
-    # Staff attributes come from the staff database, shaped exactly like the old
-    # Preferences v6 sheet so the column detection and every downstream consumer keep
-    # working unchanged. Tracks and requirements are still read from Excel.
-    if excel_files["current_tracks"] and staff_count(include_inactive=False):
+    # Every frame here is built from the database, shaped exactly like the spreadsheets
+    # they replace (Preferences v6, Requirements, Tracks) so the column detection and
+    # every downstream consumer keep working unchanged.
+    if staff_count(include_inactive=False):
         try:
             preferences_df = build_preferences_df()
-            current_tracks_df = load_excel_file(excel_files["current_tracks"])
+            requirements_df = build_requirements_df()
+            current_tracks_df = build_current_tracks_df(days=PATTERN_DAYS)
 
-            # Load requirements file
-            if excel_files["requirements"]:
-                requirements_df = load_excel_file(excel_files["requirements"])
-                
-                if len(requirements_df.columns) >= 5:
-                    st.session_state.requirements_df = requirements_df
-                else:
-                    st.session_state.requirements_df = None
-            else:
-                requirements_df = None
-                st.session_state.requirements_df = None
-            
+            st.session_state.requirements_df = requirements_df
+
             # Save dataframes to session state
             st.session_state.current_tracks_df = current_tracks_df
             st.session_state.preferences_df = preferences_df
@@ -1982,13 +1737,14 @@ def run_clinical_track_hub():
             st.session_state.reduced_rest_col = reduced_rest_col
             st.session_state.seniority_col = seniority_col
             
-            # Create the master grid
+            # Create the master grid: every active clinical staff member against the
+            # fixed 42-day pattern, whether or not they have a track yet.
             staff_names = current_tracks_df[staff_col_tracks].tolist()
-            days = current_tracks_df.columns[1:43]  # 6 weeks = 42 days
-            
+            days = list(PATTERN_DAYS)
+
             # Save days to session state
             st.session_state.days = days
-            
+
             # Initialize master dataframe
             master_df = pd.DataFrame(index=staff_names, columns=days)
             assignment_reasons = {}
@@ -1997,17 +1753,11 @@ def run_clinical_track_hub():
             st.session_state.master_df = master_df
             st.session_state.assignment_reasons = assignment_reasons
 
-            # Detect and store data source format
-            source_format = detect_data_source_format(current_tracks_df)
-            st.session_state.data_source_format = source_format
-
         except Exception as e:
             st.error("An error occurred while loading the data. Please contact an administrator.")
-    elif not staff_count(include_inactive=False):
+    else:
         st.error("The staff database has no active staff yet. An administrator needs to "
                  "import the staff roster (Admin Area → Manage Staff Database).")
-    else:
-        st.info("Waiting for data to load. If no data appears, please contact an administrator.")
 
     # ENHANCED STAFF SELECTION SECTION - Split Screen Layout with Fullscreen Option
     if st.session_state.master_df is not None:
@@ -2109,9 +1859,11 @@ if not display_user_login():
 # If we get here, user is authenticated - show session info
 display_session_info()
 
-# The staff roster is read by every module, so make sure its tables exist regardless of
-# which page the user lands on first.
+# The roster, preassignment and CCEMT tables are read by every module, so make sure they
+# exist regardless of which page the user lands on first.
 initialize_staff_tables()
+initialize_preassignment_tables()
+initialize_ccemt_tables()
 
 # Main Navigation Logic
 if st.session_state.selected_module is None:
@@ -2126,6 +1878,9 @@ elif st.session_state.selected_module == "track_bidding":
 elif st.session_state.selected_module == "staff_database":
     # Show the Staff Database admin (admin-gated inside)
     display_staff_database_admin()
+elif st.session_state.selected_module == "track_data":
+    # Show the Track Data admin — preassignments and CCEMT schedules (admin-gated inside)
+    display_track_data_admin()
 elif st.session_state.selected_module == "training_events":
     # Show Training & Events application (FULL VERSION)
     display_training_events_app()
@@ -2152,16 +1907,11 @@ elif st.session_state.selected_module == "summer_leave":
         # Load tracks from database
         st.session_state.training_track_manager.reload_tracks()
 
-        # Set up Excel handlers for CCEMT schedules
-        if 'tracks_excel_handler' not in st.session_state:
-            from training_modules.excel_handler import ExcelHandler
-            tracks_excel_path = 'upload files/Tracks.xlsx'
-            if os.path.exists(tracks_excel_path):
-                st.session_state.tracks_excel_handler = ExcelHandler(tracks_excel_path)
-                st.session_state.training_track_manager.set_excel_handler(
-                    tracks_excel_handler=st.session_state.tracks_excel_handler,
-                    enrollment_excel_handler=st.session_state.training_excel_handler
-                )
+        # CCEMT schedules come from the database; the enrollment workbook stays connected
+        # as the fallback source of staff roles.
+        st.session_state.training_track_manager.set_excel_handler(
+            enrollment_excel_handler=st.session_state.training_excel_handler
+        )
 
     display_summer_leave_app(
         st.session_state.training_excel_handler,

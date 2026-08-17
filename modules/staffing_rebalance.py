@@ -335,7 +335,10 @@ def _excel_download_button(df, label, file_prefix, key, sheet_name="Sheet1"):
         df.to_excel(writer, sheet_name=sheet_name, index=False)
         ws = writer.sheets[sheet_name]
         for col_idx, col in enumerate(df.columns, start=1):
-            content_width = int(df[col].astype(str).map(len).max()) if len(df) else 0
+            # fillna first: a column that is entirely empty (e.g. no base preference on
+            # file for any candidate) stays None through astype(str), and len(None) fails.
+            content_width = (int(df[col].fillna('').astype(str).map(len).max())
+                             if len(df) else 0)
             ws.column_dimensions[get_column_letter(col_idx)].width = min(40, max(10, content_width + 2, len(str(col)) + 2))
     buffer.seek(0)
 

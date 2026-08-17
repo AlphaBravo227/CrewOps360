@@ -5,95 +5,32 @@ Module for handling preassignments within the track management system
 
 import streamlit as st
 import pandas as pd
-import os
-import glob
 
-_WEEKDAY_ORDER = {"Sun": 0, "Mon": 1, "Tue": 2, "Wed": 3, "Thu": 4, "Fri": 5, "Sat": 6}
+from ..day_pattern import pattern_day_sort_key as _pattern_day_sort_key
 
 
-def _pattern_day_sort_key(day):
+def load_preassignments(track_name=None):
     """
-    Chronological sort key for pattern-day labels like "Mon B 3" (weekday, block
-    letter, week number). A plain alphabetical sort puts "Mon B 3" before "Tue A 2"
-    even though week 2 (A2) comes before week 3 (B3) — this reorders them to match
-    the left-to-right week sequence staff see in the source spreadsheet.
-    """
-    parts = str(day).split()
-    if len(parts) >= 3:
-        weekday, week_num = parts[0], parts[2]
-        try:
-            return (int(week_num), _WEEKDAY_ORDER.get(weekday, 7))
-        except ValueError:
-            pass
-    return (999, str(day))
+    Load a track cycle's preassignments from the database.
 
+    Preassignments used to be authored in Preassignments.xlsx and dropped in the upload
+    folder; they are now stored per bid cycle in the database and configured in the
+    Track Bidding admin. The return shape is unchanged — a DataFrame indexed by staff
+    name with one column per day — so get_staff_preassignments() and has_preassignment()
+    below work exactly as before.
 
-def load_preassignments():
-    """
-    Load preassignments from Excel file in 'upload files' directory
-    
+    Args:
+        track_name (str, optional): the cycle to load. Defaults to the cycle bidding is
+            open on, then the active cycle.
+
     Returns:
-        DataFrame or None: Preassignments DataFrame if found, None otherwise
+        DataFrame or None: None when the cycle has no preassignments.
     """
-    # Look for preassignments file in upload directory
-    upload_dir = "upload files"
-    
-    # Check if directory exists
-    if not os.path.exists(upload_dir):
-        st.warning(f"Directory '{upload_dir}' not found.")
-        return None
-    
-    # FIXED: Improved search for files with "preassignment" in the name (case insensitive)
-    preassignment_files = []
-    for ext in ["xlsx", "xls"]:
-        files = glob.glob(os.path.join(upload_dir, f"*[Pp][Rr][Ee][Aa][Ss][Ss][Ii][Gg][Nn][Mm][Ee][Nn][Tt]*{ext}"))
-        preassignment_files.extend(files)
-    
-    if not preassignment_files:
-        # No preassignment file found
-        return None
-    
-    # Use the first matching file
-    preassignment_file = preassignment_files[0]
-    
     try:
-        # Load the preassignments file
-        preassignment_df = pd.read_excel(preassignment_file)
-        
-        # Find the staff name column
-        staff_col = None
-        for col in preassignment_df.columns:
-            if isinstance(col, str) and "name" in col.lower() and "staff" in col.lower():
-                staff_col = col
-                break
-                
-        if staff_col is None:
-            # Assume first column is staff name if no clear match
-            staff_col = preassignment_df.columns[0]
-        
-        # Set the staff name column as index for easier lookup
-        if preassignment_df.duplicated(staff_col).any():
-            # Handle duplicates - convert to a dictionary of staff -> preassignments
-            st.warning(f"Duplicate staff entries found in preassignments file. Using the first entry for each staff member.")
-            
-            # Group by staff name and create a dictionary
-            preassignment_dict = {}
-            for staff_name, group in preassignment_df.groupby(staff_col):
-                staff_dict = {}
-                first_row = group.iloc[0]
-                for col in group.columns:
-                    if col != staff_col and pd.notna(first_row[col]) and str(first_row[col]).strip():
-                        staff_dict[col] = str(first_row[col]).strip()
-                preassignment_dict[staff_name] = staff_dict
-            
-            return preassignment_dict
-        else:
-            # If no duplicates, we can use the DataFrame with the staff as the index
-            preassignment_df = preassignment_df.set_index(staff_col)
-            return preassignment_df
-    
+        from ..preassignment_db import build_preassignment_df
+        return build_preassignment_df(track_name)
     except Exception as e:
-        st.error(f"Error loading preassignments file: {str(e)}")
+        st.error(f"Error loading preassignments: {str(e)}")
         return None
 
 def get_staff_preassignments(staff_name, preassignment_df, days):

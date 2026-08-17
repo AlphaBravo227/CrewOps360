@@ -21,6 +21,13 @@ from the two spreadsheets that used to be read on every page load:
                       -> seeded into the preference tables staff edit in the app, so
                          nothing is lost when the spreadsheet stops being read
 
+    Requirements.xlsx
+        SHIFTS PER PAY PERIOD -> staff.shifts_per_pay_period
+        NIGHT MINIMUM         -> staff.night_minimum
+        WEEKEND MINIMUM       -> staff.weekend_minimum
+        WEEKEND GROUP         -> staff.weekend_group
+        EMAIL                 -> staff.email
+
 Import is idempotent: staff already on the roster are left alone unless
 update_existing is set, so an admin's later edits are never silently overwritten by a
 re-import.
@@ -33,12 +40,21 @@ import pandas as pd
 import pytz
 
 from . import staff_database as staffdb
-from .staff_database import canonical_role, clean_name, to_flag, to_seniority
+from .staff_database import (
+    canonical_role,
+    clean_name,
+    to_email,
+    to_flag,
+    to_optional_int,
+    to_seniority,
+    to_weekend_group,
+)
 
 _eastern_tz = pytz.timezone('America/New_York')
 
 DEFAULT_ROSTER_PATH = 'training/upload/MASTER Education Classes Roster.xlsx'
 DEFAULT_PREFERENCES_PATH = 'upload files/Preferences v6.xlsx'
+DEFAULT_REQUIREMENTS_PATH = 'upload files/Requirements.xlsx'
 ENROLLMENT_SHEET = 'Class_Enrollment'
 
 # Files consulted only to catch names the roster is missing (staff who hold a track or
@@ -48,6 +64,10 @@ SECONDARY_NAME_SOURCES = [
     ('Requirements', 'upload files/Requirements.xlsx'),
     ('Preassignments', 'upload files/Preassignments.xlsx'),
 ]
+
+# Requirements fields, in the order the spreadsheet holds them.
+REQUIREMENTS_FIELDS = ['shifts_per_pay_period', 'night_minimum', 'weekend_minimum',
+                       'weekend_group', 'email']
 
 # Preferences v6 shift-score columns, split by shift type for the preference tables.
 _DAY_SHIFT_COLUMNS = ['D7B', 'D7P', 'D9L', 'D11M', 'D11B', 'FW', 'MG', 'GR', 'LG', 'PG']
@@ -175,6 +195,52 @@ def read_preferences_attributes(preferences_path=DEFAULT_PREFERENCES_PATH):
     return records, None
 
 
+def read_requirements_attributes(requirements_path=DEFAULT_REQUIREMENTS_PATH):
+    """
+    Read shifts per pay period, night/weekend minimums, weekend group and email from
+    Requirements.xlsx.
+
+    Blank numeric cells are kept as None rather than 0 — a blank SHIFTS PER PAY PERIOD is
+    how management and other non-bidding staff are marked, and is not the same as the 0
+    carried by probationary staff.
+
+    Returns:
+        tuple: (records_by_name, error)
+    """
+    if not os.path.exists(requirements_path):
+        return {}, f"Requirements file not found: {requirements_path}"
+
+    try:
+        df = pd.read_excel(requirements_path)
+    except Exception as e:
+        return {}, f"Could not read {requirements_path}: {e}"
+
+    name_col = _find_column(df, 'STAFF NAME', 'Staff Name', 'Name')
+    if name_col is None:
+        return {}, f"No staff name column found in {requirements_path}."
+
+    shifts_col = _find_column(df, 'SHIFTS PER PAY PERIOD', 'Shifts Per Pay Period')
+    night_col = _find_column(df, 'NIGHT MINIMUM', 'Night Minimum')
+    weekend_col = _find_column(df, 'WEEKEND MINIMUM', 'Weekend Minimum')
+    group_col = _find_column(df, 'WEEKEND GROUP', 'Weekend Group')
+    email_col = _find_column(df, 'EMAIL', 'Email', 'Email Address')
+
+    records = {}
+    for _, row in df.iterrows():
+        name = clean_name(row[name_col])
+        if not name or name.upper() == 'STAFF NAME':
+            continue
+        records[name] = {
+            'staff_name': name,
+            'shifts_per_pay_period': to_optional_int(row[shifts_col]) if shifts_col else None,
+            'night_minimum': to_optional_int(row[night_col]) if night_col else None,
+            'weekend_minimum': to_optional_int(row[weekend_col]) if weekend_col else None,
+            'weekend_group': to_weekend_group(row[group_col]) if group_col else None,
+            'email': to_email(row[email_col]) if email_col else None,
+        }
+    return records, None
+
+
 def read_secondary_names(sources=None):
     """
     Staff names that appear in the other Excel uploads.
@@ -199,9 +265,10 @@ def read_secondary_names(sources=None):
     return names
 
 
-def _merge_attributes(roster_record, preferences_record):
+def _merge_attributes(roster_record, preferences_record, requirements_record=None):
     """
-    Combine a roster row with its Preferences v6 row into one staff record.
+    Combine a roster row with its Preferences v6 and Requirements rows into one staff
+    record.
 
     Preferences v6 spelled a dual provider's role as ROLE='dual' while the roster
     carries a separate DUAL checkbox. The two disagree for at least one staff member,
@@ -216,8 +283,17 @@ def _merge_attributes(roster_record, preferences_record):
         'is_educator_at': roster_record['is_educator_at'],
         'no_matrix': 0,
         'seniority': None,
+        'shifts_per_pay_period': None,
+        'night_minimum': None,
+        'weekend_minimum': None,
+        'weekend_group': None,
+        'email': None,
     }
     conflicts = []
+
+    if requirements_record:
+        for field in REQUIREMENTS_FIELDS:
+            record[field] = requirements_record[field]
 
     if preferences_record:
         record['no_matrix'] = preferences_record['no_matrix']
@@ -338,6 +414,7 @@ def _ensure_preference_tables(report):
 
 def import_staff_roster(roster_path=DEFAULT_ROSTER_PATH,
                         preferences_path=DEFAULT_PREFERENCES_PATH,
+                        requirements_path=DEFAULT_REQUIREMENTS_PATH,
                         include_secondary_names=True,
                         update_existing=False,
                         seed_shift_preferences=True,
@@ -376,6 +453,7 @@ def import_staff_roster(roster_path=DEFAULT_ROSTER_PATH,
         'preferences_seeded': 0,
         'secondary_only': {},
         'missing_from_preferences': [],
+        'missing_email': [],
         'roster_count': 0,
         'dry_run': bool(dry_run),
     }
@@ -392,6 +470,10 @@ def import_staff_roster(roster_path=DEFAULT_ROSTER_PATH,
         # Not fatal: names and roster attributes still import, only seniority and
         # No Matrix are missing, and the admin can fill those in.
         report['warnings'].append(preferences_error)
+
+    requirements_records, requirements_error = read_requirements_attributes(requirements_path)
+    if requirements_error:
+        report['warnings'].append(requirements_error)
 
     report['roster_count'] = len(roster_records)
 
@@ -412,7 +494,8 @@ def import_staff_roster(roster_path=DEFAULT_ROSTER_PATH,
                 "in Staff Database admin.")
 
         record, conflicts = _merge_attributes(roster_record,
-                                              preferences_records.get(name))
+                                              preferences_records.get(name),
+                                              requirements_records.get(name))
         report['conflicts'].extend(conflicts)
         merged.append(record)
 
@@ -423,11 +506,12 @@ def import_staff_roster(roster_path=DEFAULT_ROSTER_PATH,
             if name.lower() in seen:
                 continue
             preferences_record = preferences_records.get(name)
+            requirements_record = requirements_records.get(name)
             inferred_role = ''
             if preferences_record:
                 inferred_role = canonical_role(preferences_record['clinical_role'])
             report['secondary_only'][name] = sorted(set(sources))
-            merged.append({
+            secondary_record = {
                 'staff_name': name,
                 'role': inferred_role,
                 'is_management': 0,
@@ -436,7 +520,11 @@ def import_staff_roster(roster_path=DEFAULT_ROSTER_PATH,
                 'is_educator_at': 0,
                 'no_matrix': preferences_record['no_matrix'] if preferences_record else 0,
                 'seniority': preferences_record['seniority'] if preferences_record else None,
-            })
+            }
+            for field in REQUIREMENTS_FIELDS:
+                secondary_record[field] = (requirements_record[field]
+                                           if requirements_record else None)
+            merged.append(secondary_record)
             seen.add(name.lower())
             if not inferred_role:
                 report['warnings'].append(
@@ -449,6 +537,9 @@ def import_staff_roster(roster_path=DEFAULT_ROSTER_PATH,
     for record in merged:
         if record['role'] in ('NURSE', 'MEDIC') and record['seniority'] is None:
             report['missing_from_preferences'].append(record['staff_name'])
+        if record['role'] in ('NURSE', 'MEDIC') and \
+                record['shifts_per_pay_period'] is not None and not record['email']:
+            report['missing_email'].append(record['staff_name'])
 
     for record in merged:
         name = record['staff_name']
@@ -468,6 +559,11 @@ def import_staff_roster(roster_path=DEFAULT_ROSTER_PATH,
                 is_educator_at=record['is_educator_at'],
                 no_matrix=record['no_matrix'],
                 seniority=record['seniority'],
+                shifts_per_pay_period=record['shifts_per_pay_period'],
+                night_minimum=record['night_minimum'],
+                weekend_minimum=record['weekend_minimum'],
+                weekend_group=record['weekend_group'],
+                email=record['email'],
                 is_active=True,
                 changed_by=changed_by,
                 # Seniority uniqueness is enforced for hand edits; on import the
@@ -481,29 +577,53 @@ def import_staff_roster(roster_path=DEFAULT_ROSTER_PATH,
                 report['errors'].append(message)
             continue
 
-        # Already on the roster.
-        differences = {}
-        for field in ('role', 'is_management', 'is_dual', 'is_educator_at',
-                      'no_matrix', 'seniority'):
+        # Already on the roster. Two kinds of difference get handled differently:
+        # a *fill* is a field the roster has nothing for yet (adding the requirements
+        # columns to an existing database leaves them all empty), which is applied
+        # regardless — filling a blank overwrites nothing. A *conflict* is a field where
+        # the spreadsheet and the database both have a value and they disagree; that only
+        # gets applied when the caller asked for it, so an admin's edit stands.
+        fills = {}
+        conflicts = {}
+        for field in (['role', 'is_management', 'is_dual', 'is_educator_at', 'no_matrix',
+                       'seniority'] + REQUIREMENTS_FIELDS):
             new_value = record[field]
             current = existing[field]
-            if field == 'seniority':
+            if field in ['seniority'] + REQUIREMENTS_FIELDS:
+                # Never clear a value by importing a blank over it.
                 if new_value is None:
-                    continue  # never clear a rank the admin may have set by hand
-                if current != new_value:
-                    differences[field] = new_value
+                    continue
+                if current is None:
+                    fills[field] = new_value
+                elif current != new_value:
+                    conflicts[field] = new_value
             elif field == 'role':
-                if new_value and canonical_role(current) != new_value:
-                    differences[field] = new_value
+                if not new_value or canonical_role(current) == new_value:
+                    continue
+                if canonical_role(current) == staffdb.UNASSIGNED_ROLE:
+                    fills[field] = new_value
+                else:
+                    conflicts[field] = new_value
             else:
                 if bool(current) != bool(new_value):
-                    differences[field] = bool(new_value)
+                    conflicts[field] = bool(new_value)
+
+        differences = dict(fills)
+        if update_existing:
+            differences.update(conflicts)
+
+        if not differences and not conflicts:
+            report['unchanged'].append(name)
+            continue
 
         if not differences:
-            report['unchanged'].append(name)
-        elif not update_existing:
-            report['skipped'].append({'staff_name': name, 'differences': differences})
-        elif dry_run:
+            report['skipped'].append({'staff_name': name, 'differences': conflicts})
+            continue
+
+        if not update_existing and conflicts:
+            report['skipped'].append({'staff_name': name, 'differences': conflicts})
+
+        if dry_run:
             report['updated'].append({'staff_name': name, 'differences': differences})
         else:
             success, message = staffdb.update_staff(name, changed_by=changed_by,
@@ -556,6 +676,13 @@ def format_import_report(report):
         lines.append("Clinical staff with no seniority on file "
                      "(excluded from bid ordering until set):")
         for name in report['missing_from_preferences']:
+            lines.append(f"  - {name}")
+
+    if report['missing_email']:
+        lines.append("")
+        lines.append("Bidding staff with no email on file "
+                     "(cannot be auto-notified when their bid opens):")
+        for name in report['missing_email']:
             lines.append(f"  - {name}")
 
     if report['conflicts']:

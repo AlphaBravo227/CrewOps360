@@ -837,11 +837,29 @@ def get_track_from_db(staff_name, track_name=None):
         print(error_message)
         return (False, error_message)
 
+def _roles_from_staff_database(staff_name):
+    """
+    (original_role, effective_role) for a staff member, from the staff roster.
+
+    Used to fill in track rows that carry no role metadata of their own.
+
+    Returns:
+        tuple: (clinical role, staffing bucket), defaulting to ('nurse', 'nurse').
+    """
+    try:
+        from .staff_database import get_clinical_role, get_effective_role
+        return (get_clinical_role(staff_name, 'nurse'),
+                get_effective_role(staff_name, 'nurse'))
+    except Exception as e:
+        print(f"Could not resolve roles for {staff_name} from the staff database: {e}")
+        return ('nurse', 'nurse')
+
+
 def get_all_active_tracks():
     """
     Get all active tracks from the database for staffing analysis
     UPDATED: Enhanced to include role metadata for better analytics
-    
+
     Returns:
         tuple: (success, tracks_data_with_metadata or error_message)
     """
@@ -868,7 +886,15 @@ def get_all_active_tracks():
             tracks = []
             for row in results:
                 staff_name, track_json, submission_date, version, original_role, effective_role, track_source, has_preassignments, preassignment_count = row
-                
+
+                # Tracks submitted before role metadata was recorded (and any imported
+                # from a spreadsheet) have no role stored. Resolve it from the staff
+                # roster rather than handing callers a None they have to guard against.
+                if not original_role or not effective_role:
+                    roster_original, roster_effective = _roles_from_staff_database(staff_name)
+                    original_role = original_role or roster_original
+                    effective_role = effective_role or roster_effective
+
                 # Convert JSON string back to dictionary
                 try:
                     track_data = json.loads(track_json)

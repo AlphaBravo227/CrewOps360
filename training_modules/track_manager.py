@@ -12,15 +12,22 @@ class TrainingTrackManager:
         self.tracks_cache = {}
         self.ccemt_schedule_cache = {}
         self.ccemt_raw_cache = {}  # Raw CCEMT shift codes (e.g., 'PG', 'NP') for display purposes
-        self.tracks_excel_handler = None  # For loading CCEMT schedules from Tracks.xlsx
+        self.tracks_excel_handler = None  # Fallback CCEMT source when the database has none
         self.enrollment_excel_handler = None  # For getting staff roles from enrollment sheet
         
         # Pattern configuration for regular tracks
         self.pattern_start = datetime(2025, 9, 14)  # Sun A 1 - pattern start date
         self.pattern_length = 42  # 6 weeks = 42 days
         
-        # CCEMT schedule start date (same as pattern start)
+        # CCEMT schedule start date — the date the 28-day pattern's first column falls
+        # on. Configurable in the Track Data admin; defaults to the same Sunday the
+        # 42-day track pattern starts on.
         self.ccemt_start_date = datetime(2025, 9, 14)  # First Sunday in CCEMT schedule
+        try:
+            from modules.ccemt_schedule import get_pattern_start_date
+            self.ccemt_start_date = get_pattern_start_date()
+        except Exception as e:
+            print(f"Using the default CCEMT pattern start date: {e}")
         
         # Shift descriptions for display
         self.shift_descriptions = {
@@ -73,26 +80,56 @@ class TrainingTrackManager:
         
         return f"Day {pattern_day_index + 1}"
     
-    def set_excel_handler(self, tracks_excel_handler, enrollment_excel_handler=None):
+    def set_excel_handler(self, tracks_excel_handler=None, enrollment_excel_handler=None):
         """
-        Set the Excel handlers for CCEMT schedule access and role lookups.
-        
+        Set the Excel handlers still used for lookups.
+
         Args:
-            tracks_excel_handler: ExcelHandler for Tracks.xlsx (contains CCEMT tab)
-            enrollment_excel_handler: Optional ExcelHandler for enrollment data (contains staff roles)
-                                     If not provided, will use tracks_excel_handler for both
+            tracks_excel_handler: Optional ExcelHandler for a Tracks workbook. CCEMT
+                schedules come from the database now, so this is only a fallback for a
+                database that has none yet.
+            enrollment_excel_handler: Optional ExcelHandler for enrollment data. Staff
+                roles come from the staff database; this is its fallback.
         """
         self.tracks_excel_handler = tracks_excel_handler
         self.enrollment_excel_handler = enrollment_excel_handler or tracks_excel_handler
         self.load_ccemt_schedules()
-    
+
     def load_ccemt_schedules(self):
         """
-        Load CCEMT schedules from the CCEMT tab in the Tracks.xlsx file.
-        
-        The schedule repeats every 4 weeks (28 days), so we load the pattern
-        and cycle through it for any future date.
-        
+        Load CCEMT schedules — the 28-day (4-week) repeating pattern each CCEMT staff
+        member works — from the database, and cycle through it for any date.
+
+        The pattern used to live on the CCEMT tab of Tracks.xlsx; it is now editable in
+        the Track Data admin. A Tracks workbook is only read if the database has no
+        schedules at all, so an install that hasn't imported yet still works.
+        """
+        try:
+            from modules.ccemt_schedule import classify_shift_code, get_schedules
+
+            schedules = get_schedules()
+            if schedules:
+                self.ccemt_schedule_cache = {}
+                self.ccemt_raw_cache = {}
+                for staff_name, pattern in schedules.items():
+                    self.ccemt_raw_cache[staff_name] = dict(pattern)
+                    self.ccemt_schedule_cache[staff_name] = {
+                        day_index: classify_shift_code(code)
+                        for day_index, code in pattern.items()
+                        if classify_shift_code(code)
+                    }
+                print(f"Loaded CCEMT schedules for {len(self.ccemt_schedule_cache)} "
+                      "staff members from the database (4-week repeating pattern)")
+                return
+        except Exception as e:
+            print(f"Could not read CCEMT schedules from the database: {e}")
+
+        self._load_ccemt_schedules_from_excel()
+
+    def _load_ccemt_schedules_from_excel(self):
+        """
+        Fallback: read the 28-day CCEMT pattern from the CCEMT tab of a Tracks workbook.
+
         Format:
         - Row 1: Headers (column A is blank, columns B-AC are day names: Sun, Mon, Tue, etc.)
         - Column A (starting row 2): Staff names
@@ -101,7 +138,7 @@ class TrainingTrackManager:
         """
         if not self.tracks_excel_handler or not self.tracks_excel_handler.workbook:
             return
-        
+
         try:
             # Access the CCEMT worksheet
             if 'CCEMT' not in self.tracks_excel_handler.workbook.sheetnames:
@@ -476,37 +513,17 @@ class TrainingTrackManager:
 
 
 # Integration helper function for existing codebase
-def integrate_ccemt_schedules(track_manager, tracks_excel_handler, enrollment_excel_handler=None):
+def integrate_ccemt_schedules(track_manager, tracks_excel_handler=None,
+                              enrollment_excel_handler=None):
     """
-    Helper function to integrate CCEMT schedules into an existing track manager.
-    This should be called after both components are initialized.
-    
+    Helper to wire the fallback Excel handlers into an existing track manager.
+
+    CCEMT schedules and staff roles both come from the database now; the handlers are
+    only consulted when the database has nothing yet.
+
     Args:
         track_manager: TrainingTrackManager instance
-        tracks_excel_handler: ExcelHandler instance with the Tracks.xlsx file loaded (contains CCEMT tab)
-        enrollment_excel_handler: Optional ExcelHandler instance with enrollment data (contains staff roles)
+        tracks_excel_handler: Optional ExcelHandler for a Tracks workbook (CCEMT tab)
+        enrollment_excel_handler: Optional ExcelHandler for enrollment data (staff roles)
     """
     track_manager.set_excel_handler(tracks_excel_handler, enrollment_excel_handler)
-
-
-# Usage example for app.py integration:
-"""
-# In app.py, after initializing both components:
-
-if 'training_track_manager' not in st.session_state:
-    st.session_state.training_track_manager = TrainingTrackManager('data/medflight_tracks.db')
-
-# Excel handler for class enrollment (MASTER Education Classes Roster.xlsx)
-if 'training_excel_handler' not in st.session_state:
-    st.session_state.training_excel_handler = ExcelHandler('training/upload/MASTER Education Classes Roster.xlsx')
-
-# Separate Excel handler for CCEMT tracks (Tracks.xlsx)
-if 'tracks_excel_handler' not in st.session_state:
-    st.session_state.tracks_excel_handler = ExcelHandler('upload_files/Tracks.xlsx')
-
-# Integrate CCEMT schedules - pass BOTH handlers
-st.session_state.training_track_manager.set_excel_handler(
-    tracks_excel_handler=st.session_state.tracks_excel_handler,      # For CCEMT schedules
-    enrollment_excel_handler=st.session_state.training_excel_handler  # For staff roles
-)
-"""

@@ -7,10 +7,12 @@ Before this module, staff identity and attributes were read out of Excel uploads
 every page load:
 
     - "upload files/Preferences v6.xlsx" -> STAFF NAME, ROLE, No Matrix, Seniority
+    - "upload files/Requirements.xlsx" -> SHIFTS PER PAY PERIOD, NIGHT MINIMUM,
+      WEEKEND MINIMUM, WEEKEND GROUP, EMAIL
     - "training/upload/MASTER Education Classes Roster.xlsx" (Class_Enrollment sheet)
       -> STAFF NAME, Role, MGMT, DUAL, Educator AT
 
-Both are now imported once (see modules/staff_import.py) into the `staff` table and
+All three are now imported once (see modules/staff_import.py) into the `staff` table and
 read from the database from then on. The Education Classes Roster is still the source
 of *classes and enrollment*, but no longer of staff attributes.
 
@@ -40,6 +42,8 @@ from datetime import datetime
 import pandas as pd
 import pytz
 
+from .day_pattern import PATTERN_LENGTH as PATTERN_DAY_COUNT
+
 _eastern_tz = pytz.timezone('America/New_York')
 
 DEFAULT_DB_PATH = 'data/medflight_tracks.db'
@@ -55,6 +59,9 @@ UNASSIGNED_ROLE = 'UNASSIGNED'
 # Roles that hold a clinical track and bid on shifts. Everyone else is on the roster
 # for training/enrollment purposes only.
 CLINICAL_ROLES = ['NURSE', 'MEDIC']
+
+# Weekend groups as spelled in Requirements.xlsx's WEEKEND GROUP column.
+WEEKEND_GROUPS = ['A', 'B', 'C', 'D', 'E']
 
 # Every (table, column) pair in the database that stores a staff name as free text.
 # Discovered dynamically against the live schema in _staff_reference_columns() so a new
@@ -155,12 +162,33 @@ def initialize_staff_tables():
             is_educator_at INTEGER NOT NULL DEFAULT 0,
             no_matrix INTEGER NOT NULL DEFAULT 0,
             seniority INTEGER,
+            shifts_per_pay_period INTEGER,
+            night_minimum INTEGER,
+            weekend_minimum INTEGER,
+            weekend_group TEXT,
+            email TEXT,
             is_active INTEGER NOT NULL DEFAULT 1,
             notes TEXT,
             created_date TEXT NOT NULL,
             modified_date TEXT NOT NULL
         )
         ''')
+
+        # Requirements columns arrived after the first roster import, so add them to an
+        # existing staff table. NULL is meaningful for every one of them: a blank
+        # shifts-per-pay-period is what marks management as non-bidding, and is not the
+        # same as 0 (probationary staff who work no track shifts).
+        cursor.execute("PRAGMA table_info(staff)")
+        staff_columns = [row[1] for row in cursor.fetchall()]
+        for column, definition in (
+            ('shifts_per_pay_period', 'INTEGER'),
+            ('night_minimum', 'INTEGER'),
+            ('weekend_minimum', 'INTEGER'),
+            ('weekend_group', 'TEXT'),
+            ('email', 'TEXT'),
+        ):
+            if column not in staff_columns:
+                cursor.execute(f"ALTER TABLE staff ADD COLUMN {column} {definition}")
 
         # Every add/update/delete/activate, with a JSON diff of what changed.
         cursor.execute('''
@@ -306,6 +334,56 @@ def to_seniority(value):
         return None
 
 
+def to_optional_int(value):
+    """
+    Coerce a value to int, or None when blank.
+
+    Used for the requirements fields, where blank and 0 mean different things: a blank
+    SHIFTS PER PAY PERIOD marks management as non-bidding, while 0 is a real requirement
+    for probationary staff who work no track shifts.
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    if not text or text.upper() in ('NAN', 'NONE'):
+        return None
+    try:
+        return int(float(text))
+    except (TypeError, ValueError):
+        return None
+
+
+def to_weekend_group(value):
+    """Normalize a weekend group to a single letter A-E, or None."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip().upper()
+    return text if text in WEEKEND_GROUPS else None
+
+
+def to_email(value):
+    """Trim an email address, or None when blank."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    return text or None
+
+
 def clean_name(name):
     """Trim a staff name the way every reader of these files does."""
     if name is None:
@@ -366,6 +444,19 @@ def _db_stamp():
         return None
 
 
+def _select_staff_rows():
+    """Every staff row, in the column order _roster() unpacks."""
+    cursor = _get_conn().cursor()
+    cursor.execute('''
+        SELECT id, staff_name, role, is_management, is_dual, is_educator_at,
+               no_matrix, seniority, is_active, notes, created_date, modified_date,
+               shifts_per_pay_period, night_minimum, weekend_minimum,
+               weekend_group, email
+        FROM staff
+    ''')
+    return cursor.fetchall()
+
+
 def _roster():
     """
     {staff_name: record} for the whole roster, cached. Keys keep their stored casing;
@@ -380,13 +471,18 @@ def _roster():
     roster = {}
     if staff_table_exists():
         try:
-            cursor = _get_conn().cursor()
-            cursor.execute('''
-                SELECT id, staff_name, role, is_management, is_dual, is_educator_at,
-                       no_matrix, seniority, is_active, notes, created_date, modified_date
-                FROM staff
-            ''')
-            for row in cursor.fetchall():
+            try:
+                rows = _select_staff_rows()
+            except sqlite3.OperationalError as e:
+                # A staff table created by an older version of this module is missing the
+                # requirements columns. Run the migration and read again rather than
+                # returning an empty roster.
+                if 'no such column' not in str(e).lower():
+                    raise
+                initialize_staff_tables()
+                rows = _select_staff_rows()
+
+            for row in rows:
                 record = {
                     'id': row[0],
                     'staff_name': row[1],
@@ -400,6 +496,11 @@ def _roster():
                     'notes': row[9],
                     'created_date': row[10],
                     'modified_date': row[11],
+                    'shifts_per_pay_period': row[12],
+                    'night_minimum': row[13],
+                    'weekend_minimum': row[14],
+                    'weekend_group': row[15],
+                    'email': row[16],
                 }
                 record['clinical_role'] = clinical_role_of(record)
                 record['effective_role'] = effective_role_of(record)
@@ -555,6 +656,68 @@ def get_seniority(staff_name, default=None):
     return record['seniority']
 
 
+def get_shifts_per_pay_period(staff_name, default=None):
+    """
+    Required shifts per 14-day pay period, or default when not on file.
+
+    None/not-on-file is meaningful: it marks management and other non-bidding staff, and
+    is what the bid roster uses to skip them.
+    """
+    record = _lookup(staff_name)
+    if not record or record['shifts_per_pay_period'] is None:
+        return default
+    return record['shifts_per_pay_period']
+
+
+def get_night_minimum(staff_name, default=None):
+    """Minimum night shifts per cycle, or default when not on file."""
+    record = _lookup(staff_name)
+    if not record or record['night_minimum'] is None:
+        return default
+    return record['night_minimum']
+
+
+def get_weekend_minimum(staff_name, default=None):
+    """Minimum weekend shifts per cycle, or default when not on file."""
+    record = _lookup(staff_name)
+    if not record or record['weekend_minimum'] is None:
+        return default
+    return record['weekend_minimum']
+
+
+def get_weekend_group(staff_name, default=None):
+    """Weekend group (A-E), or default when not assigned."""
+    record = _lookup(staff_name)
+    if not record or not record['weekend_group']:
+        return default
+    return record['weekend_group']
+
+
+def get_email(staff_name, default=None):
+    """Email address, or default when not on file."""
+    record = _lookup(staff_name)
+    if not record or not record['email']:
+        return default
+    return record['email']
+
+
+def get_requirements_map(include_inactive=False):
+    """
+    {staff_name: {shifts_per_pay_period, night_minimum, weekend_minimum, weekend_group,
+    email}} — the mapping the bidding code builds its roster and notifications from.
+    """
+    return {
+        record['staff_name']: {
+            'shifts_per_pay_period': record['shifts_per_pay_period'],
+            'night_minimum': record['night_minimum'],
+            'weekend_minimum': record['weekend_minimum'],
+            'weekend_group': record['weekend_group'],
+            'email': record['email'],
+        }
+        for record in get_all_staff(include_inactive=include_inactive)
+    }
+
+
 def get_role_mapping(include_inactive=False, clinical_only=False):
     """{staff_name: clinical_role} — the nurse/medic/dual mapping the track code uses."""
     return {r['staff_name']: r['clinical_role']
@@ -609,6 +772,12 @@ def get_roster_issues(include_inactive=False):
         if record['seniority'] is not None:
             by_rank.setdefault(record['seniority'], []).append(record['staff_name'])
 
+    def bids_on_tracks(record):
+        # Staff with shift requirements on file are the ones who bid; management and
+        # other non-bidding staff have none.
+        return (canonical_role(record['role']) in CLINICAL_ROLES
+                and record['shifts_per_pay_period'] is not None)
+
     return {
         'unassigned_role': [r['staff_name'] for r in records
                             if canonical_role(r['role']) == UNASSIGNED_ROLE],
@@ -617,6 +786,17 @@ def get_roster_issues(include_inactive=False):
                               and r['seniority'] is None],
         'duplicate_seniority': {rank: names for rank, names in sorted(by_rank.items())
                                 if len(names) > 1},
+        # A blank shifts-per-pay-period is how management is marked as non-bidding, so
+        # only non-management clinical staff missing it are a problem — they would drop
+        # out of the bid roster without anyone noticing.
+        'missing_requirements': [r['staff_name'] for r in records
+                                 if canonical_role(r['role']) in CLINICAL_ROLES
+                                 and not r['is_management']
+                                 and r['shifts_per_pay_period'] is None],
+        # Bid progression emails the next staff member in rank when a bid is submitted,
+        # which silently can't happen without an address on file.
+        'missing_email': [r['staff_name'] for r in records
+                          if bids_on_tracks(r) and not r['email']],
     }
 
 
@@ -624,11 +804,56 @@ def get_staff_dataframe(include_inactive=True):
     """The roster as a DataFrame, for admin tables and exports."""
     records = get_all_staff(include_inactive=include_inactive)
     columns = ['staff_name', 'role', 'clinical_role', 'is_management', 'is_dual',
-               'is_educator_at', 'no_matrix', 'seniority', 'is_active', 'notes',
-               'created_date', 'modified_date']
+               'is_educator_at', 'no_matrix', 'seniority', 'shifts_per_pay_period',
+               'night_minimum', 'weekend_minimum', 'weekend_group', 'email',
+               'is_active', 'notes', 'created_date', 'modified_date']
     if not records:
         return pd.DataFrame(columns=columns)
     return pd.DataFrame(records)[columns]
+
+
+# ──────────────────────────────────────────────
+# Requirements compatibility
+# ──────────────────────────────────────────────
+
+# Column order of Requirements.xlsx. Several validators read this frame positionally
+# (row.iloc[4] for the weekend group, len(columns) >= 5 checks), so the order matters as
+# much as the names.
+REQUIREMENTS_COLUMNS = ['STAFF NAME', 'SHIFTS PER PAY PERIOD', 'NIGHT MINIMUM',
+                        'WEEKEND MINIMUM', 'WEEKEND GROUP', 'EMAIL']
+
+
+def build_requirements_df(include_inactive=False, clinical_only=True):
+    """
+    Build the DataFrame the track code used to get from Requirements.xlsx, from the
+    staff table instead: same columns, same order, same blank-means-non-bidding
+    semantics.
+
+    Args:
+        include_inactive (bool): include staff marked inactive on the roster.
+        clinical_only (bool): only NURSE/MEDIC staff, matching what the spreadsheet
+            held. Turn off to get the whole roster.
+
+    Returns:
+        DataFrame: columns per REQUIREMENTS_COLUMNS. Empty (but correctly shaped) when
+        the roster has not been imported yet.
+    """
+    records = get_all_staff(include_inactive=include_inactive,
+                            roles=CLINICAL_ROLES if clinical_only else None,
+                            sort_by='seniority')
+    if not records:
+        return pd.DataFrame(columns=REQUIREMENTS_COLUMNS)
+
+    rows = [{
+        'STAFF NAME': record['staff_name'],
+        'SHIFTS PER PAY PERIOD': record['shifts_per_pay_period'],
+        'NIGHT MINIMUM': record['night_minimum'],
+        'WEEKEND MINIMUM': record['weekend_minimum'],
+        'WEEKEND GROUP': record['weekend_group'],
+        'EMAIL': record['email'],
+    } for record in records]
+
+    return pd.DataFrame(rows, columns=REQUIREMENTS_COLUMNS)
 
 
 # ──────────────────────────────────────────────
@@ -750,7 +975,13 @@ def build_preferences_df(include_inactive=False, clinical_only=True):
 # ──────────────────────────────────────────────
 
 _EDITABLE_FIELDS = ['role', 'is_management', 'is_dual', 'is_educator_at', 'no_matrix',
-                    'seniority', 'is_active', 'notes']
+                    'seniority', 'shifts_per_pay_period', 'night_minimum',
+                    'weekend_minimum', 'weekend_group', 'email', 'is_active', 'notes']
+
+# Fields where NULL is a meaningful value, so an update passing None clears them.
+_NULLABLE_INT_FIELDS = ['shifts_per_pay_period', 'night_minimum', 'weekend_minimum']
+
+_BOOLEAN_FIELDS = ['is_management', 'is_dual', 'is_educator_at', 'no_matrix', 'is_active']
 
 
 def _log_audit(cursor, staff_name, action, changes=None, changed_by=None):
@@ -761,7 +992,9 @@ def _log_audit(cursor, staff_name, action, changes=None, changed_by=None):
           changed_by or 'admin', _now()))
 
 
-def validate_staff_fields(staff_name, role, seniority=None, exclude_name=None):
+def validate_staff_fields(staff_name, role, seniority=None, exclude_name=None,
+                          shifts_per_pay_period=None, night_minimum=None,
+                          weekend_minimum=None, weekend_group=None, email=None):
     """
     Check a proposed roster row.
 
@@ -805,12 +1038,38 @@ def validate_staff_fields(staff_name, role, seniority=None, exclude_name=None):
                     )
                     break
 
+    for label, value, ceiling in (
+        ('Shifts per pay period', shifts_per_pay_period, 14),
+        ('Night minimum', night_minimum, PATTERN_DAY_COUNT),
+        ('Weekend minimum', weekend_minimum, PATTERN_DAY_COUNT),
+    ):
+        number = to_optional_int(value)
+        if number is None:
+            continue
+        if number < 0:
+            errors.append(f"{label} cannot be negative.")
+        elif number > ceiling:
+            errors.append(f"{label} cannot exceed {ceiling}.")
+
+    if weekend_group not in (None, ''):
+        group = str(weekend_group).strip().upper()
+        if group not in WEEKEND_GROUPS:
+            errors.append(f"Weekend group must be one of {', '.join(WEEKEND_GROUPS)}, "
+                          "or left blank.")
+
+    if email not in (None, ''):
+        address = str(email).strip()
+        if '@' not in address or address.startswith('@') or address.endswith('@') \
+                or ' ' in address:
+            errors.append(f"'{address}' does not look like an email address.")
+
     return errors
 
 
 def add_staff(staff_name, role, is_management=False, is_dual=False, is_educator_at=False,
-              no_matrix=False, seniority=None, is_active=True, notes=None,
-              changed_by=None, validate=True):
+              no_matrix=False, seniority=None, shifts_per_pay_period=None,
+              night_minimum=None, weekend_minimum=None, weekend_group=None, email=None,
+              is_active=True, notes=None, changed_by=None, validate=True):
     """
     Add a staff member to the roster.
 
@@ -821,7 +1080,14 @@ def add_staff(staff_name, role, is_management=False, is_dual=False, is_educator_
     name = clean_name(staff_name)
 
     if validate:
-        errors = validate_staff_fields(name, role, seniority)
+        errors = validate_staff_fields(
+            name, role, seniority,
+            shifts_per_pay_period=shifts_per_pay_period,
+            night_minimum=night_minimum,
+            weekend_minimum=weekend_minimum,
+            weekend_group=weekend_group,
+            email=email,
+        )
         if errors:
             return False, " ".join(errors)
 
@@ -840,12 +1106,15 @@ def add_staff(staff_name, role, is_management=False, is_dual=False, is_educator_
         now = _now()
         cursor.execute('''
             INSERT INTO staff (staff_name, role, is_management, is_dual, is_educator_at,
-                               no_matrix, seniority, is_active, notes,
-                               created_date, modified_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               no_matrix, seniority, shifts_per_pay_period,
+                               night_minimum, weekend_minimum, weekend_group, email,
+                               is_active, notes, created_date, modified_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (name, canonical, to_flag(is_management), to_flag(is_dual),
               to_flag(is_educator_at), to_flag(no_matrix), to_seniority(seniority),
-              to_flag(is_active), notes, now, now))
+              to_optional_int(shifts_per_pay_period), to_optional_int(night_minimum),
+              to_optional_int(weekend_minimum), to_weekend_group(weekend_group),
+              to_email(email), to_flag(is_active), notes, now, now))
         _log_audit(cursor, name, 'added', {
             'role': canonical,
             'is_management': bool(to_flag(is_management)),
@@ -853,6 +1122,11 @@ def add_staff(staff_name, role, is_management=False, is_dual=False, is_educator_
             'is_educator_at': bool(to_flag(is_educator_at)),
             'no_matrix': bool(to_flag(no_matrix)),
             'seniority': to_seniority(seniority),
+            'shifts_per_pay_period': to_optional_int(shifts_per_pay_period),
+            'night_minimum': to_optional_int(night_minimum),
+            'weekend_minimum': to_optional_int(weekend_minimum),
+            'weekend_group': to_weekend_group(weekend_group),
+            'email': to_email(email),
             'is_active': bool(is_active),
         }, changed_by)
         conn.commit()
@@ -868,8 +1142,12 @@ def update_staff(staff_name, changed_by=None, validate=True, **fields):
     """
     Update attributes of an existing staff member. Only the fields passed are changed.
 
-    Accepted fields: role, is_management, is_dual, is_educator_at, no_matrix,
-    seniority, is_active, notes. Use rename_staff() to change the name.
+    Accepted fields: role, is_management, is_dual, is_educator_at, no_matrix, seniority,
+    shifts_per_pay_period, night_minimum, weekend_minimum, weekend_group, email,
+    is_active, notes. Use rename_staff() to change the name.
+
+    Passing None for seniority, a requirements number, the weekend group or the email
+    clears that field — blank is a meaningful value for all of them.
 
     Returns:
         tuple: (success, message)
@@ -893,6 +1171,21 @@ def update_staff(staff_name, changed_by=None, validate=True, **fields):
             updates['role'] = canonical
         elif key == 'seniority':
             updates['seniority'] = to_seniority(value)
+        elif key in _NULLABLE_INT_FIELDS:
+            # A value that doesn't parse would coerce to None and silently clear the
+            # field, so a typo is reported instead of quietly wiping a requirement.
+            number = to_optional_int(value)
+            if number is None and str(value if value is not None else '').strip():
+                return False, f"'{value}' is not a whole number ({key.replace('_', ' ')})."
+            updates[key] = number
+        elif key == 'weekend_group':
+            group = to_weekend_group(value)
+            if group is None and str(value if value is not None else '').strip():
+                return False, (f"Weekend group must be one of "
+                               f"{', '.join(WEEKEND_GROUPS)}, or left blank.")
+            updates['weekend_group'] = group
+        elif key == 'email':
+            updates['email'] = to_email(value)
         elif key == 'notes':
             updates['notes'] = value if value in (None, '') else str(value).strip()
         else:
@@ -904,6 +1197,12 @@ def update_staff(staff_name, changed_by=None, validate=True, **fields):
             updates.get('role', record['role']),
             updates.get('seniority', record['seniority']),
             exclude_name=record['staff_name'],
+            shifts_per_pay_period=updates.get('shifts_per_pay_period',
+                                              record['shifts_per_pay_period']),
+            night_minimum=updates.get('night_minimum', record['night_minimum']),
+            weekend_minimum=updates.get('weekend_minimum', record['weekend_minimum']),
+            weekend_group=updates.get('weekend_group', record['weekend_group']),
+            email=updates.get('email', record['email']),
         )
         if errors:
             return False, " ".join(errors)
@@ -917,9 +1216,7 @@ def update_staff(staff_name, changed_by=None, validate=True, **fields):
             current = int(current)
         if current != value:
             before[key] = record.get(key)
-            after[key] = bool(value) if key in ('is_management', 'is_dual',
-                                                'is_educator_at', 'no_matrix',
-                                                'is_active') else value
+            after[key] = bool(value) if key in _BOOLEAN_FIELDS else value
     if not after:
         return True, f"No changes for {record['staff_name']}."
 

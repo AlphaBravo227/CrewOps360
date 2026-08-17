@@ -25,6 +25,7 @@ import pandas as pd  # noqa: E402
 from modules import staff_database as staffdb  # noqa: E402
 from modules.staff_import import (  # noqa: E402
     DEFAULT_PREFERENCES_PATH,
+    DEFAULT_REQUIREMENTS_PATH,
     DEFAULT_ROSTER_PATH,
     ENROLLMENT_SHEET,
     import_staff_roster,
@@ -261,6 +262,127 @@ def check_roster_management():
           str(sorted(actions)))
 
 
+def check_requirements_parity():
+    """Requirements values come back exactly as the spreadsheet had them."""
+    print("\nParity with Requirements.xlsx")
+
+    original = pd.read_excel(DEFAULT_REQUIREMENTS_PATH)
+    built = staffdb.build_requirements_df()
+
+    check("build_requirements_df reproduces the Requirements column layout",
+          list(built.columns) == list(original.columns),
+          f"got {list(built.columns)}")
+
+    original = original.set_index(original['STAFF NAME'].map(staffdb.clean_name))
+    rebuilt = built.set_index('STAFF NAME')
+
+    missing = sorted(set(original.index) - set(rebuilt.index))
+    check("every staff member in Requirements is in the frame", not missing,
+          f"missing: {missing[:5]}")
+
+    fields = [
+        ('SHIFTS PER PAY PERIOD', staffdb.to_optional_int),
+        ('NIGHT MINIMUM', staffdb.to_optional_int),
+        ('WEEKEND MINIMUM', staffdb.to_optional_int),
+        ('WEEKEND GROUP', staffdb.to_weekend_group),
+        ('EMAIL', staffdb.to_email),
+    ]
+    differences = []
+    for name in original.index:
+        if name not in rebuilt.index:
+            continue
+        for column, convert in fields:
+            expected = convert(original.loc[name, column])
+            actual = convert(rebuilt.loc[name, column])
+            if expected != actual:
+                differences.append((name, column, expected, actual))
+    check("every requirements value matches the spreadsheet", not differences,
+          f"{differences[:5]}")
+
+    # Blank and 0 mean different things and both have to survive the round trip.
+    blank_in_file = [name for name in original.index
+                     if staffdb.to_optional_int(
+                         original.loc[name, 'SHIFTS PER PAY PERIOD']) is None]
+    check("blank shifts-per-pay-period stays blank (marks non-bidding staff)",
+          blank_in_file and all(staffdb.get_shifts_per_pay_period(name) is None
+                                for name in blank_in_file),
+          f"{blank_in_file[:5]}")
+
+    zero_in_file = [name for name in original.index
+                    if staffdb.to_optional_int(
+                        original.loc[name, 'SHIFTS PER PAY PERIOD']) == 0]
+    check("a shifts-per-pay-period of 0 stays 0, not blank",
+          zero_in_file and all(staffdb.get_shifts_per_pay_period(name) == 0
+                               for name in zero_in_file),
+          f"{zero_in_file[:5]}")
+
+    emails = {name: staffdb.to_email(original.loc[name, 'EMAIL'])
+              for name in original.index}
+    check("emails are readable per staff member",
+          all(staffdb.get_email(name) == email for name, email in emails.items()))
+
+    requirements_map = staffdb.get_requirements_map()
+    check("get_requirements_map carries all five fields",
+          all(set(entry) == {'shifts_per_pay_period', 'night_minimum',
+                             'weekend_minimum', 'weekend_group', 'email'}
+              for entry in requirements_map.values()))
+
+
+def check_requirements_editing():
+    """Requirements fields validate and clear correctly."""
+    print("\nRequirements editing")
+
+    staffdb.add_staff('Testcase Reqs', 'MEDIC', shifts_per_pay_period=6,
+                      night_minimum=2, weekend_minimum=5, weekend_group='B',
+                      email='testcase.reqs@example.org', changed_by='self-check')
+    record = staffdb.get_staff('Testcase Reqs')
+    check("requirements save on add",
+          record and record['shifts_per_pay_period'] == 6
+          and record['night_minimum'] == 2 and record['weekend_minimum'] == 5
+          and record['weekend_group'] == 'B'
+          and record['email'] == 'testcase.reqs@example.org',
+          str(record))
+
+    ok, message = staffdb.update_staff('Testcase Reqs', email='not-an-email',
+                                       changed_by='self-check')
+    check("an invalid email is rejected", not ok, message)
+
+    ok, message = staffdb.update_staff('Testcase Reqs', weekend_group='Z',
+                                       changed_by='self-check')
+    check("an unknown weekend group is rejected rather than silently cleared",
+          not ok and staffdb.get_weekend_group('Testcase Reqs') == 'B', message)
+
+    ok, message = staffdb.update_staff('Testcase Reqs', night_minimum='abc',
+                                       changed_by='self-check')
+    check("an unparseable number is rejected rather than silently cleared",
+          not ok and staffdb.get_night_minimum('Testcase Reqs') == 2, message)
+
+    ok, message = staffdb.update_staff('Testcase Reqs', weekend_group='',
+                                       changed_by='self-check')
+    check("a blank weekend group clears it",
+          ok and staffdb.get_weekend_group('Testcase Reqs') is None, message)
+
+    ok, message = staffdb.update_staff('Testcase Reqs', shifts_per_pay_period=-1,
+                                       changed_by='self-check')
+    check("a negative shifts-per-pay-period is rejected", not ok, message)
+
+    ok, message = staffdb.update_staff('Testcase Reqs', night_minimum=99,
+                                       changed_by='self-check')
+    check("a night minimum beyond the cycle length is rejected", not ok, message)
+
+    ok, message = staffdb.update_staff('Testcase Reqs', shifts_per_pay_period=None,
+                                       changed_by='self-check')
+    check("clearing shifts-per-pay-period marks them non-bidding",
+          ok and staffdb.get_shifts_per_pay_period('Testcase Reqs') is None, message)
+
+    ok, message = staffdb.update_staff('Testcase Reqs', shifts_per_pay_period=0,
+                                       changed_by='self-check')
+    check("a shifts-per-pay-period of 0 is accepted and distinct from blank",
+          ok and staffdb.get_shifts_per_pay_period('Testcase Reqs') == 0, message)
+
+    staffdb.delete_staff('Testcase Reqs', changed_by='self-check', force=True)
+
+
 def check_roster_issues():
     """Rows needing attention are reported rather than guessed at."""
     print("\nRoster issues")
@@ -273,6 +395,11 @@ def check_roster_issues():
           str(issues['missing_seniority']))
     check("no duplicate seniority ranks were imported",
           not issues['duplicate_seniority'], str(issues['duplicate_seniority']))
+    check("bidding staff with no email are flagged",
+          set(issues['missing_email']) == {'Gallagher', 'Moynihan', 'Saia'},
+          str(issues['missing_email']))
+    check("management is not flagged for having no shift requirements",
+          not issues['missing_requirements'], str(issues['missing_requirements']))
 
 
 def main():
@@ -309,8 +436,10 @@ def main():
             _failures.append('import errors')
 
         check_parity()
+        check_requirements_parity()
         check_roster_issues()
         check_roster_management()
+        check_requirements_editing()
 
         # A second import must not disturb what is already there.
         print("\nRe-import")
