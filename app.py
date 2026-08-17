@@ -61,6 +61,13 @@ from modules.enhanced_landing import inject_custom_css
 from modules.track_swap import display_track_swap_section, handle_track_swap_navigation
 from modules.track_bidding import display_track_bidding
 from modules.db_utils import get_active_track_config, get_track_capacity
+from modules.staff_database import (
+    build_preferences_df,
+    get_staff_names,
+    initialize_staff_tables,
+    staff_count,
+)
+from modules.staff_admin_ui import display_staff_database_admin
 
 # Import training modules with new unified database approach
 try:
@@ -397,47 +404,15 @@ def display_shift_location_preferences_module():
 
     # Initialize database
     initialize_database()
+    initialize_staff_tables()
 
-    # Load staff names from Excel files (independent of Clinical Track Hub)
-    staff_names = []
-
-    upload_dir = "upload files"
-    if os.path.exists(upload_dir):
-        excel_files = glob.glob(os.path.join(upload_dir, "*.xlsx")) + glob.glob(os.path.join(upload_dir, "*.xls"))
-
-        # Find the tracks file
-        tracks_file = None
-        for file_path in excel_files:
-            file_name = os.path.basename(file_path).lower()
-            if "track" in file_name and "preassign" not in file_name:
-                tracks_file = file_path
-                break
-
-        if tracks_file:
-            try:
-                tracks_df = load_excel_file(tracks_file)
-
-                # Auto-detect staff column
-                staff_col = None
-                for col in tracks_df.columns:
-                    if isinstance(col, str):
-                        col_lower = col.lower()
-                        if "staff" in col_lower and "name" in col_lower:
-                            staff_col = col
-                            break
-                        elif "name" in col_lower:
-                            staff_col = col
-                            break
-
-                if staff_col is None:
-                    staff_col = tracks_df.columns[0]
-
-                staff_names = tracks_df[staff_col].tolist()
-            except Exception as e:
-                st.error(f"Error loading staff data: {str(e)}")
+    # Staff list comes from the staff database — active nurses and medics, the staff who
+    # hold a clinical track and therefore have base location preferences.
+    staff_names = get_staff_names(clinical_only=True)
 
     if not staff_names:
-        st.error("Could not load staff data. Please ensure the Tracks.xlsx file exists in the 'upload files' folder.")
+        st.error("No clinical staff found in the staff database. An administrator needs "
+                 "to import or add the staff roster (Staff Database admin).")
         return
 
     # Staff selection
@@ -1282,54 +1257,57 @@ def run_clinical_track_hub():
         return result
 
     # Function to load Excel files
+    #
+    # Staff attributes (role, management, dual, educator, no matrix, seniority) are no
+    # longer read from Preferences v6 — they come from the staff database, so that file
+    # is not looked for here. Tracks/Requirements/Preassignments are still Excel.
     def load_excel_files_from_directory():
         upload_dir = "upload files"
         files_found = {
-            "preferences": None, 
-            "current_tracks": None, 
+            "current_tracks": None,
             "requirements": None,
             "preassignments": None
         }
-        
+
         if not os.path.exists(upload_dir):
             st.warning(f"Directory '{upload_dir}' not found. Creating directory...")
             os.makedirs(upload_dir)
             return files_found
-        
+
         excel_files = glob.glob(os.path.join(upload_dir, "*.xlsx")) + glob.glob(os.path.join(upload_dir, "*.xls"))
-        
+
         if not excel_files:
             st.warning(f"No Excel files found in '{upload_dir}' directory.")
             return files_found
-        
+
         for file_path in excel_files:
             file_name = os.path.basename(file_path).lower()
-            
-            if "preference" in file_name and "preassign" not in file_name:
-                files_found["preferences"] = file_path
+
+            if "preference" in file_name:
+                continue  # superseded by the staff database
             elif "track" in file_name and "preassign" not in file_name:
                 files_found["current_tracks"] = file_path
             elif ("requirement" in file_name or "staff req" in file_name) and "preassign" not in file_name:
                 files_found["requirements"] = file_path
             elif "preassign" in file_name:
                 files_found["preassignments"] = file_path
-        
+
         # Assign unidentified files to missing slots
-        unassigned_files = [f for f in excel_files if f not in files_found.values()]
-        
-        if not files_found["preferences"] and unassigned_files:
-            files_found["preferences"] = unassigned_files.pop(0)
-        
+        unassigned_files = [f for f in excel_files
+                            if f not in files_found.values()
+                            and "preference" not in os.path.basename(f).lower()]
+
         if not files_found["current_tracks"] and unassigned_files:
             files_found["current_tracks"] = unassigned_files.pop(0)
-        
+
         if not files_found["requirements"] and unassigned_files:
             files_found["requirements"] = unassigned_files.pop(0)
-        
+
         return files_found
 
     # Initialize database
     initialize_database()
+    initialize_staff_tables()
 
     # Initialize preference editor tables
     try:
@@ -1424,14 +1402,25 @@ def run_clinical_track_hub():
         if admin_authenticated:
             st.success("Admin access granted!")
             
-            st.header("Data Files")
-            
-            # Display file loading status
-            if excel_files["preferences"]:
-                st.success(f"✅ Preferences file loaded: {os.path.basename(excel_files['preferences'])}")
-            else:
-                st.error("❌ Preferences file not found")
+            st.header("Staff Database")
 
+            _roster_total = staff_count()
+            _roster_active = staff_count(include_inactive=False)
+            if _roster_total:
+                st.success(f"✅ {_roster_active} active staff on the roster "
+                           f"({_roster_total} total)")
+            else:
+                st.error("❌ Staff database is empty — import the roster")
+            st.caption("Role, management, dual, educator, no matrix and seniority all "
+                       "come from here, not from a spreadsheet.")
+            if st.button("👥 Manage Staff Database", use_container_width=True,
+                         key="open_staff_db_admin"):
+                st.session_state.selected_module = "staff_database"
+                st.rerun()
+
+            st.header("Data Files")
+
+            # Display file loading status
             if excel_files["current_tracks"]:
                 st.success(f"✅ Current tracks file loaded: {os.path.basename(excel_files['current_tracks'])}")
             else:
@@ -1471,35 +1460,36 @@ def run_clinical_track_hub():
             - **Weekend Requirements**: Friday nights + Saturday/Sunday shifts
             """)
             
-            # Display staff name mismatches if both files loaded
-            if excel_files["preferences"] and excel_files["current_tracks"]:
+            # Names in the tracks file that the staff database doesn't know about (and
+            # vice versa). A name only in the tracks file has no role or seniority, so
+            # it needs adding to the staff database before that staff member can be
+            # validated or bid.
+            if excel_files["current_tracks"]:
                 try:
-                    preferences_df = load_excel_file(excel_files["preferences"])
                     current_tracks_df = load_excel_file(excel_files["current_tracks"])
+                    staff_col_tracks = next(
+                        (col for col in current_tracks_df.columns
+                         if isinstance(col, str) and "name" in col.lower()),
+                        current_tracks_df.columns[0])
 
-                    column_detection_result = auto_detect_columns(preferences_df, current_tracks_df)
-                    column_mappings = column_detection_result["column_mappings"]
-                    
-                    staff_col_prefs = column_mappings["staff_col_prefs"]
-                    staff_col_tracks = column_mappings["staff_col_tracks"]
-                    
-                    if staff_col_prefs and staff_col_tracks:
-                        pref_staff = set(preferences_df[staff_col_prefs])
-                        track_staff = set(current_tracks_df[staff_col_tracks])
-                        
-                        only_in_pref = pref_staff - track_staff
-                        only_in_track = track_staff - pref_staff
-                        
-                        if only_in_pref or only_in_track:
-                            st.warning("⚠️ Staff name mismatches detected between files")
-                            
-                            if only_in_pref:
-                                with st.expander("Staff in Preferences but not in Tracks:"):
-                                    st.write(", ".join(sorted(only_in_pref)))
-                            
-                            if only_in_track:
-                                with st.expander("Staff in Tracks but not in Preferences:"):
-                                    st.write(", ".join(sorted(only_in_track)))
+                    track_staff = {str(name).strip() for name in current_tracks_df[staff_col_tracks]
+                                   if pd.notna(name) and str(name).strip()}
+                    db_staff = set(get_staff_names(clinical_only=True))
+
+                    only_in_db = db_staff - track_staff
+                    only_in_track = track_staff - db_staff
+
+                    if only_in_db or only_in_track:
+                        st.warning("⚠️ Staff name differences between the staff database "
+                                   "and the tracks file")
+
+                        if only_in_track:
+                            with st.expander("In the tracks file but not active clinical staff:"):
+                                st.write(", ".join(sorted(only_in_track)))
+
+                        if only_in_db:
+                            with st.expander("Active clinical staff not in the tracks file:"):
+                                st.write(", ".join(sorted(only_in_db)))
                 except Exception as e:
                     st.error(f"Error checking staff mismatches: {str(e)}")
 
@@ -1934,10 +1924,13 @@ def run_clinical_track_hub():
                         st.error(f"Error testing email configuration: {str(e)}")
 
     # MAIN PROCESSING
-    if excel_files["preferences"] and excel_files["current_tracks"]:
+    #
+    # Staff attributes come from the staff database, shaped exactly like the old
+    # Preferences v6 sheet so the column detection and every downstream consumer keep
+    # working unchanged. Tracks and requirements are still read from Excel.
+    if excel_files["current_tracks"] and staff_count(include_inactive=False):
         try:
-            # Load the data from files
-            preferences_df = load_excel_file(excel_files["preferences"])
+            preferences_df = build_preferences_df()
             current_tracks_df = load_excel_file(excel_files["current_tracks"])
 
             # Load requirements file
@@ -2010,6 +2003,9 @@ def run_clinical_track_hub():
 
         except Exception as e:
             st.error("An error occurred while loading the data. Please contact an administrator.")
+    elif not staff_count(include_inactive=False):
+        st.error("The staff database has no active staff yet. An administrator needs to "
+                 "import the staff roster (Admin Area → Manage Staff Database).")
     else:
         st.info("Waiting for data to load. If no data appears, please contact an administrator.")
 
@@ -2113,6 +2109,10 @@ if not display_user_login():
 # If we get here, user is authenticated - show session info
 display_session_info()
 
+# The staff roster is read by every module, so make sure its tables exist regardless of
+# which page the user lands on first.
+initialize_staff_tables()
+
 # Main Navigation Logic
 if st.session_state.selected_module is None:
     # Show main CrewOps360 landing page
@@ -2123,6 +2123,9 @@ elif st.session_state.selected_module == "clinical_track_hub":
 elif st.session_state.selected_module == "track_bidding":
     # Show Track Bidding
     display_track_bidding()
+elif st.session_state.selected_module == "staff_database":
+    # Show the Staff Database admin (admin-gated inside)
+    display_staff_database_admin()
 elif st.session_state.selected_module == "training_events":
     # Show Training & Events application (FULL VERSION)
     display_training_events_app()

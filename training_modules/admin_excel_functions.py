@@ -813,38 +813,15 @@ class ExcelAdminFunctions:
             return []
 
     def _get_staff_role_from_excel(self, staff_name):
-        """Get staff member's role from Excel enrollment sheet"""
+        """
+        Get a staff member's role.
+
+        Named for where it used to read from; the role now comes from the staff database
+        through the Excel handler, which falls back to the workbook when the staff
+        database has no roster.
+        """
         try:
-            if not self.excel.enrollment_sheet:
-                return "Unknown"
-            
-            # Find the staff member's row
-            staff_row = None
-            for row_idx, row in enumerate(self.excel.enrollment_sheet.iter_rows(min_row=2, max_col=1), start=2):
-                if row[0].value and str(row[0].value).strip() == staff_name:
-                    staff_row = row_idx
-                    break
-            
-            if not staff_row:
-                return "Unknown"
-            
-            # Find the Role column
-            role_col = None
-            for col_idx, col in enumerate(self.excel.enrollment_sheet.iter_cols(min_row=1, max_row=1), start=1):
-                header_value = str(col[0].value).strip() if col[0].value else ""
-                if header_value == "Role":
-                    role_col = col_idx
-                    break
-            
-            if not role_col:
-                return "Unknown"
-            
-            # Get role value
-            role_cell = self.excel.enrollment_sheet.cell(row=staff_row, column=role_col)
-            role_value = str(role_cell.value).strip() if role_cell.value else "Unknown"
-            
-            return role_value
-            
+            return self.excel.get_staff_role(staff_name) or "Unknown"
         except Exception as e:
             print(f"Error getting role for {staff_name}: {e}")
             return "Unknown"

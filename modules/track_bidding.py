@@ -75,9 +75,10 @@ def _get_preassignment_day_columns(path):
 
 def _load_bidding_data_files():
     """
-    Load and column-map the Excel data files used by the bidding interface
-    (same files/pattern as the clinical track hub). Shared by the staff-facing
-    flow and the admin "Add/Update Selection" / "Manage Bid Access" tabs.
+    Load the data the bidding interface needs: staff attributes from the staff database,
+    plus the Excel files still used per bid cycle (tracks, requirements,
+    preassignments). Shared by the staff-facing flow and the admin
+    "Add/Update Selection" / "Manage Bid Access" tabs.
 
     Returns:
         tuple: (ctx, error) — ctx is a dict with everything the bidding staff
@@ -87,10 +88,15 @@ def _load_bidding_data_files():
     """
     import os
     from modules.column_mapper import auto_detect_columns
+    from modules.staff_database import (
+        build_preferences_df,
+        get_no_matrix_mapping,
+        get_role_mapping,
+        get_seniority_mapping,
+    )
     from modules.track_management.preassignment import load_preassignments
 
     excel_files = {
-        "preferences": None,
         "current_tracks": None,
         "requirements": None,
         "preassignments": None,
@@ -100,17 +106,14 @@ def _load_bidding_data_files():
         for f in os.listdir(upload_dir):
             fl = f.lower()
             fp = os.path.join(upload_dir, f)
-            if 'preference' in fl and fl.endswith('.xlsx'):
-                excel_files['preferences'] = fp
+            if 'preference' in fl:
+                continue  # staff attributes now come from the staff database
             elif 'track' in fl and fl.endswith('.xlsx'):
                 excel_files['current_tracks'] = fp
             elif 'requirement' in fl and fl.endswith('.xlsx'):
                 excel_files['requirements'] = fp
             elif 'preassignment' in fl and fl.endswith('.xlsx'):
                 excel_files['preassignments'] = fp
-
-    if not excel_files['preferences']:
-        return None, "Preferences file not found in 'upload files' folder."
 
     if not excel_files['current_tracks']:
         return None, "Current tracks file not found in 'upload files' folder."
@@ -121,7 +124,9 @@ def _load_bidding_data_files():
     def load_excel(path):
         return pd.read_excel(path) if path else None
 
-    preferences_df = load_excel(excel_files['preferences'])
+    # Preferences-shaped frame built from the staff database, so everything downstream
+    # (validators, PDF generation, the hypothetical scheduler) is unchanged.
+    preferences_df = build_preferences_df()
     current_tracks_df = load_excel(excel_files['current_tracks'])
     requirements_df = load_excel(excel_files['requirements'])
 
@@ -131,8 +136,9 @@ def _load_bidding_data_files():
     # duplicate-row handling) that only load_preassignments() sets up.
     preassignment_df = load_preassignments()
 
-    if preferences_df is None:
-        return None, "Could not load preferences file."
+    if preferences_df is None or preferences_df.empty:
+        return None, ("No clinical staff found in the staff database. An administrator "
+                      "needs to import or add the staff roster (Staff Database admin).")
 
     # Detect columns
     detection = auto_detect_columns(preferences_df, current_tracks_df)
@@ -154,26 +160,10 @@ def _load_bidding_data_files():
 
     staff_names = sorted(preferences_df[staff_col_prefs].dropna().unique().tolist())
 
-    role_mapping = {}
-    seniority_mapping = {}
-    no_matrix_mapping = {}
-    for _, row in preferences_df.iterrows():
-        name = row.get(staff_col_prefs)
-        if pd.notna(name):
-            name = str(name).strip()
-            if role_col:
-                role_mapping[name] = row.get(role_col, 'Unknown')
-            if seniority_col:
-                seniority_val = row.get(seniority_col)
-                try:
-                    seniority_mapping[name] = int(seniority_val)
-                except (TypeError, ValueError):
-                    seniority_mapping[name] = seniority_val
-            if no_matrix_col:
-                try:
-                    no_matrix_mapping[name] = int(row.get(no_matrix_col)) == 1
-                except (TypeError, ValueError):
-                    no_matrix_mapping[name] = False
+    # Straight from the staff database rather than re-derived from the frame.
+    role_mapping = get_role_mapping(clinical_only=True)
+    seniority_mapping = get_seniority_mapping()
+    no_matrix_mapping = get_no_matrix_mapping()
 
     return {
         'preferences_df': preferences_df,

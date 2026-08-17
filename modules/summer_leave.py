@@ -37,9 +37,9 @@ ROLE_CAPS = {
 # Roles that use shift-based caps (others use person-based caps)
 SHIFT_BASED_ROLES = {'NURSE', 'MEDIC'}
 
-# Cache for staff shifts and roles
+# Cache for staff shifts read from Requirements.xlsx. Roles are not cached here — they
+# come from the staff database, which manages its own cache.
 _staff_shifts_cache = None
-_staff_roles_cache = None
 
 def load_staff_shifts_from_excel():
     """
@@ -89,50 +89,29 @@ def load_staff_shifts_from_excel():
 
 def load_staff_roles_from_excel():
     """
-    Load staff roles from Preferences v6.xlsx
+    Load clinical staff roles (nurse/medic, with dual counted as nurse) from the staff
+    database.
+
+    Named for the spreadsheet it used to read — Preferences v6 — which the staff
+    database has replaced as the source of roles.
 
     Returns:
-        dict: Dictionary mapping staff_name to role (nurse, medic, dual)
+        dict: Dictionary mapping staff_name to role ('nurse' or 'medic')
     """
-    global _staff_roles_cache
-
-    if _staff_roles_cache is not None:
-        return _staff_roles_cache
-
+    # Not cached here: the staff database caches its own reads and drops that cache when
+    # an admin edits the roster, so a role change takes effect without a restart.
     try:
-        # Use glob pattern like the rest of the app
-        import glob
-        upload_dir = "upload files"
-
-        preferences_files = glob.glob(os.path.join(upload_dir, "Preferences*.xlsx"))
-        if not preferences_files:
-            print("No Preferences file found in upload files directory")
-            return {}
-
-        preferences_path = preferences_files[0]
-
-        # Use pandas with openpyxl engine to avoid file locks
-        df = pd.read_excel(preferences_path, engine='openpyxl')
+        from .staff_database import get_all_staff
 
         staff_roles = {}
-        # Iterate through rows (skip header)
-        for idx in range(len(df)):
-            row = df.iloc[idx]
-            if pd.notna(row.iloc[0]):  # Staff name exists
-                staff_name = str(row.iloc[0]).strip()
-                role = str(row.iloc[1]).strip().lower() if len(row) > 1 and pd.notna(row.iloc[1]) else None
+        for record in get_all_staff(roles=['NURSE', 'MEDIC']):
+            # Dual providers count as nurses here, as they did in the spreadsheet.
+            staff_roles[record['staff_name']] = record['effective_role']
 
-                # Convert 'dual' to 'nurse' as specified
-                if role == 'dual':
-                    role = 'nurse'
-
-                staff_roles[staff_name] = role
-
-        _staff_roles_cache = staff_roles
         return staff_roles
 
     except Exception as e:
-        print(f"Error loading staff roles from Preferences file: {e}")
+        print(f"Error loading staff roles from the staff database: {e}")
         import traceback
         traceback.print_exc()
         return {}
@@ -158,13 +137,13 @@ def get_shifts_per_week(staff_name):
 
 def get_staff_role_from_preferences(staff_name):
     """
-    Get role for a staff member from Preferences.xlsx
+    Get the clinical role for a staff member from the staff database.
 
     Args:
         staff_name (str): Name of staff member
 
     Returns:
-        str: Role (nurse, medic, etc.) or None if not found
+        str: 'nurse' or 'medic', or None if the staff member isn't clinical staff
     """
     staff_roles = load_staff_roles_from_excel()
     return staff_roles.get(staff_name)
@@ -1068,27 +1047,20 @@ def display_summer_leave_app(excel_handler, track_manager):
     st.markdown("**Summer 2026 Leave Period**")
     st.markdown("---")
 
-    # Get staff list from Excel
-    staff_list = excel_handler.get_staff_list() if excel_handler else []
+    # Staff list and roles come from the staff database — active staff only, so someone
+    # who has left stops appearing here without the roster file being edited.
+    from .staff_database import UNASSIGNED_ROLE, get_base_role_mapping, get_staff_names
+
+    staff_list = get_staff_names()
 
     if not staff_list:
-        st.error("Could not load staff list from Excel file.")
+        st.error("No staff found in the staff database. Please contact an administrator.")
         return
 
-    # Create role mapping
-    role_mapping = {}
-    for staff_name in staff_list:
-        # Get role from Excel (Column B)
-        try:
-            enrollment_sheet = excel_handler.enrollment_sheet
-            for row in enrollment_sheet.iter_rows(min_row=2):
-                if row[0].value and str(row[0].value).strip() == staff_name:
-                    role_cell = row[1].value if len(row) > 1 else None
-                    role_mapping[staff_name] = str(role_cell).strip() if role_cell else 'Unknown'
-                    break
-        except Exception as e:
-            print(f"Error getting role for {staff_name}: {e}")
-            role_mapping[staff_name] = 'Unknown'
+    # Staff imported without a role are reported as 'Unknown' so they get the same
+    # "contact your supervisor" message as before rather than a default cap.
+    role_mapping = {name: ('Unknown' if role == UNASSIGNED_ROLE else role)
+                    for name, role in get_base_role_mapping().items()}
 
     # Check for admin mode
     if 'summer_leave_admin_mode' not in st.session_state:

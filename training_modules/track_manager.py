@@ -196,12 +196,21 @@ class TrainingTrackManager:
     
     def get_staff_role(self, staff_name):
         """
-        Get the role of a staff member from the enrollment Excel handler.
-        Looks at column B (Role) in the Class_Enrollment sheet.
-        
-        If enrollment handler isn't available, falls back to checking CCEMT cache.
+        Get the role of a staff member from the staff database.
+
+        Falls back to the enrollment workbook's Role column, then to the CCEMT cache,
+        when the staff database has no roster yet.
         """
-        # First, check if we have enrollment Excel handler
+        try:
+            from modules.staff_database import get_role, staff_count
+            if staff_count(include_inactive=False) > 0:
+                role = get_role(staff_name)
+                if role:
+                    return role
+        except Exception as e:
+            print(f"Staff database unavailable for {staff_name}'s role: {e}")
+
+        # Fall back to the enrollment Excel handler
         if self.enrollment_excel_handler:
             try:
                 # Access the enrollment sheet to get role information

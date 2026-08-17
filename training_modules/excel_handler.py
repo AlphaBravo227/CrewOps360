@@ -1,9 +1,26 @@
 # training_modules/excel_handler.py - Updated for new Excel layout with up to 14 date rows
+#
+# The roster workbook remains the source of *classes, dates and enrollment*. Staff
+# identity and attributes (who is on the roster, their role, MGMT/DUAL/Educator AT) now
+# come from the staff database — see modules/staff_database.py. The staff-attribute
+# methods below read the database and fall back to the workbook only when the roster has
+# not been imported yet.
 import pandas as pd
 import openpyxl
 from datetime import datetime, time
 import os
 from training_modules.config import NON_CLASS_COLUMNS
+
+try:
+    from modules import staff_database as staffdb
+except Exception as e:  # pragma: no cover - staff database is optional at import time
+    staffdb = None
+    print(f"Staff database unavailable to the training Excel handler: {e}")
+
+
+def _staff_database_ready():
+    """True when the staff database has a roster to read."""
+    return staffdb is not None and staffdb.staff_count(include_inactive=False) > 0
 
 # Enhanced default class details
 DEFAULT_CLASS_DETAILS = {
@@ -71,7 +88,16 @@ class ExcelHandler:
             traceback.print_exc()
             
     def get_staff_list(self):
-        """Get list of all staff names"""
+        """
+        Get list of all staff names.
+
+        Comes from the staff database (active staff only), so someone who has left stops
+        appearing in enrollment pickers as soon as an admin marks them inactive. Falls
+        back to the workbook's own name column when the roster hasn't been imported.
+        """
+        if _staff_database_ready():
+            return staffdb.get_staff_names()
+
         if self.enrollment_sheet is None:
             print(f"Excel loading error: {self.load_error}")
             return []
@@ -454,17 +480,99 @@ class ExcelHandler:
         except (ValueError, TypeError):
             return 0
 
+    def get_staff_role(self, staff_name):
+        """
+        Base role for a staff member (NURSE, MEDIC, COMMS, CCEMT, ATP, AMT).
+
+        Args:
+            staff_name (str): Name of the staff member
+
+        Returns:
+            str or None: the role, or None when the staff member isn't known.
+        """
+        if _staff_database_ready():
+            return staffdb.get_role(staff_name) or None
+
+        if self.enrollment_sheet is None:
+            return None
+        try:
+            role_col = None
+            for col_idx, col in enumerate(self.enrollment_sheet.iter_cols(min_row=1, max_row=1), start=1):
+                if col[0].value and str(col[0].value).strip() == "Role":
+                    role_col = col_idx
+                    break
+            if not role_col:
+                return None
+            for row_idx, row in enumerate(self.enrollment_sheet.iter_rows(min_row=2, max_col=1), start=2):
+                if row[0].value and str(row[0].value).strip() == staff_name:
+                    cell = self.enrollment_sheet.cell(row=row_idx, column=role_col)
+                    return str(cell.value).strip() if cell.value else None
+        except Exception as e:
+            print(f"Error getting role for {staff_name}: {e}")
+        return None
+
+    def is_management(self, staff_name):
+        """
+        True if the staff member is management (the roster's MGMT column).
+        """
+        if _staff_database_ready():
+            return staffdb.is_management(staff_name)
+        return self._checkbox_for_staff(staff_name, "MGMT", default=False)
+
+    def is_dual(self, staff_name):
+        """
+        True if the staff member is a dual provider (the roster's DUAL column).
+        """
+        if _staff_database_ready():
+            return staffdb.is_dual(staff_name)
+        return self._checkbox_for_staff(staff_name, "DUAL", default=False)
+
+    def _checkbox_for_staff(self, staff_name, column_header, default=False):
+        """
+        Read one checkbox column from the Class_Enrollment sheet for one staff member.
+        Only used as a fallback when the staff database has no roster.
+        """
+        if self.enrollment_sheet is None:
+            return default
+        try:
+            staff_row = None
+            for row_idx, row in enumerate(self.enrollment_sheet.iter_rows(min_row=2, max_col=1), start=2):
+                if row[0].value and str(row[0].value).strip() == staff_name:
+                    staff_row = row_idx
+                    break
+            if not staff_row:
+                return default
+
+            target_col = None
+            for col_idx, col in enumerate(self.enrollment_sheet.iter_cols(min_row=1, max_row=1), start=1):
+                if col[0].value and str(col[0].value).strip() == column_header:
+                    target_col = col_idx
+                    break
+            if not target_col:
+                return default
+
+            return self._parse_checkbox_value(
+                self.enrollment_sheet.cell(row=staff_row, column=target_col).value)
+        except Exception as e:
+            print(f"Error reading '{column_header}' for {staff_name}: {e}")
+            return default
+
     def is_educator_authorized(self, staff_name):
         """
         Check if a staff member is authorized to sign up as an educator
-        based on the 'Educator AT' column in the Class_Enrollment sheet
-        
+        (the roster's 'Educator AT' column, now held in the staff database)
+
         Args:
             staff_name (str): Name of the staff member to check
-            
+
         Returns:
             bool: True if staff is authorized for educator signups, False otherwise
         """
+        if _staff_database_ready():
+            # Unknown names keep the old permissive behavior — show the signup rather
+            # than silently hiding it for someone the roster hasn't caught up with.
+            return staffdb.is_educator_at(staff_name, default=True)
+
         if self.enrollment_sheet is None:
             print(f"Excel loading error: {self.load_error}")
             return True  # Default to showing if there's an error
