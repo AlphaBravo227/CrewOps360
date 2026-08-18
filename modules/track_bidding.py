@@ -905,6 +905,33 @@ def _build_bid_summary_table(day_stats):
     return table
 
 
+def _bid_chart(chart):
+    """
+    Render one Bid Analysis chart, forcing Vega's SVG renderer and never a
+    measured container width.
+
+    Both settings exist because of production-only failures. Container width is
+    what left charts permanently blank inside st.tabs (see
+    _build_max_shifts_chart). The renderer matters because these charts are
+    drawn at a fixed pixel width and then scaled down by CSS to fit the column,
+    and Vega's *canvas* hit-testing ignores CSS scaling entirely: it treats the
+    raw offset from the element's bounding rect as a scenegraph coordinate. At a
+    2x scale, measured locally, hovering a bar produced no tooltip at all while
+    hovering its unscaled coordinates — a point nowhere near the bar on screen —
+    correctly reported it. Mild scaling doesn't kill the tooltip, it just reports
+    the wrong day, which is how this reached production unnoticed: the deployed
+    Streamlit defaults to canvas while a newer local one defaults to SVG, so the
+    tooltips tested clean here and were offset for real users.
+
+    SVG hit-testing is per-element and native, so it stays correct under any
+    amount of CSS scaling. These charts are a few hundred marks each, far too
+    small for the canvas renderer's throughput advantage to matter.
+    """
+    return st.altair_chart(
+        chart.properties(usermeta={'embedOptions': {'renderer': 'svg'}}),
+        use_container_width=False)
+
+
 def _render_bid_analysis_tab(config_names, default_track_index):
     """Visual + tabular breakdown of submitted bids across the 42-day cycle, for tuning bid caps."""
     st.markdown("### Bid Analysis")
@@ -1003,23 +1030,22 @@ def _render_bid_analysis_tab(config_names, default_track_index):
     for block_letter, block_start in (('A', 0), ('B', 14), ('C', 28)):
         st.markdown(f"##### Block {block_letter}")
         block_day_stats = day_stats.iloc[block_start:block_start + 14]
-        st.altair_chart(_build_max_shifts_chart(block_day_stats, simulate_flex, min_night_crews),
-                        use_container_width=False)
+        _bid_chart(_build_max_shifts_chart(block_day_stats, simulate_flex, min_night_crews))
 
     st.markdown("#### Bid Composition by Day")
-    st.altair_chart(_build_composition_chart(day_stats, 'Day'), use_container_width=False)
-    st.altair_chart(_build_composition_chart(day_stats, 'Night'), use_container_width=False)
+    _bid_chart(_build_composition_chart(day_stats, 'Day'))
+    _bid_chart(_build_composition_chart(day_stats, 'Night'))
 
     st.markdown("#### Bid Demand vs. Configured Cap")
     st.caption("Solid bars are submitted bids; the dashed line is the current cap. "
                "A bar above the dashed line means more staff bid than there's room for.")
     dcol1, dcol2 = st.columns(2)
     with dcol1:
-        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Day', 'Nurse'), use_container_width=False)
-        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Night', 'Nurse'), use_container_width=False)
+        _bid_chart(_build_demand_vs_cap_chart(day_stats, 'Day', 'Nurse'))
+        _bid_chart(_build_demand_vs_cap_chart(day_stats, 'Night', 'Nurse'))
     with dcol2:
-        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Day', 'Medic'), use_container_width=False)
-        st.altair_chart(_build_demand_vs_cap_chart(day_stats, 'Night', 'Medic'), use_container_width=False)
+        _bid_chart(_build_demand_vs_cap_chart(day_stats, 'Day', 'Medic'))
+        _bid_chart(_build_demand_vs_cap_chart(day_stats, 'Night', 'Medic'))
 
     with st.expander("Full Day/Night breakdown table (Max Shifts / Senior / Nurse / Dual / Medic)"):
         summary_table = _build_bid_summary_table(day_stats)
@@ -1047,7 +1073,7 @@ def _render_bid_analysis_tab(config_names, default_track_index):
 
     with st.expander("Where Staff Are Bidding", expanded=False):
         st.caption("One row per staff member (nurses A–Z, then medics A–Z), one column per bid day.")
-        st.altair_chart(_build_bid_heatmap(days, bids, role_mapping, no_matrix_mapping), use_container_width=False)
+        _bid_chart(_build_bid_heatmap(days, bids, role_mapping, no_matrix_mapping))
 
 
 def _compute_bid_roster_table(analysis_track, ctx, bids):
