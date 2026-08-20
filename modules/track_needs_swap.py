@@ -359,7 +359,8 @@ def failed_rules(validation):
             if rule in validation and not validation[rule]['status']]
 
 
-def validate_track_for_staff(staff_name, track_data, report_ctx, baseline_track=None):
+def validate_track_for_staff(staff_name, track_data, report_ctx, baseline_track=None,
+                              preassignments=None):
     """
     Run the full track validator over `track_data` using this staff member's own
     requirements and preassignments, plus the cycle-wrap check the shared validator
@@ -379,6 +380,11 @@ def validate_track_for_staff(staff_name, track_data, report_ctx, baseline_track=
     the change. Someone whose bid already sits below a minimum shouldn't be warned
     about a swap that didn't cause it.
 
+    `preassignments`, when given, replaces the staff member's own — used to test a
+    hypothetical where a preassignment has moved (see Staffing Rebalance's AT
+    relocation), since preassignments are re-applied on top of any track before it
+    is validated.
+
     Returns the validate_track_comprehensive() result dict with extra 'cycle_wrap'
     and 'advisories' entries, or None when the staff member can't be evaluated (no
     numeric requirements — e.g. management).
@@ -389,7 +395,8 @@ def validate_track_for_staff(staff_name, track_data, report_ctx, baseline_track=
     if not req or req.get('shifts_per_pay_period') is None:
         return None
 
-    preassignments = _staff_preassignments(staff_name, report_ctx)
+    if preassignments is None:
+        preassignments = _staff_preassignments(staff_name, report_ctx)
     days = report_ctx['days']
     spp = req.get('shifts_per_pay_period') or 0
 
@@ -452,10 +459,14 @@ def swapped_track(track_data, give_up_day, need_day, need_period):
     return swapped
 
 
-def validate_swap(staff_name, give_up_day, need_day, need_period, report_ctx):
+def validate_swap(staff_name, give_up_day, need_day, need_period, report_ctx,
+                   preassignments=None):
     """
     Would this staff member's track still be valid if they moved off `give_up_day`
     onto `need_day`? Evaluated against the bid as loaded into `report_ctx`.
+
+    `preassignments` overrides the staff member's own, for testing a hypothetical
+    where one of them has been moved.
 
     Returns the validate_track_comprehensive() result dict, or None when the staff
     member can't be evaluated (no bid, or no numeric requirements).
@@ -465,7 +476,7 @@ def validate_swap(staff_name, give_up_day, need_day, need_period, report_ctx):
         return None
     return validate_track_for_staff(
         staff_name, swapped_track(bid['track_data'], give_up_day, need_day, need_period),
-        report_ctx, baseline_track=bid['track_data'])
+        report_ctx, baseline_track=bid['track_data'], preassignments=preassignments)
 
 
 def swap_options_for_staff(staff_name, needs, report_ctx, floors=None):

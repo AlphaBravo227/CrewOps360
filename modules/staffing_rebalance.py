@@ -149,7 +149,13 @@ def candidate_pool(shortfall, report_ctx, floors):
     The give-up doesn't have to be the same period as the need — a Night that week is
     a valid thing to trade for a Day shortfall, since the swap is net-zero either way.
     The staff view has always allowed that, so this does too.
+
+    Probationary staff (_BID_INELIGIBLE_STAFF) are skipped: they hold weekend
+    assignments rather than a bid track, so there is no track to rearrange. They also
+    carry no shifts-per-pay-period, which would otherwise make every rule that keys
+    off it pass vacuously and put them at the top of every list.
     """
+    from modules.track_bidding import _BID_INELIGIBLE_STAFF
     from modules.track_needs_swap import surplus_shifts
 
     target_day, week = shortfall['day_label'], shortfall['week']
@@ -165,7 +171,7 @@ def candidate_pool(shortfall, report_ctx, floors):
              for name in roster_index.get((d, p), [])}
 
     candidates = {}
-    for name in sorted(names - working_target_day):
+    for name in sorted(names - working_target_day - _BID_INELIGIBLE_STAFF):
         give_ups = [s for s in surplus_shifts(name, report_ctx, floors)
                     if s['day_label'] in week_days]
         if give_ups:
@@ -272,6 +278,60 @@ def load_report_context(track_name):
     }, None
 
 
+def _pay_period_of(day_label, days):
+    """The 14 day labels of the pay period `day_label` falls in."""
+    i = days.index(day_label)
+    start = (i // 14) * 14
+    return days[start:start + 14]
+
+
+def at_relocation_options(name, need_day, report_ctx, limit=4):
+    """
+    Days an AT preassigned on `need_day` could be moved to so the person is free to
+    work that day instead: an empty day — no bid shift, no other preassignment — in
+    the same pay period, so their shifts-per-pay-period count is unaffected by the
+    move.
+
+    Only candidate slots; whether any given one actually validates is decided by
+    _validate_with_at_move(), which re-runs the full rule set with the AT there.
+    """
+    bid = report_ctx['bids_by_name'].get(name) or {}
+    track_data = bid.get('track_data') or {}
+    preassignments = report_ctx['preassignments_by_name'].get(name, {})
+
+    free = [d for d in _pay_period_of(need_day, report_ctx['days'])
+            if d != need_day and not track_data.get(d) and d not in preassignments]
+    return free[:limit] if limit else free
+
+
+def _validate_with_at_move(name, give_up_day, need_day, period, report_ctx):
+    """
+    Validate a swap for someone who is preassigned AT on the need day.
+
+    Their AT doesn't vanish when they pick up the shift — it still has to be worked,
+    so the hypothetical is: come off `give_up_day`, work `need_day`, and the AT lands
+    on some other empty day in the same pay period. Without modelling that move the
+    track comes out one shift light and the person is dropped, which is why anyone on
+    AT for a short day used to be invisible here.
+
+    Returns (validation, moved_to) for the first placement that passes, else
+    (None, None).
+    """
+    from modules.track_needs_swap import validate_swap
+
+    preassignments = dict(report_ctx['preassignments_by_name'].get(name, {}))
+    preassignments.pop(need_day, None)
+
+    for target in at_relocation_options(name, need_day, report_ctx, limit=None):
+        hypothetical = dict(preassignments)
+        hypothetical[target] = 'AT'
+        validation = validate_swap(name, give_up_day, need_day, period, report_ctx,
+                                    preassignments=hypothetical)
+        if validation is not None and validation.get('overall_valid'):
+            return validation, target
+    return None, None
+
+
 def candidates_for_shortfall(shortfall, report_ctx, track_name):
     """
     Full candidate table for one shortfall: pool -> validate every give-up day that
@@ -283,20 +343,45 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
     that would only cost an advisory (a night, a weekend, a weekend-group period) are
     kept and labelled, since dropping below those to cover a need is allowed.
 
+    Candidates whose arrival wouldn't raise that shift's achievable crews are left
+    out entirely: a nurse is no use to a day held back by a medic shortage, and
+    nobody is any use to a day capped by its no-matrix headcount. Dual-credentialed
+    staff count toward a medic shortfall — _max_possible_shifts() flexes them to the
+    medic side, so achievable_change() credits them for it.
+
     Returns a list of dicts; sort in the caller if a particular order is wanted.
     """
-    from modules.track_needs_swap import needs_swap_floors
+    from modules.track_needs_swap import achievable_change, needs_swap_floors
+    from modules.track_bidding import _bid_role_and_senior
 
     ctx = report_ctx['ctx']
+    need_day, period = shortfall['day_label'], shortfall['period']
     floors = needs_swap_floors(report_ctx.get('cfg'))
     pool = candidate_pool(shortfall, report_ctx, floors)
+    row = report_ctx['day_stats_by_label'][need_day]
 
     rows = []
     for name, give_ups in pool.items():
-        usable = []
+        role, is_senior = _bid_role_and_senior(
+            report_ctx['bids_by_name'][name], ctx['role_mapping'], ctx['no_matrix_mapping'])
+        before, after = achievable_change(row, period, role, is_senior, +1)
+        if after <= before:
+            continue  # their role isn't what's holding this shift back
+
+        # An AT on the need day isn't a blocker — the admin can move it — but it does
+        # have to land somewhere, so the swap is validated with it relocated.
+        on_at = report_ctx['preassignments_by_name'].get(name, {}).get(need_day) == 'AT'
+
+        usable, at_moves = [], set()
         for source_day, source_period in give_ups:
-            validation = validate_candidate_swap(
-                name, source_day, shortfall['day_label'], shortfall['period'], report_ctx)
+            if on_at:
+                validation, moved_to = _validate_with_at_move(
+                    name, source_day, need_day, period, report_ctx)
+                if moved_to:
+                    at_moves.add(moved_to)
+            else:
+                validation = validate_candidate_swap(
+                    name, source_day, need_day, period, report_ctx)
             if validation is None or not validation.get('overall_valid'):
                 continue  # can't evaluate them, or this give-up would break their track
             label = f"{source_day} {'D' if source_period == 'Day' else 'N'}"
@@ -312,7 +397,7 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
         unavoidable = set.intersection(*(adv for _, adv in usable))
 
         hypo = rank_candidate(
-            name, shortfall['day_label'], shortfall['period'],
+            name, need_day, period,
             ctx['preferences_df'], ctx['staff_col_prefs'], ctx['role_col'], ctx['seniority_col'],
             report_ctx['all_base_prefs'], track_name, report_ctx['base_shift_counts'],
         )
@@ -323,6 +408,8 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
             'Seniority': ctx['seniority_mapping'].get(name),
             'No Matrix': ctx['no_matrix_mapping'].get(name, False),
             'Could give up': ", ".join(_give_up_label(day, adv) for day, adv in usable),
+            'Crews here': f"{before} → {after}",
+            'AT to move': ", ".join(sorted(at_moves)) if on_at else "—",
             'Trade-off': _advisory_summary(unavoidable),
             'Would get a shift?': hypo['assignment'] is not None,
             'Hypothetical base': hypo['assignment'],
@@ -409,7 +496,9 @@ def _render_staffing_rebalance_tab(config_names, default_track_index):
         "same people: shifts per pay period, the weekly limit, rest, consecutive shifts and the "
         "cycle seam all have to hold, but night and weekend minimums do not — someone covering a "
         "need is allowed to drop below those, and the Trade-off column says when they would. "
-        "Recommendations only; nothing here changes the schedule."
+        "Only people whose arrival would actually raise that shift's achievable crews are listed "
+        "(duals count toward a medic shortfall). Recommendations only; nothing here changes the "
+        "schedule."
     )
 
     if not config_names:
@@ -466,9 +555,9 @@ def _render_staffing_rebalance_tab(config_names, default_track_index):
 
     if not rows:
         st.warning(
-            "No one working this period elsewhere in the same week, who's off this day, has a "
-            "shift they could give up without breaking their own shifts-per-pay-period, weekly, "
-            "rest, consecutive-shift or cycle-seam rules."
+            "No one available elsewhere in the same week would raise this shift's achievable "
+            "crews and has a shift they could give up without breaking their own "
+            "shifts-per-pay-period, weekly, rest, consecutive-shift or cycle-seam rules."
         )
         return
 
