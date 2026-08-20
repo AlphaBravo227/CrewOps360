@@ -741,6 +741,9 @@ def apply_offer(offer, report_ctx, reviewed_by, review_notes=None):
     that has gone stale (because the staff member's track or someone else's moved
     since they submitted) is refused rather than applied.
 
+    `review_notes` is the reviewing admin's own note about the decision; it is stored
+    after the automatic description of the change, not instead of it.
+
     Returns (success, message).
     """
     staff_name = offer['staff_name']
@@ -777,10 +780,15 @@ def apply_offer(offer, report_ctx, reviewed_by, review_notes=None):
     relaxed = record_minimum_relaxations(staff_name, track_name, swapped, report_ctx,
                                           offer_id=offer['id'], reviewed_by=reviewed_by)
 
-    note = review_notes or (f"Moved {offer['give_up_period']} {offer['give_up_day']} → "
-                            f"{offer['need_period']} {offer['need_day']}")
+    # The automatic description of what was applied is always kept; an admin's own
+    # note is appended to it rather than replacing it, so the record of the change
+    # survives alongside their reasoning.
+    note = (f"Moved {offer['give_up_period']} {offer['give_up_day']} → "
+            f"{offer['need_period']} {offer['need_day']}")
     if relaxed:
         note += f" ({'; '.join(relaxed)})"
+    if review_notes and review_notes.strip():
+        note += f" — {review_notes.strip()}"
     update_need_swap_offer_status(offer['id'], 'approved', reviewed_by, note)
     superseded = supersede_sibling_need_offers(offer['id'])
 
@@ -1358,6 +1366,122 @@ _STATUS_LABEL = {'pending': 'Pending', 'approved': 'Approved',
                  'declined': 'Declined', 'superseded': 'Superseded'}
 
 
+# Offer an admin has clicked Approve/Decline on but not yet confirmed a note for.
+_ADMIN_REVIEW_ACTION = 'needs_swap_review_action'
+
+
+def _queue_review_action(offer_id, action):
+    """Remember which offer the admin is deciding on, so the note box opens after the rerun."""
+    st.session_state[_ADMIN_REVIEW_ACTION] = {'offer_id': offer_id, 'action': action}
+
+
+def _clear_review_action():
+    st.session_state.pop(_ADMIN_REVIEW_ACTION, None)
+
+
+def _pending_review_action(offers):
+    """
+    (offer, 'approve'|'decline') for the decision awaiting a note, or (None, None).
+
+    An offer that has since been decided — in another tab, or by an approval that
+    superseded it — drops out of the queue rather than reopening the note box.
+    """
+    queued = st.session_state.get(_ADMIN_REVIEW_ACTION)
+    if not queued:
+        return None, None
+    offer = next((o for o in offers if o['id'] == queued['offer_id']), None)
+    if offer is None or offer['status'] != 'pending':
+        _clear_review_action()
+        return None, None
+    return offer, queued['action']
+
+
+def _commit_review_action(offer, action, report_ctx, reviewer, note):
+    """Apply or decline the offer, storing the admin's note with the decision."""
+    note = (note or '').strip() or None
+    if action == 'approve':
+        ok, msg = apply_offer(offer, report_ctx, reviewer, review_notes=note)
+        if ok:
+            clear_bidding_caches()
+        _flash(_ADMIN_FLASH, 'success' if ok else 'error', msg)
+    else:
+        # No cache to clear here — declining only changes the offer's own status
+        # (fetched fresh every render regardless), never the bid track the
+        # day_stats/needs cache is keyed on.
+        ok, msg = update_need_swap_offer_status(offer['id'], 'declined', reviewer, note)
+        _flash(_ADMIN_FLASH, 'info' if ok else 'error', f"{offer['staff_name']} — {msg}")
+    _clear_review_action()
+
+
+def _render_review_note_body(offer, action, report_ctx, reviewer):
+    """The note box itself: what is being decided, a place to say why, confirm or cancel."""
+    approving = action == 'approve'
+    st.markdown(
+        f"**{offer['staff_name']}** would move onto "
+        f"**{_shift_label(offer['need_day'], offer['need_period'])}** and give up "
+        f"**{_shift_label(offer['give_up_day'], offer['give_up_period'])}** "
+        f"(their rank {offer['preference_rank']})."
+    )
+    if offer['staff_notes']:
+        st.caption(f"💬 Their note: {offer['staff_notes']}")
+    if not offer['still_valid']:
+        st.warning(offer['stale_reason'])
+
+    note = st.text_area(
+        "Notes",
+        key=f"needs_swap_review_note_{offer['id']}_{action}",
+        placeholder=("Why this one was taken — crew mix, who else offered, anything worth "
+                     "remembering later." if approving else
+                     "Why this one wasn't taken — so the reasoning is on the record."),
+        help="Optional. Stored with the decision and shown in the All responses table "
+             "below. Staff don't see it.",
+    )
+
+    confirm_col, cancel_col = st.columns(2)
+    if confirm_col.button("Approve offer" if approving else "Decline offer",
+                          key=f"needs_swap_review_confirm_{offer['id']}_{action}",
+                          type="primary", use_container_width=True):
+        _commit_review_action(offer, action, report_ctx, reviewer, note)
+        st.rerun()
+    if cancel_col.button("Cancel", key=f"needs_swap_review_cancel_{offer['id']}_{action}",
+                         use_container_width=True):
+        _clear_review_action()
+        st.rerun()
+
+
+def _render_review_note_prompt(offers, report_ctx, reviewer):
+    """
+    Ask for a note before an approve or decline actually happens.
+
+    Shown as a modal where the installed Streamlit has one (st.dialog, or its
+    experimental_dialog spelling on older versions); otherwise as a bordered box at
+    the top of the queue, which is why it is rendered from the top level of the tab
+    rather than from inside the offer's own row.
+    """
+    offer, action = _pending_review_action(offers)
+    if offer is None:
+        return
+
+    title = (f"{'Approve' if action == 'approve' else 'Decline'} — {offer['staff_name']}, "
+             f"{_shift_label(offer['need_day'], offer['need_period'])}")
+    dialog = getattr(st, 'dialog', None) or getattr(st, 'experimental_dialog', None)
+    if dialog is None:
+        try:
+            box = st.container(border=True)
+        except TypeError:  # border= predates the Streamlit floor this app supports
+            box = st.container()
+        with box:
+            st.markdown(f"#### {title}")
+            _render_review_note_body(offer, action, report_ctx, reviewer)
+        return
+
+    @dialog(title)
+    def _review_note_dialog():
+        _render_review_note_body(offer, action, report_ctx, reviewer)
+
+    _review_note_dialog()
+
+
 def _give_up_impact(offer, report_ctx, by_label):
     """
     (before, after, role) achievable crews for the give-up shift's period if this
@@ -1687,7 +1811,9 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
     st.caption(
         "Staff offers to move onto a below-minimum shift. Each row is one pairing — the need "
         "they'd cover and the overstaffed shift they'd give up for it, ranked by their own "
-        "preference. Approving a pairing writes it straight to that person's bid track."
+        "preference. Approving a pairing writes it straight to that person's bid track. "
+        "Approve and Decline both open a note box first, so you can record what you were "
+        "weighing before the decision is applied."
     )
 
     if not config_names:
@@ -1724,6 +1850,8 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
 
     reviewer = st.text_input("Reviewed by:", value=st.session_state.get('needs_swap_reviewer', 'Admin'),
                              key="needs_swap_reviewer")
+
+    _render_review_note_prompt(offers, report_ctx, reviewer)
 
     st.markdown("#### Pending offers, by need")
     if not pending:
@@ -1773,21 +1901,15 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
                                       key=f"needs_swap_preview_btn_{o['id']}", use_container_width=True):
                         st.session_state[preview_key] = not preview_open
                         st.rerun()
+                    # Neither button decides anything on its own: both open the note
+                    # box, which is where the decision is actually confirmed.
                     if cols[2].button("Approve", key=f"needs_swap_approve_{o['id']}",
                                       disabled=not o['still_valid'], use_container_width=True):
-                        ok, msg = apply_offer(o, report_ctx, reviewer)
-                        if ok:
-                            clear_bidding_caches()
-                        _flash(_ADMIN_FLASH, 'success' if ok else 'error', msg)
+                        _queue_review_action(o['id'], 'approve')
                         st.rerun()
                     if cols[3].button("Decline", key=f"needs_swap_decline_{o['id']}",
                                       use_container_width=True):
-                        # No cache to clear here — declining only changes the offer's
-                        # own status (fetched fresh every render regardless), never
-                        # the bid track the day_stats/needs cache is keyed on.
-                        ok, msg = update_need_swap_offer_status(o['id'], 'declined', reviewer)
-                        _flash(_ADMIN_FLASH, 'info' if ok else 'error',
-                               f"{o['staff_name']} — {msg}")
+                        _queue_review_action(o['id'], 'decline')
                         st.rerun()
 
                     if preview_open:
