@@ -830,7 +830,6 @@ def apply_offer(offer, report_ctx, reviewed_by, review_notes=None):
         'give_up_period': offer['give_up_period'],
         'relaxations': relaxed,
         'superseded': superseded,
-        'reviewed_by': reviewed_by,
     }
     details['hypothetical_base'], details['hypothetical_base_rank'] = \
         _approved_pickup_base(staff_name, offer, report_ctx)
@@ -941,7 +940,6 @@ def rescind_offer(offer, report_ctx, reviewed_by, reason=None):
         'give_up_period': offer['give_up_period'],
         'previous_status': previous_status,
         'reverted': False,
-        'reviewed_by': reviewed_by,
     }
 
     if previous_status == 'approved':
@@ -1613,7 +1611,7 @@ def _staff_email(staff_name, report_ctx):
         return None
 
 
-def _notify_decision(offer, decision, report_ctx, reviewer, details=None):
+def _notify_decision(offer, decision, report_ctx, details=None):
     """
     Email the staff member and the admin recipients what has happened to this offer —
     a summary of the change that was applied on an approval, a plain note that nothing
@@ -1632,7 +1630,6 @@ def _notify_decision(offer, decision, report_ctx, reviewer, details=None):
     details.setdefault('need_period', offer['need_period'])
     details.setdefault('give_up_day', offer['give_up_day'])
     details.setdefault('give_up_period', offer['give_up_period'])
-    details.setdefault('reviewed_by', reviewer)
 
     try:
         from modules.email_notifications import send_needs_swap_decision_notification
@@ -1661,7 +1658,6 @@ def _decision_details_for(offer, report_ctx, offers=None):
         'need_period': offer['need_period'],
         'give_up_day': offer['give_up_day'],
         'give_up_period': offer['give_up_period'],
-        'reviewed_by': offer['reviewed_by'],
     }
     if offer['status'] != 'approved':
         return details
@@ -1698,8 +1694,7 @@ def _resend_decision_notification(offer, report_ctx, offers=None):
     if offer['status'] not in ('approved', 'declined'):
         return "⚠️ Only an approved or declined offer has a notification to resend."
     details = _decision_details_for(offer, report_ctx, offers)
-    return _notify_decision(offer, offer['status'], report_ctx,
-                            offer['reviewed_by'] or 'Management', details)
+    return _notify_decision(offer, offer['status'], report_ctx, details)
 
 
 def _commit_review_action(offer, action, report_ctx, reviewer, note):
@@ -1713,7 +1708,7 @@ def _commit_review_action(offer, action, report_ctx, reviewer, note):
             # day_stats/needs cache is stale in exactly the way an approval leaves it.
             if details.get('reverted'):
                 clear_bidding_caches()
-            msg += " " + _notify_decision(offer, 'rescinded', report_ctx, reviewer, details)
+            msg += " " + _notify_decision(offer, 'rescinded', report_ctx, details)
         _flash(_ADMIN_FLASH, 'success' if ok else 'error', msg)
         _clear_review_action()
         return
@@ -1721,7 +1716,7 @@ def _commit_review_action(offer, action, report_ctx, reviewer, note):
         ok, msg, details = apply_offer(offer, report_ctx, reviewer, review_notes=note)
         if ok:
             clear_bidding_caches()
-            msg += " " + _notify_decision(offer, 'approved', report_ctx, reviewer, details)
+            msg += " " + _notify_decision(offer, 'approved', report_ctx, details)
         _flash(_ADMIN_FLASH, 'success' if ok else 'error', msg)
     else:
         # No cache to clear here — declining only changes the offer's own status
@@ -1729,7 +1724,7 @@ def _commit_review_action(offer, action, report_ctx, reviewer, note):
         # day_stats/needs cache is keyed on.
         ok, msg = update_need_swap_offer_status(offer['id'], 'declined', reviewer, note)
         if ok:
-            msg += " " + _notify_decision(offer, 'declined', report_ctx, reviewer)
+            msg += " " + _notify_decision(offer, 'declined', report_ctx)
         _flash(_ADMIN_FLASH, 'info' if ok else 'error', f"{offer['staff_name']} — {msg}")
     _clear_review_action()
 
