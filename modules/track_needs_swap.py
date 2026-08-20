@@ -44,6 +44,7 @@ from modules.db_utils import (
     get_track_config_by_name,
     save_bid_track_to_db,
     save_need_swap_offers,
+    set_requirement_override,
     supersede_sibling_need_offers,
     update_need_swap_offer_status,
     update_track_config,
@@ -658,11 +659,82 @@ def load_swap_context(track_name, min_night_crews_for_sim=None):
 # Applying an approved offer
 # ──────────────────────────────────────────────
 
+def _night_count(combined_track):
+    """Nights in a track, counted the way validate_night_minimum() counts them."""
+    return sum(1 for code in combined_track.values() if code == 'N')
+
+
+def _weekend_count(combined_track):
+    """Weekend shifts, counted the way validate_weekend_minimum() counts them:
+    a Friday night, or any Saturday/Sunday D, N or AT."""
+    total = 0
+    for day, code in combined_track.items():
+        if not code:
+            continue
+        weekday = day.split()[0] if day.split() else ''
+        if weekday == 'Fri' and code == 'N':
+            total += 1
+        elif weekday in ('Sat', 'Sun') and code in ('D', 'N', 'AT'):
+            total += 1
+    return total
+
+
+def record_minimum_relaxations(staff_name, track_name, track_data, report_ctx,
+                                offer_id=None, reviewed_by=None):
+    """
+    After an approved swap, relax whatever minimums the new track now sits below.
+
+    Covering a need is allowed to cost a night or a weekend — that is the whole point
+    of ADVISORY_RULES — but the staff record still holds the original figure, so
+    without this the approved track reads as invalid everywhere outside the Needs Swap
+    views: the Admin Track Editor, the PDF, the email summaries. The relaxed figure is
+    the count the approved track actually holds, so they are exactly at the new
+    minimum and can't drop further without another approval.
+
+    Scoped to the track cycle, with the pre-relaxation figure kept alongside, so it
+    lapses with the cycle and can always be read back or restored.
+
+    Returns a list of human-readable descriptions of what was relaxed (empty when
+    nothing was).
+    """
+    from modules.enhanced_track_validator import create_combined_track
+
+    req = report_ctx['requirements_map'].get(staff_name) or {}
+    combined = create_combined_track(track_data, _staff_preassignments(staff_name, report_ctx))
+
+    fields = {}
+    notes = []
+    for field, counted, label in (('night_minimum', _night_count(combined), 'night'),
+                                   ('weekend_minimum', _weekend_count(combined), 'weekend')):
+        required = req.get(field)
+        if required and counted < required:
+            fields[field] = counted
+            notes.append(f"{label} minimum {required} → {counted}")
+
+    if not fields:
+        return []
+
+    set_requirement_override(
+        track_name, staff_name,
+        night_minimum=fields.get('night_minimum'),
+        weekend_minimum=fields.get('weekend_minimum'),
+        original_night_minimum=req.get('night_minimum'),
+        original_weekend_minimum=req.get('weekend_minimum'),
+        offer_id=offer_id, created_by=reviewed_by,
+    )
+    return notes
+
+
 def apply_offer(offer, report_ctx, reviewed_by, review_notes=None):
     """
     Approve one offer and write it to the staff member's bid track: the give-up day
     is cleared, the need day takes the need's shift code, and save_bid_track_to_db()
     versions the change into track_history like any other bid revision.
+
+    If the new track falls below the staff member's night or weekend minimum — which a
+    volunteer covering a need is allowed to do — that minimum is relaxed for this cycle
+    so the approved track reads as valid across the rest of the app too. See
+    record_minimum_relaxations().
 
     The pairing is re-validated against the bid as it stands right now — an offer
     that has gone stale (because the staff member's track or someone else's moved
@@ -701,8 +773,13 @@ def apply_offer(offer, report_ctx, reviewed_by, review_notes=None):
     if not saved:
         return False, save_msg
 
+    relaxed = record_minimum_relaxations(staff_name, track_name, swapped, report_ctx,
+                                          offer_id=offer['id'], reviewed_by=reviewed_by)
+
     note = review_notes or (f"Moved {offer['give_up_period']} {offer['give_up_day']} → "
                             f"{offer['need_period']} {offer['need_day']}")
+    if relaxed:
+        note += f" ({'; '.join(relaxed)})"
     update_need_swap_offer_status(offer['id'], 'approved', reviewed_by, note)
     superseded = supersede_sibling_need_offers(offer['id'])
 
@@ -710,6 +787,9 @@ def apply_offer(offer, report_ctx, reviewed_by, review_notes=None):
                f"onto {offer['need_period']} {offer['need_day']}.")
     if superseded:
         message += f" {superseded} other option{'s' if superseded != 1 else ''} for that need superseded."
+    if relaxed:
+        message += (f" Relaxed for this cycle: {'; '.join(relaxed)}. The original figures are "
+                    "kept and restored when the cycle changes.")
     return True, message
 
 
@@ -1733,3 +1813,52 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
     _excel_download_button(all_df, "📥 Download responses as Excel",
                            f"{track_name}_needs_swap_responses",
                            key="download_needs_swap_responses", sheet_name="Swap Offers")
+
+    _render_minimum_relaxations(track_name)
+
+
+def _render_minimum_relaxations(track_name):
+    """
+    Night/weekend minimums relaxed on this cycle by approving a swap, with what each
+    one was before. Kept visible and reversible: the relaxation is what lets the rest
+    of the app treat the approved track as valid, so an admin needs to be able to see
+    who is carrying one and put it back.
+    """
+    from modules.db_utils import clear_requirement_override, get_requirement_overrides
+
+    overrides = get_requirement_overrides(track_name)
+    st.markdown("---")
+    st.markdown("#### Minimums relaxed for this cycle")
+    if not overrides:
+        st.caption("Nobody's night or weekend minimum has been relaxed on this cycle.")
+        return
+
+    st.caption(
+        "Approving a swap that drops someone below a night or weekend minimum relaxes that "
+        "minimum for this cycle, so their track reads as valid everywhere in the app and not "
+        "just here. The original figure is kept and applies again on the next cycle."
+    )
+
+    def figure(entry, field):
+        original = entry.get(f'original_{field}')
+        relaxed = entry.get(field)
+        if relaxed is None:
+            return f"{original if original is not None else '—'} (unchanged)"
+        return f"{original if original is not None else '—'} → {relaxed}"
+
+    st.dataframe(pd.DataFrame([{
+        'Staff': name,
+        'Night minimum': figure(entry, 'night_minimum'),
+        'Weekend minimum': figure(entry, 'weekend_minimum'),
+        'Approved by': entry.get('created_by') or '—',
+        'When': entry.get('modified_date') or '—',
+    } for name, entry in sorted(overrides.items())]), use_container_width=True, hide_index=True)
+
+    picked = st.selectbox("Restore someone's own minimums:", ['—'] + sorted(overrides),
+                          key="needs_swap_restore_minimum")
+    if picked != '—' and st.button(f"Restore {picked}'s minimums", key="needs_swap_restore_btn"):
+        ok, msg = clear_requirement_override(track_name, picked)
+        load_report_context.clear()
+        load_swap_context.clear()
+        _flash(_ADMIN_FLASH, 'success' if ok else 'error', msg)
+        st.rerun()

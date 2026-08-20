@@ -701,16 +701,84 @@ def get_email(staff_name, default=None):
     return record['email']
 
 
+def _live_track_cycles():
+    """
+    The track cycles whose tracks are actually being looked at right now: the active
+    one, plus whichever has bidding or the needs-swap window open.
+
+    All three matter, and they are routinely different cycles — FY26 can still be the
+    active operational cycle while FY27 is the one being bid and swapped. Scoping to
+    the active cycle alone would mean a relaxation granted on the cycle being swapped
+    never applied to the tracks it was granted for.
+    """
+    from .db_utils import (get_active_track_config, get_bidding_track_config,
+                           get_needs_swap_track_config)
+
+    names = []
+    for getter in (get_active_track_config, get_bidding_track_config,
+                   get_needs_swap_track_config):
+        config = getter()
+        name = (config or {}).get('track_name')
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def active_cycle_minimum_overrides():
+    """
+    {staff_name: {'night_minimum': int|None, 'weekend_minimum': int|None}} across the
+    live track cycles — night/weekend minimums an admin relaxed by approving a Needs
+    Swap offer that moved someone off a night or a weekend to cover a shortfall.
+
+    Applied wherever this module hands out requirements, so a track approved under a
+    relaxed minimum reads as valid everywhere in the app — the Admin Track Editor, the
+    PDF and email summaries included — rather than only in the Needs Swap views that
+    granted it. The relaxation lives on the cycle, not the staff record, so it lapses
+    once that cycle stops being live and the original figure applies again.
+
+    Where two live cycles both relax the same person, the lower figure wins: a track
+    that satisfies the stricter cycle satisfies the looser one anyway, and refusing the
+    relaxation is what puts a deliberately approved track back into a failing state.
+
+    Returns {} when nothing is relaxed, or when the track tables aren't reachable.
+    """
+    try:
+        from .db_utils import get_requirement_overrides
+
+        merged = {}
+        for track_name in _live_track_cycles():
+            for name, entry in get_requirement_overrides(track_name).items():
+                current = merged.setdefault(name, {'night_minimum': None, 'weekend_minimum': None})
+                for field in ('night_minimum', 'weekend_minimum'):
+                    value = entry.get(field)
+                    if value is not None and (current[field] is None or value < current[field]):
+                        current[field] = value
+        return merged
+    except Exception as e:
+        print(f"Error loading minimum overrides: {e}")
+        return {}
+
+
+def _with_override(record, overrides, field):
+    """A staff record's minimum, or the active cycle's relaxed figure when there is one."""
+    relaxed = overrides.get(record['staff_name'], {}).get(field)
+    return record[field] if relaxed is None else relaxed
+
+
 def get_requirements_map(include_inactive=False):
     """
     {staff_name: {shifts_per_pay_period, night_minimum, weekend_minimum, weekend_group,
     email}} — the mapping the bidding code builds its roster and notifications from.
+
+    Night and weekend minimums carry the active cycle's relaxations, if any (see
+    active_cycle_minimum_overrides).
     """
+    overrides = active_cycle_minimum_overrides()
     return {
         record['staff_name']: {
             'shifts_per_pay_period': record['shifts_per_pay_period'],
-            'night_minimum': record['night_minimum'],
-            'weekend_minimum': record['weekend_minimum'],
+            'night_minimum': _with_override(record, overrides, 'night_minimum'),
+            'weekend_minimum': _with_override(record, overrides, 'weekend_minimum'),
             'weekend_group': record['weekend_group'],
             'email': record['email'],
         }
@@ -827,7 +895,8 @@ def build_requirements_df(include_inactive=False, clinical_only=True):
     """
     Build the DataFrame the track code used to get from Requirements.xlsx, from the
     staff table instead: same columns, same order, same blank-means-non-bidding
-    semantics.
+    semantics. Night and weekend minimums carry the active cycle's relaxations, if
+    any (see active_cycle_minimum_overrides).
 
     Args:
         include_inactive (bool): include staff marked inactive on the roster.
@@ -844,11 +913,12 @@ def build_requirements_df(include_inactive=False, clinical_only=True):
     if not records:
         return pd.DataFrame(columns=REQUIREMENTS_COLUMNS)
 
+    overrides = active_cycle_minimum_overrides()
     rows = [{
         'STAFF NAME': record['staff_name'],
         'SHIFTS PER PAY PERIOD': record['shifts_per_pay_period'],
-        'NIGHT MINIMUM': record['night_minimum'],
-        'WEEKEND MINIMUM': record['weekend_minimum'],
+        'NIGHT MINIMUM': _with_override(record, overrides, 'night_minimum'),
+        'WEEKEND MINIMUM': _with_override(record, overrides, 'weekend_minimum'),
         'WEEKEND GROUP': record['weekend_group'],
         'EMAIL': record['email'],
     } for record in records]

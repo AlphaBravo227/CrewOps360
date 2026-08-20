@@ -276,6 +276,28 @@ def initialize_database():
         )
         ''')
 
+        # Per-cycle relaxations of a staff member's night/weekend minimum, written when
+        # an admin approves a Needs Swap offer that drops them below one. Scoped to a
+        # track cycle so a reduction granted for one cycle's shortfall doesn't silently
+        # carry into the next; original_* keeps what the staff record said before the
+        # first relaxation, so it is always clear what was given up and can be restored.
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS needs_swap_requirement_overrides (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_name TEXT NOT NULL,
+            staff_name TEXT NOT NULL,
+            night_minimum INTEGER,
+            weekend_minimum INTEGER,
+            original_night_minimum INTEGER,
+            original_weekend_minimum INTEGER,
+            offer_id INTEGER,
+            created_by TEXT,
+            created_date TEXT NOT NULL,
+            modified_date TEXT NOT NULL,
+            UNIQUE(track_name, staff_name)
+        )
+        ''')
+
         # NEW: Per-weekday capacity overrides, layered on top of a track's flat
         # max_day/night nurse/medic caps. NULL fields inherit the flat cap for
         # that track; only consulted when track_configs.use_weekday_capacity = 1.
@@ -2718,6 +2740,110 @@ _NEED_OFFER_COLUMNS = [
     'give_up_day', 'give_up_period', 'preference_rank', 'staff_notes',
     'status', 'submission_date', 'reviewed_by', 'review_date', 'review_notes',
 ]
+
+
+def get_requirement_overrides(track_name):
+    """
+    Per-cycle night/weekend minimum relaxations for one track cycle, as
+    {staff_name: {night_minimum, weekend_minimum, original_night_minimum,
+    original_weekend_minimum, offer_id, created_by, modified_date}}.
+
+    A None minimum means that field is not relaxed for that person. Written by
+    approving a Needs Swap offer — see track_needs_swap.apply_offer().
+    """
+    result = {}
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT staff_name, night_minimum, weekend_minimum, original_night_minimum,
+                   original_weekend_minimum, offer_id, created_by, modified_date
+            FROM needs_swap_requirement_overrides WHERE track_name = ?
+        """, (track_name,))
+        for row in cursor.fetchall():
+            result[row[0]] = {
+                'night_minimum': row[1], 'weekend_minimum': row[2],
+                'original_night_minimum': row[3], 'original_weekend_minimum': row[4],
+                'offer_id': row[5], 'created_by': row[6], 'modified_date': row[7],
+            }
+        return result
+    except Exception as e:
+        print(f"Error getting requirement overrides: {e}")
+        return result
+
+
+def set_requirement_override(track_name, staff_name, night_minimum=None, weekend_minimum=None,
+                              original_night_minimum=None, original_weekend_minimum=None,
+                              offer_id=None, created_by=None):
+    """
+    Record (or tighten) a per-cycle minimum relaxation for one staff member.
+
+    The original_* values are written only the first time a person is relaxed on this
+    cycle — a second approval must not overwrite the true starting figure with the
+    already-reduced one. A minimum passed as None leaves that field as it stands.
+
+    Returns (success, message).
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+        cursor.execute("""
+            SELECT night_minimum, weekend_minimum, original_night_minimum, original_weekend_minimum
+            FROM needs_swap_requirement_overrides WHERE track_name = ? AND staff_name = ?
+        """, (track_name, staff_name))
+        existing = cursor.fetchone()
+
+        if existing:
+            night = night_minimum if night_minimum is not None else existing[0]
+            weekend = weekend_minimum if weekend_minimum is not None else existing[1]
+            orig_night = existing[2] if existing[2] is not None else original_night_minimum
+            orig_weekend = existing[3] if existing[3] is not None else original_weekend_minimum
+            cursor.execute("""
+                UPDATE needs_swap_requirement_overrides
+                SET night_minimum = ?, weekend_minimum = ?, original_night_minimum = ?,
+                    original_weekend_minimum = ?, offer_id = ?, created_by = ?, modified_date = ?
+                WHERE track_name = ? AND staff_name = ?
+            """, (night, weekend, orig_night, orig_weekend, offer_id, created_by, now,
+                  track_name, staff_name))
+        else:
+            cursor.execute("""
+                INSERT INTO needs_swap_requirement_overrides
+                    (track_name, staff_name, night_minimum, weekend_minimum,
+                     original_night_minimum, original_weekend_minimum, offer_id,
+                     created_by, created_date, modified_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (track_name, staff_name, night_minimum, weekend_minimum,
+                  original_night_minimum, original_weekend_minimum, offer_id, created_by,
+                  now, now))
+
+        conn.commit()
+        return True, f"Recorded minimum relaxation for {staff_name} on {track_name}."
+    except Exception as e:
+        print(f"Error setting requirement override: {e}")
+        return False, str(e)
+
+
+def clear_requirement_override(track_name, staff_name):
+    """Drop a per-cycle minimum relaxation, restoring the staff record's own figures."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            DELETE FROM needs_swap_requirement_overrides
+            WHERE track_name = ? AND staff_name = ?
+        """, (track_name, staff_name))
+        removed = cursor.rowcount
+        conn.commit()
+        return True, (f"Restored {staff_name}'s own minimums." if removed
+                      else f"No relaxation on file for {staff_name}.")
+    except Exception as e:
+        print(f"Error clearing requirement override: {e}")
+        return False, str(e)
 
 
 def get_needs_swap_track_config():
