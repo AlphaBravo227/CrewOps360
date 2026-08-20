@@ -726,6 +726,22 @@ def record_minimum_relaxations(staff_name, track_name, track_data, report_ctx,
     return notes
 
 
+def _approved_pickup_base(staff_name, offer, report_ctx):
+    """
+    The base to name in the approval email for the shift just picked up — the same
+    non-displacing pick the volunteer was shown when they offered it, so the email
+    doesn't promise them something different from what they agreed to.
+
+    None when no base can be promised, or when it can't be computed for any reason:
+    the summary is worth sending either way.
+    """
+    try:
+        option = best_base_for_need(staff_name, offer['need_day'], offer['need_period'], report_ctx)
+    except Exception:
+        return None
+    return (option or {}).get('base')
+
+
 def apply_offer(offer, report_ctx, reviewed_by, review_notes=None):
     """
     Approve one offer and write it to the staff member's bid track: the give-up day
@@ -744,22 +760,25 @@ def apply_offer(offer, report_ctx, reviewed_by, review_notes=None):
     `review_notes` is the reviewing admin's own note about the decision; it is stored
     after the automatic description of the change, not instead of it.
 
-    Returns (success, message).
+    Returns (success, message, details). `details` describes what was actually applied
+    — the shifts moved, any minimums relaxed, how many sibling offers were superseded —
+    for the approval email; it is None when nothing was applied. The admin's note is
+    deliberately left out of it: that stays in the admin views.
     """
     staff_name = offer['staff_name']
     track_name = offer['track_name']
 
     ok, bid = get_bid_track_from_db(staff_name, track_name)
     if not ok:
-        return False, f"No bid on file for {staff_name} in {track_name}."
+        return False, f"No bid on file for {staff_name} in {track_name}.", None
 
     track_data = dict(bid['track_data'] or {})
     if track_data.get(offer['give_up_day']) != _PERIOD_CODE[offer['give_up_period']]:
         return False, (f"{staff_name} is no longer working {offer['give_up_period']} on "
-                       f"{offer['give_up_day']} — this offer is out of date.")
+                       f"{offer['give_up_day']} — this offer is out of date."), None
     if track_data.get(offer['need_day']):
         return False, (f"{staff_name} is already assigned on {offer['need_day']} — "
-                       "this offer is out of date.")
+                       "this offer is out of date."), None
 
     # Validated against the bid exactly as it stands in the database right now, not the
     # snapshot report_ctx was built from — an earlier approval in this same review pass
@@ -767,15 +786,15 @@ def apply_offer(offer, report_ctx, reviewed_by, review_notes=None):
     swapped = swapped_track(track_data, offer['give_up_day'], offer['need_day'], offer['need_period'])
     validation = validate_track_for_staff(staff_name, swapped, report_ctx, baseline_track=track_data)
     if validation is None:
-        return False, f"Could not validate a swap for {staff_name} (no requirements on file)."
+        return False, f"Could not validate a swap for {staff_name} (no requirements on file).", None
     if not validation.get('overall_valid'):
         failed = [rule.replace('_', ' ') for rule in failed_rules(validation)]
-        return False, f"Swap would now break {staff_name}'s track ({', '.join(failed)}). Not applied."
+        return False, f"Swap would now break {staff_name}'s track ({', '.join(failed)}). Not applied.", None
 
     saved, save_msg, _ = save_bid_track_to_db(staff_name, swapped, track_name,
                                               metadata=bid.get('metadata'))
     if not saved:
-        return False, save_msg
+        return False, save_msg, None
 
     relaxed = record_minimum_relaxations(staff_name, track_name, swapped, report_ctx,
                                           offer_id=offer['id'], reviewed_by=reviewed_by)
@@ -799,7 +818,18 @@ def apply_offer(offer, report_ctx, reviewed_by, review_notes=None):
     if relaxed:
         message += (f" Relaxed for this cycle: {'; '.join(relaxed)}. The original figures are "
                     "kept and restored when the cycle changes.")
-    return True, message
+
+    details = {
+        'need_day': offer['need_day'],
+        'need_period': offer['need_period'],
+        'give_up_day': offer['give_up_day'],
+        'give_up_period': offer['give_up_period'],
+        'relaxations': relaxed,
+        'superseded': superseded,
+        'reviewed_by': reviewed_by,
+        'expected_base': _approved_pickup_base(staff_name, offer, report_ctx),
+    }
+    return True, message, details
 
 
 def offers_with_status(track_name, report_ctx):
@@ -1396,19 +1426,70 @@ def _pending_review_action(offers):
     return offer, queued['action']
 
 
+def _staff_email(staff_name, report_ctx):
+    """
+    A staff member's email address for a decision notification: the roster figure the
+    rest of bidding already notifies on, falling back to the staff database directly.
+    None when there is nothing on file.
+    """
+    email = (report_ctx.get('requirements_map', {}).get(staff_name) or {}).get('email')
+    if email:
+        return email
+    try:
+        from modules.staff_database import get_email
+        return get_email(staff_name)
+    except Exception:
+        return None
+
+
+def _notify_decision(offer, decision, report_ctx, reviewer, details=None):
+    """
+    Email the staff member and the admin recipients that this offer was approved or
+    declined — a summary of the change that was applied on an approval, a plain note
+    that nothing changed on a decline.
+
+    The admin's review note is never sent; it stays in the admin views for reference.
+
+    The decision is already committed to the database by the time this runs, so a
+    failure to send is reported back to the admin rather than raised: an unsent email
+    must not look like an unapplied swap.
+
+    Returns a short status sentence to append to the admin's on-screen confirmation.
+    """
+    details = dict(details or {})
+    details.setdefault('need_day', offer['need_day'])
+    details.setdefault('need_period', offer['need_period'])
+    details.setdefault('give_up_day', offer['give_up_day'])
+    details.setdefault('give_up_period', offer['give_up_period'])
+    details.setdefault('reviewed_by', reviewer)
+
+    try:
+        from modules.email_notifications import send_needs_swap_decision_notification
+        sent, msg = send_needs_swap_decision_notification(
+            offer['staff_name'], _staff_email(offer['staff_name'], report_ctx),
+            offer['track_name'], decision, details)
+    except Exception as e:
+        return f"⚠️ The notification email failed to send: {e}"
+    return f"📧 {msg}" if sent else f"⚠️ {msg}"
+
+
 def _commit_review_action(offer, action, report_ctx, reviewer, note):
-    """Apply or decline the offer, storing the admin's note with the decision."""
+    """Apply or decline the offer, storing the admin's note with the decision, and
+    email the staff member and the admins either way — without the note."""
     note = (note or '').strip() or None
     if action == 'approve':
-        ok, msg = apply_offer(offer, report_ctx, reviewer, review_notes=note)
+        ok, msg, details = apply_offer(offer, report_ctx, reviewer, review_notes=note)
         if ok:
             clear_bidding_caches()
+            msg += " " + _notify_decision(offer, 'approved', report_ctx, reviewer, details)
         _flash(_ADMIN_FLASH, 'success' if ok else 'error', msg)
     else:
         # No cache to clear here — declining only changes the offer's own status
         # (fetched fresh every render regardless), never the bid track the
         # day_stats/needs cache is keyed on.
         ok, msg = update_need_swap_offer_status(offer['id'], 'declined', reviewer, note)
+        if ok:
+            msg += " " + _notify_decision(offer, 'declined', report_ctx, reviewer)
         _flash(_ADMIN_FLASH, 'info' if ok else 'error', f"{offer['staff_name']} — {msg}")
     _clear_review_action()
 
@@ -1434,7 +1515,13 @@ def _render_review_note_body(offer, action, report_ctx, reviewer):
                      "remembering later." if approving else
                      "Why this one wasn't taken — so the reasoning is on the record."),
         help="Optional. Stored with the decision and shown in the All responses table "
-             "below. Staff don't see it.",
+             "below. Staff don't see it — it is never included in the notification email.",
+    )
+
+    st.caption(
+        f"{'Approving' if approving else 'Declining'} emails {offer['staff_name']} and the admin "
+        f"recipients — {'a summary of the change applied to their track' if approving else 'a note that this option was not selected'}. "
+        "Your note above stays here."
     )
 
     confirm_col, cancel_col = st.columns(2)
