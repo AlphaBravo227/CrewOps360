@@ -728,18 +728,21 @@ def record_minimum_relaxations(staff_name, track_name, track_data, report_ctx,
 
 def _approved_pickup_base(staff_name, offer, report_ctx):
     """
-    The base to name in the approval email for the shift just picked up — the same
-    non-displacing pick the volunteer was shown when they offered it, so the email
-    doesn't promise them something different from what they agreed to.
+    The hypothetical shift to name in the approval email for the need just picked up
+    — best_base_for_need()'s top non-displacing option, the same one the volunteer was
+    shown when they offered, so the email can't promise a base they never agreed to.
 
-    None when no base can be promised, or when it can't be computed for any reason:
-    the summary is worth sending either way.
+    Returns (base, rank) — rank being their own 1-5/1-3 ranking for it, or None if they
+    never ranked it. (None, None) when no base can be promised on that day, or when it
+    can't be computed for any reason: the summary is worth sending either way.
     """
     try:
         option = best_base_for_need(staff_name, offer['need_day'], offer['need_period'], report_ctx)
     except Exception:
-        return None
-    return (option or {}).get('base')
+        return None, None
+    if not option:
+        return None, None
+    return option['base'], option.get('rank')
 
 
 def apply_offer(offer, report_ctx, reviewed_by, review_notes=None):
@@ -827,8 +830,9 @@ def apply_offer(offer, report_ctx, reviewed_by, review_notes=None):
         'relaxations': relaxed,
         'superseded': superseded,
         'reviewed_by': reviewed_by,
-        'expected_base': _approved_pickup_base(staff_name, offer, report_ctx),
     }
+    details['hypothetical_base'], details['hypothetical_base_rank'] = \
+        _approved_pickup_base(staff_name, offer, report_ctx)
     return True, message, details
 
 
