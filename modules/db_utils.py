@@ -3050,6 +3050,40 @@ def supersede_sibling_need_offers(offer_id):
         return 0
 
 
+def restore_superseded_need_offers(offer_id):
+    """
+    Put back the offers supersede_sibling_need_offers() set aside when this offer was
+    approved — the same staff member's other options for that same need — so a
+    rescinded approval leaves the need open to every option it was open to before.
+
+    Only rows still carrying that function's own marker note are touched, so an offer
+    an admin superseded by hand is left as they left it.
+
+    Returns:
+        int: Number of rows restored to pending
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""SELECT track_name, staff_name, need_day, need_period
+                          FROM track_need_offers WHERE id = ?""", (offer_id,))
+        row = cursor.fetchone()
+        if not row:
+            return 0
+        cursor.execute("""UPDATE track_need_offers
+                          SET status = 'pending', review_date = NULL, review_notes = NULL
+                          WHERE track_name = ? AND staff_name = ? AND need_day = ?
+                            AND need_period = ? AND status = 'superseded' AND id != ?
+                            AND review_notes = 'Another option for this need was approved'""",
+                       (row[0], row[1], row[2], row[3], offer_id))
+        conn.commit()
+        return cursor.rowcount
+    except Exception as e:
+        print(f"Error restoring superseded offers: {e}")
+        return 0
+
+
 def delete_need_swap_offers(track_name, staff_name=None):
     """Delete offers for a track cycle (all of them, or just one staff member's)."""
     try:

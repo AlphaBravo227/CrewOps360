@@ -43,6 +43,7 @@ from modules.db_utils import (
     get_needs_swap_track_config,
     get_track_config_by_name,
     save_bid_track_to_db,
+    restore_superseded_need_offers,
     save_need_swap_offers,
     set_requirement_override,
     supersede_sibling_need_offers,
@@ -836,6 +837,163 @@ def apply_offer(offer, report_ctx, reviewed_by, review_notes=None):
     return True, message, details
 
 
+def _restore_minimums_after_rescind(staff_name, track_name, reverted_track, report_ctx,
+                                    offer_id):
+    """
+    Put back whatever this approval relaxed, and no more.
+
+    The relaxation is cleared only when it is this offer's own, or carries no offer at
+    all — a figure relaxed by a different approval stays, since that swap still stands.
+    Once cleared, the reverted
+    track is measured against the pre-relaxation figures again: where an earlier swap
+    on this same cycle already put the person below one, the relaxation is re-recorded
+    at what they actually hold, so undoing this swap doesn't hand back a minimum the
+    other approval had already spent.
+
+    Returns a list of human-readable descriptions of what changed (empty when nothing
+    was relaxed in the first place).
+    """
+    from modules.db_utils import clear_requirement_override, get_requirement_overrides
+    from modules.enhanced_track_validator import create_combined_track
+
+    entry = get_requirement_overrides(track_name).get(staff_name)
+    if not entry:
+        return []
+    if entry.get('offer_id') is not None and entry.get('offer_id') != offer_id:
+        return ["left the minimum relaxation in place — it was granted by another approval, "
+                "not this one"]
+
+    req = report_ctx['requirements_map'].get(staff_name) or {}
+    # requirements_map already carries the relaxed figures (build_requirements_df applies
+    # the active cycle's overrides), so the pre-relaxation figure is the override row's
+    # own original_*; a field that was never relaxed reads true from the map.
+    originals = {
+        field: (entry.get(f'original_{field}') if entry.get(field) is not None else req.get(field))
+        for field in ('night_minimum', 'weekend_minimum')
+    }
+
+    clear_requirement_override(track_name, staff_name)
+
+    combined = create_combined_track(reverted_track, _staff_preassignments(staff_name, report_ctx))
+    counts = {'night_minimum': _night_count(combined), 'weekend_minimum': _weekend_count(combined)}
+
+    still_short, notes = {}, []
+    for field, label in (('night_minimum', 'night'), ('weekend_minimum', 'weekend')):
+        required = originals.get(field)
+        if required and counts[field] < required:
+            still_short[field] = counts[field]
+            notes.append(f"{label} minimum still relaxed to {counts[field]} of {required} by an "
+                         f"earlier approval")
+
+    if still_short:
+        # offer_id is deliberately left empty: the residue belongs to whichever earlier
+        # approval spent it, not to the offer being rescinded now, and a relaxation with
+        # no offer against it is one a later rescission recomputes rather than skips.
+        set_requirement_override(
+            track_name, staff_name,
+            night_minimum=still_short.get('night_minimum'),
+            weekend_minimum=still_short.get('weekend_minimum'),
+            original_night_minimum=originals.get('night_minimum'),
+            original_weekend_minimum=originals.get('weekend_minimum'),
+            offer_id=None,
+        )
+        return notes
+
+    restored = [f"{label} minimum {originals[field]}" for field, label in
+                (('night_minimum', 'night'), ('weekend_minimum', 'weekend'))
+                if entry.get(field) is not None and originals.get(field)]
+    return [f"restored {', '.join(restored)}"] if restored else []
+
+
+def rescind_offer(offer, report_ctx, reviewed_by, reason=None):
+    """
+    Undo a decision on one offer and put it back in the pending queue.
+
+    Rescinding a decline changes nothing but the offer's own status. Rescinding an
+    approval also puts the staff member's bid track back the way it was — the need day
+    is cleared, the given-up day takes its shift code back, and save_bid_track_to_db()
+    versions the reversal into track_history like any other revision — then restores
+    whatever minimum this approval relaxed and re-opens the options it superseded.
+
+    The track is only reverted when it still holds exactly what the approval wrote. If
+    the staff member has been moved since — by another approval, a re-bid, or an admin
+    edit — the reversal is refused rather than guessed at, because clearing the need day
+    could then be undoing someone else's change.
+
+    `reason` is the admin's own note about the rescission; like a review note it is kept
+    on the offer and never emailed.
+
+    Returns (success, message, details). `details` describes what was put back, for the
+    notification email; it is None when nothing was rescinded.
+    """
+    staff_name = offer['staff_name']
+    track_name = offer['track_name']
+    previous_status = offer['status']
+
+    if previous_status not in ('approved', 'declined'):
+        return False, f"Only an approved or declined offer can be rescinded (this one is {previous_status}).", None
+
+    note = f"Rescinded (was {previous_status}) by {reviewed_by}"
+    details = {
+        'need_day': offer['need_day'],
+        'need_period': offer['need_period'],
+        'give_up_day': offer['give_up_day'],
+        'give_up_period': offer['give_up_period'],
+        'previous_status': previous_status,
+        'reverted': False,
+        'reviewed_by': reviewed_by,
+    }
+
+    if previous_status == 'approved':
+        ok, bid = get_bid_track_from_db(staff_name, track_name)
+        if not ok:
+            return False, f"No bid on file for {staff_name} in {track_name}.", None
+
+        track_data = dict(bid['track_data'] or {})
+        if track_data.get(offer['need_day']) != _PERIOD_CODE[offer['need_period']]:
+            return False, (f"{staff_name} is no longer working {offer['need_period']} on "
+                           f"{offer['need_day']}, so this approval can't be safely reversed — "
+                           "their track has changed since it was applied."), None
+        if track_data.get(offer['give_up_day']):
+            return False, (f"{staff_name} is already assigned again on {offer['give_up_day']}, so "
+                           "reversing this approval would double-book them."), None
+
+        reverted = dict(track_data)
+        reverted[offer['need_day']] = ''
+        reverted[offer['give_up_day']] = _PERIOD_CODE[offer['give_up_period']]
+
+        saved, save_msg, _ = save_bid_track_to_db(staff_name, reverted, track_name,
+                                                  metadata=bid.get('metadata'))
+        if not saved:
+            return False, save_msg, None
+
+        minimum_notes = _restore_minimums_after_rescind(staff_name, track_name, reverted,
+                                                        report_ctx, offer['id'])
+        reopened = restore_superseded_need_offers(offer['id'])
+        details['reverted'] = True
+        details['reopened'] = reopened
+        if minimum_notes:
+            note += f" ({'; '.join(minimum_notes)})"
+    else:
+        minimum_notes, reopened = [], 0
+
+    if reason and reason.strip():
+        note += f" — {reason.strip()}"
+    update_need_swap_offer_status(offer['id'], 'pending', None, note)
+
+    message = (f"Rescinded: {staff_name}'s {previous_status} offer for "
+               f"{offer['need_period']} {offer['need_day']} is back in the pending queue.")
+    if previous_status == 'approved':
+        message += (f" Their track is back the way it was — working {offer['give_up_period']} "
+                    f"{offer['give_up_day']}, off {offer['need_day']}.")
+        if minimum_notes:
+            message += f" Minimums: {'; '.join(minimum_notes)}."
+        if reopened:
+            message += (f" {reopened} superseded option{'s' if reopened != 1 else ''} for that need "
+                        "re-opened.")
+    return True, message, details
+
+
 def offers_with_status(track_name, report_ctx):
     """
     All offers for a cycle, each annotated with whether it would still apply cleanly
@@ -1413,18 +1571,27 @@ def _clear_review_action():
     st.session_state.pop(_ADMIN_REVIEW_ACTION, None)
 
 
+# Which statuses each action is a legal next step from: approving or declining is
+# something you do to an offer nobody has decided yet, rescinding is something you do
+# to one somebody has.
+_ACTION_STATUSES = {'approve': ('pending',), 'decline': ('pending',),
+                    'rescind': ('approved', 'declined')}
+
+
 def _pending_review_action(offers):
     """
-    (offer, 'approve'|'decline') for the decision awaiting a note, or (None, None).
+    (offer, 'approve'|'decline'|'rescind') for the decision awaiting a note, or
+    (None, None).
 
-    An offer that has since been decided — in another tab, or by an approval that
-    superseded it — drops out of the queue rather than reopening the note box.
+    An offer whose status has moved on since the button was pressed — decided in
+    another tab, superseded by an approval, already rescinded — drops out of the queue
+    rather than reopening the note box against a state that no longer holds.
     """
     queued = st.session_state.get(_ADMIN_REVIEW_ACTION)
     if not queued:
         return None, None
     offer = next((o for o in offers if o['id'] == queued['offer_id']), None)
-    if offer is None or offer['status'] != 'pending':
+    if offer is None or offer['status'] not in _ACTION_STATUSES.get(queued['action'], ()):
         _clear_review_action()
         return None, None
     return offer, queued['action']
@@ -1448,9 +1615,9 @@ def _staff_email(staff_name, report_ctx):
 
 def _notify_decision(offer, decision, report_ctx, reviewer, details=None):
     """
-    Email the staff member and the admin recipients that this offer was approved or
-    declined — a summary of the change that was applied on an approval, a plain note
-    that nothing changed on a decline.
+    Email the staff member and the admin recipients what has happened to this offer —
+    a summary of the change that was applied on an approval, a plain note that nothing
+    changed on a decline, and what went back on a rescission.
 
     The admin's review note is never sent; it stays in the admin views for reference.
 
@@ -1477,10 +1644,79 @@ def _notify_decision(offer, decision, report_ctx, reviewer, details=None):
     return f"📧 {msg}" if sent else f"⚠️ {msg}"
 
 
+def _decision_details_for(offer, report_ctx, offers=None):
+    """
+    Rebuild the notification details for a decision already on the record, so it can be
+    sent again without the original call's return value.
+
+    Everything is read back from live state rather than remembered: the hypothetical
+    shift from the same non-displacing calculation, the relaxation from the override row
+    this offer wrote, the superseded count from the sibling offers themselves. A resend
+    therefore describes the swap as it stands now, which is what the staff member needs.
+    """
+    from modules.db_utils import get_requirement_overrides
+
+    details = {
+        'need_day': offer['need_day'],
+        'need_period': offer['need_period'],
+        'give_up_day': offer['give_up_day'],
+        'give_up_period': offer['give_up_period'],
+        'reviewed_by': offer['reviewed_by'],
+    }
+    if offer['status'] != 'approved':
+        return details
+
+    details['hypothetical_base'], details['hypothetical_base_rank'] = \
+        _approved_pickup_base(offer['staff_name'], offer, report_ctx)
+
+    entry = get_requirement_overrides(offer['track_name']).get(offer['staff_name']) or {}
+    if entry.get('offer_id') == offer['id']:
+        details['relaxations'] = [
+            f"{label} minimum {entry[f'original_{field}']} → {entry[field]}"
+            for field, label in (('night_minimum', 'night'), ('weekend_minimum', 'weekend'))
+            if entry.get(field) is not None and entry.get(f'original_{field}') is not None
+        ]
+
+    siblings = offers if offers is not None else get_need_swap_offers(
+        offer['track_name'], staff_name=offer['staff_name'])
+    details['superseded'] = sum(
+        1 for o in siblings
+        if o['id'] != offer['id'] and o['status'] == 'superseded'
+        and o['staff_name'] == offer['staff_name'] and o['need_day'] == offer['need_day']
+        and o['need_period'] == offer['need_period'])
+    return details
+
+
+def _resend_decision_notification(offer, report_ctx, offers=None):
+    """
+    Send the approval or decline notification for this offer again — same message, built
+    from where the offer stands now. For when the first one bounced, went to a stale
+    address, or the staff member never saw it.
+
+    Returns a status sentence for the admin's confirmation.
+    """
+    if offer['status'] not in ('approved', 'declined'):
+        return "⚠️ Only an approved or declined offer has a notification to resend."
+    details = _decision_details_for(offer, report_ctx, offers)
+    return _notify_decision(offer, offer['status'], report_ctx,
+                            offer['reviewed_by'] or 'Management', details)
+
+
 def _commit_review_action(offer, action, report_ctx, reviewer, note):
-    """Apply or decline the offer, storing the admin's note with the decision, and
-    email the staff member and the admins either way — without the note."""
+    """Apply, decline or rescind the offer, storing the admin's note with the decision,
+    and email the staff member and the admins either way — without the note."""
     note = (note or '').strip() or None
+    if action == 'rescind':
+        ok, msg, details = rescind_offer(offer, report_ctx, reviewer, reason=note)
+        if ok:
+            # An approval that was reversed has moved the bid track back, so the
+            # day_stats/needs cache is stale in exactly the way an approval leaves it.
+            if details.get('reverted'):
+                clear_bidding_caches()
+            msg += " " + _notify_decision(offer, 'rescinded', report_ctx, reviewer, details)
+        _flash(_ADMIN_FLASH, 'success' if ok else 'error', msg)
+        _clear_review_action()
+        return
     if action == 'approve':
         ok, msg, details = apply_offer(offer, report_ctx, reviewer, review_notes=note)
         if ok:
@@ -1498,9 +1734,24 @@ def _commit_review_action(offer, action, report_ctx, reviewer, note):
     _clear_review_action()
 
 
+_ACTION_WORD = {'approve': 'Approving', 'decline': 'Declining', 'rescind': 'Rescinding'}
+_ACTION_BUTTON = {'approve': 'Approve offer', 'decline': 'Decline offer',
+                  'rescind': 'Rescind decision'}
+_ACTION_PLACEHOLDER = {
+    'approve': "Why this one was taken — crew mix, who else offered, anything worth "
+               "remembering later.",
+    'decline': "Why this one wasn't taken — so the reasoning is on the record.",
+    'rescind': "Why the decision is being undone — so the record shows what changed and why.",
+}
+_ACTION_EMAIL_SUMMARY = {
+    'approve': 'a summary of the change applied to their track',
+    'decline': 'a note that this option was not selected',
+    'rescind': 'a note that the decision was undone, and what went back',
+}
+
+
 def _render_review_note_body(offer, action, report_ctx, reviewer):
     """The note box itself: what is being decided, a place to say why, confirm or cancel."""
-    approving = action == 'approve'
     st.markdown(
         f"**{offer['staff_name']}** would move onto "
         f"**{_shift_label(offer['need_day'], offer['need_period'])}** and give up "
@@ -1509,27 +1760,38 @@ def _render_review_note_body(offer, action, report_ctx, reviewer):
     )
     if offer['staff_notes']:
         st.caption(f"💬 Their note: {offer['staff_notes']}")
-    if not offer['still_valid']:
+
+    if action == 'rescind':
+        if offer['status'] == 'approved':
+            st.warning(
+                f"This puts {offer['staff_name']}'s track back the way it was — they work "
+                f"**{_shift_label(offer['give_up_day'], offer['give_up_period'])}** again and come "
+                f"off **{_shift_label(offer['need_day'], offer['need_period'])}**, which goes back "
+                "to being an open need. Any minimum this approval relaxed is restored, and the "
+                "options it superseded are re-opened."
+            )
+        else:
+            st.info("Nothing changed on their track when this was declined, so nothing is put "
+                    "back — the offer simply returns to the pending queue.")
+        st.caption("Either way the offer becomes pending again and can be decided afresh.")
+    elif not offer['still_valid']:
         st.warning(offer['stale_reason'])
 
     note = st.text_area(
         "Notes",
         key=f"needs_swap_review_note_{offer['id']}_{action}",
-        placeholder=("Why this one was taken — crew mix, who else offered, anything worth "
-                     "remembering later." if approving else
-                     "Why this one wasn't taken — so the reasoning is on the record."),
+        placeholder=_ACTION_PLACEHOLDER[action],
         help="Optional. Stored with the decision and shown in the All responses table "
              "below. Staff don't see it — it is never included in the notification email.",
     )
 
     st.caption(
-        f"{'Approving' if approving else 'Declining'} emails {offer['staff_name']} and the admin "
-        f"recipients — {'a summary of the change applied to their track' if approving else 'a note that this option was not selected'}. "
-        "Your note above stays here."
+        f"{_ACTION_WORD[action]} emails {offer['staff_name']} and the admin recipients — "
+        f"{_ACTION_EMAIL_SUMMARY[action]}. Your note above stays here."
     )
 
     confirm_col, cancel_col = st.columns(2)
-    if confirm_col.button("Approve offer" if approving else "Decline offer",
+    if confirm_col.button(_ACTION_BUTTON[action],
                           key=f"needs_swap_review_confirm_{offer['id']}_{action}",
                           type="primary", use_container_width=True):
         _commit_review_action(offer, action, report_ctx, reviewer, note)
@@ -1553,7 +1815,7 @@ def _render_review_note_prompt(offers, report_ctx, reviewer):
     if offer is None:
         return
 
-    title = (f"{'Approve' if action == 'approve' else 'Decline'} — {offer['staff_name']}, "
+    title = (f"{_ACTION_BUTTON[action].split()[0]} — {offer['staff_name']}, "
              f"{_shift_label(offer['need_day'], offer['need_period'])}")
     dialog = getattr(st, 'dialog', None) or getattr(st, 'experimental_dialog', None)
     if dialog is None:
@@ -1904,7 +2166,8 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
         "they'd cover and the overstaffed shift they'd give up for it, ranked by their own "
         "preference. Approving a pairing writes it straight to that person's bid track. "
         "Approve and Decline both open a note box first, so you can record what you were "
-        "weighing before the decision is applied."
+        "weighing before the decision is applied. A decision can be rescinded or its "
+        "notification re-sent further down the page."
     )
 
     if not config_names:
@@ -2027,7 +2290,62 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
                            f"{track_name}_needs_swap_responses",
                            key="download_needs_swap_responses", sheet_name="Swap Offers")
 
+    _render_decided_offer_controls(offers, report_ctx, reviewer)
     _render_minimum_relaxations(track_name)
+
+
+def _render_decided_offer_controls(offers, report_ctx, reviewer):
+    """
+    Undo or re-send a decision that has already been made.
+
+    Both belong together and away from the pending queue: they act on offers that are
+    off it, and neither is part of the normal review pass. Rescinding re-opens the
+    decision (and reverses an approval's write to the bid track); resending puts the
+    same notification back in the staff member's inbox without changing anything.
+    """
+    decided = [o for o in offers if o['status'] in ('approved', 'declined')]
+    st.markdown("---")
+    st.markdown("#### Undo or re-send a decision")
+    if not decided:
+        st.caption("Nothing has been approved or declined on this cycle yet.")
+        return
+
+    st.caption(
+        "**Rescind** puts the offer back in the pending queue to be decided again — and if it "
+        "was approved, puts the staff member's track back the way it was, restores any minimum "
+        "the approval relaxed, and re-opens the options it superseded. **Re-send** changes "
+        "nothing; it just emails the same decision to the staff member and the admins again."
+    )
+
+    icon = {'approved': '✅', 'declined': '❌'}
+    labels = {
+        f"{icon[o['status']]} {o['staff_name']} — {_shift_label(o['need_day'], o['need_period'])} "
+        f"(gave up {_compact_shift(o['give_up_day'], o['give_up_period'])}) · "
+        f"{_STATUS_LABEL[o['status']]} by {o['reviewed_by'] or 'unknown'}"
+        f"{' on ' + o['review_date'] if o['review_date'] else ''}": o
+        for o in sorted(decided, key=lambda o: (o['review_date'] or '', o['staff_name']), reverse=True)
+    }
+
+    picked = st.selectbox("Decision:", ['—'] + list(labels), key="needs_swap_decided_pick")
+    if picked == '—':
+        return
+
+    offer = labels[picked]
+    if offer['review_notes']:
+        st.caption(f"📝 On the record: {offer['review_notes']}")
+
+    rescind_col, resend_col = st.columns(2)
+    if rescind_col.button("↩️ Rescind decision", key=f"needs_swap_rescind_{offer['id']}",
+                          use_container_width=True):
+        # Like Approve and Decline, the button only opens the note box — the reversal
+        # itself is confirmed there.
+        _queue_review_action(offer['id'], 'rescind')
+        st.rerun()
+    if resend_col.button("📧 Re-send notification", key=f"needs_swap_resend_{offer['id']}",
+                         use_container_width=True):
+        status = _resend_decision_notification(offer, report_ctx, offers)
+        _flash(_ADMIN_FLASH, 'info', f"{offer['staff_name']} — re-sent. {status}")
+        st.rerun()
 
 
 def _render_minimum_relaxations(track_name):
