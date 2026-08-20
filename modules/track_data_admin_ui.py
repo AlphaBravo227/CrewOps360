@@ -175,6 +175,10 @@ def _preassignment_staff_editor(cycle, key_prefix):
     if saved:
         success, message = preassign.set_staff_preassignments(cycle, selected, updated)
         if success:
+            # Preassignments feed the cached bidding context every other admin section
+            # reads — without this the page shows the pre-edit set for up to 15s.
+            from modules.track_bidding import clear_bidding_caches
+            clear_bidding_caches()
             st.success(f"✅ {message}")
             st.rerun()
         else:

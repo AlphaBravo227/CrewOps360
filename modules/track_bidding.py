@@ -35,6 +35,9 @@ from modules.db_utils import (
     get_bid_draft,
     delete_bid_draft,
     get_all_bid_tracks,
+    get_bid_summaries,
+    count_bids_by_track,
+    count_bid_access_by_track,
     get_track_from_db,
     delete_track_config,
     delete_bid,
@@ -55,6 +58,7 @@ from modules.shift_definitions import day_shifts, night_shifts
 # all from the database)
 # ──────────────────────────────────────────────
 
+@st.cache_data(ttl=15, show_spinner=False)
 def _load_bidding_data_files(track_name=None):
     """
     Load the data the bidding interface needs — all of it from the database now: staff
@@ -72,6 +76,15 @@ def _load_bidding_data_files(track_name=None):
         interface needs (minus the selected staff and track-specific capacity),
         or None if the roster is missing, in which case error is a message
         describing what's wrong.
+
+    Cached for 15s. This is the most-called expensive function on the page — ten
+    call sites across the admin sections and the staff flow, each otherwise
+    re-reading the whole staff roster, rebuilding the preferences, requirements and
+    active-track frames, and re-running column auto-detection. Streamlit reruns the
+    whole script on every widget interaction, so without this a single click paid
+    for all of that several times over. st.cache_data hands back a copy, so callers
+    that mutate their frames are unaffected. Anything that edits the roster or a
+    cycle's preassignments clears it — see clear_bidding_caches().
     """
     from modules.column_mapper import auto_detect_columns
     from modules.day_pattern import PATTERN_DAYS
@@ -1787,6 +1800,31 @@ def _render_admin_mode_toggle():
                 st.rerun()
 
 
+def clear_bidding_caches():
+    """
+    Drop every cached view of roster, requirements and bid data.
+
+    Three caches sit on top of the same underlying tables and feed each other —
+    _load_bidding_data_files() is what load_report_context() builds on, which is what
+    load_swap_context() builds on — so anything that edits the staff roster, a cycle's
+    preassignments, or a submitted bid has to clear all three or the page keeps
+    serving the pre-edit picture for up to 15 seconds.
+    """
+    from modules.staffing_rebalance import load_report_context
+    from modules.track_needs_swap import load_swap_context
+
+    _load_bidding_data_files.clear()
+    load_report_context.clear()
+    load_swap_context.clear()
+
+
+_ADMIN_SECTIONS = [
+    "📊 Overview", "🛠️ Track Configs", "📌 Preassignments", "👥 Manage Bid Access",
+    "➕ Add/Remove Selection", "📈 Bid Analysis", "📋 Bid Roster", "🏢 Base Analysis",
+    "⚖️ Staffing Rebalance", "🔁 Needs Swap Requests",
+]
+
+
 def display_bidding_admin_interface():
     """Full-page Track Bidding admin dashboard (mirrors the Summer Leave admin page)."""
     st.header("🔧 Track Bidding Administration")
@@ -1800,14 +1838,19 @@ def display_bidding_admin_interface():
         if bid_cfg and bid_cfg['track_name'] in config_names else 0
     )
 
-    tab1, tab2, tab_pre, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
-        "📊 Overview", "🛠️ Track Configs", "📌 Preassignments", "👥 Manage Bid Access",
-        "➕ Add/Remove Selection", "📈 Bid Analysis", "📋 Bid Roster", "🏢 Base Analysis",
-        "⚖️ Staffing Rebalance", "🔁 Needs Swap Requests"
-    ])
+    # Sections, not st.tabs(). st.tabs() renders every tab body on every rerun — it
+    # only hides the ones you aren't looking at — so a single click anywhere on this
+    # page used to run all ten, including Bid Analysis, Base Analysis, Staffing
+    # Rebalance and Needs Swap, each of which reloads the whole roster and recomputes
+    # 42 days of crew stats. Picking the section here means one body runs per rerun.
+    section = st.radio(
+        "Section", _ADMIN_SECTIONS, horizontal=True, label_visibility="collapsed",
+        key="bid_admin_section",
+    )
+    st.markdown("---")
 
     # ── Preassignments: authored per bid cycle, alongside where the cycle is created ──
-    with tab_pre:
+    if section == "📌 Preassignments":
         st.markdown("### Preassignments")
         st.markdown("The days staff are already committed elsewhere before bidding opens. "
                     "They count as day shifts and are locked in the bid editor. Each "
@@ -1817,24 +1860,28 @@ def display_bidding_admin_interface():
         display_preassignment_editor(key_prefix="bid_admin_preassign")
 
     # ── Tab 1: Overview ──
-    with tab1:
+    if section == "📊 Overview":
         st.markdown("### Bid Tracks Summary")
 
         if not all_configs:
             st.info("No track cycles exist yet. Create one in the Track Configs tab.")
         else:
+            # Two aggregate queries for the whole table. This used to call
+            # get_all_bid_tracks() once per cycle for the counts and again per cycle
+            # for the listing below — each of those reads every bid row and JSON-decodes
+            # a 42-day track per bid, to show a number and a name.
+            bid_counts = count_bids_by_track()
+            access_counts = count_bid_access_by_track()
+
             stats_rows = []
             for cfg in all_configs:
                 tn = cfg['track_name']
-                ok, bids = get_all_bid_tracks(tn)
-                bid_count = len(bids) if ok else 0
-                access_count = sum(1 for v in get_all_bid_access_configs(tn).values() if v)
                 status = 'Active' if cfg['is_active'] else ('Bidding Open' if cfg['is_bidding_open'] else 'Inactive')
                 stats_rows.append({
                     'Track': tn,
                     'Status': status,
-                    'Bids Submitted': bid_count,
-                    'Staff w/ Access Enabled': access_count,
+                    'Bids Submitted': bid_counts.get(tn, 0),
+                    'Staff w/ Access Enabled': access_counts.get(tn, 0),
                     'Max Day Nurses': cfg['max_day_nurses'],
                     'Max Day Medics': cfg['max_day_medics'],
                     'Max Night Nurses': cfg['max_night_nurses'],
@@ -1846,16 +1893,16 @@ def display_bidding_admin_interface():
             st.markdown("### Bids by Track")
             for cfg in all_configs:
                 tn = cfg['track_name']
-                ok, bids = get_all_bid_tracks(tn)
-                bids = bids if ok else []
-                if bids:
-                    with st.expander(f"📅 {tn} ({len(bids)} bids submitted)"):
-                        for b in bids:
-                            role = b['metadata'].get('effective_role', '?')
-                            st.markdown(f"- {b['staff_name']} (v{b['version']}, {role}, submitted {b['submission_date']})")
+                if not bid_counts.get(tn):
+                    continue
+                with st.expander(f"📅 {tn} ({bid_counts[tn]} bids submitted)"):
+                    for b in get_bid_summaries(tn):
+                        role = b['effective_role'] or '?'
+                        st.markdown(f"- {b['staff_name']} (v{b['version']}, {role}, "
+                                    f"submitted {b['submission_date']})")
 
     # ── Tab 2: Track Configs ──
-    with tab2:
+    if section == "🛠️ Track Configs":
         # ── Section 1: create a new bid track ──
         st.markdown("### Create New Bid Track")
         new_name = st.text_input("Track Name (e.g. FY27)", key="new_bid_name")
@@ -2070,7 +2117,7 @@ def display_bidding_admin_interface():
                                 st.rerun()
 
     # ── Tab 3: Manage Bid Access ──
-    with tab3:
+    if section == "👥 Manage Bid Access":
         st.markdown("### Manage Bid Access")
 
         if not config_names:
@@ -2274,7 +2321,7 @@ def display_bidding_admin_interface():
                         st.rerun()
 
     # ── Tab 4: Add/Remove Selection ──
-    with tab4:
+    if section == "➕ Add/Remove Selection":
         st.markdown("### Add or Remove Selection")
 
         if not config_names:
@@ -2366,24 +2413,24 @@ def display_bidding_admin_interface():
                         )
 
     # ── Tab 5: Bid Analysis ──
-    with tab5:
+    if section == "📈 Bid Analysis":
         _render_bid_analysis_tab(config_names, default_track_index)
 
     # ── Tab 6: Bid Roster ──
-    with tab6:
+    if section == "📋 Bid Roster":
         _render_bid_roster_tab(config_names, default_track_index)
 
     # ── Tab 7: Base Analysis ──
-    with tab7:
+    if section == "🏢 Base Analysis":
         _render_base_analysis_tab(config_names, default_track_index)
 
     # ── Tab 8: Staffing Rebalance ──
-    with tab8:
+    if section == "⚖️ Staffing Rebalance":
         from modules.staffing_rebalance import _render_staffing_rebalance_tab
         _render_staffing_rebalance_tab(config_names, default_track_index)
 
     # ── Tab 9: Needs Swap Requests ──
-    with tab9:
+    if section == "🔁 Needs Swap Requests":
         from modules.track_needs_swap import _render_needs_swap_admin_tab
         _render_needs_swap_admin_tab(config_names, default_track_index)
 
@@ -3192,8 +3239,7 @@ def _display_bid_submission(
                 # Swap Requests) is now stale — drop it rather than wait out the TTL.
                 from modules.staffing_rebalance import load_report_context
                 from modules.track_needs_swap import load_swap_context
-                load_report_context.clear()
-                load_swap_context.clear()
+                clear_bidding_caches()
 
                 # Notify the admin recipients with bid summary statistics (sent from the admin
                 # account), also including the submitting staff member - with their bid summary

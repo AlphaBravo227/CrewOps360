@@ -2394,6 +2394,56 @@ def delete_bid_draft(staff_name, track_name):
         return False, f"Error deleting saved progress: {e}"
 
 
+def get_bid_summaries(track_name):
+    """
+    One row per submitted bid — staff name, version, submission date and effective
+    role — without the 42-day track_data blob or the JSON parse that goes with it.
+
+    For anywhere that lists or counts bids rather than reading them: get_all_bid_tracks()
+    decodes every track for every bid, which is wasted work when all you want is who
+    submitted and when.
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""SELECT staff_name, version, submission_date, effective_role
+                          FROM tracks WHERE track_name = ? ORDER BY staff_name""",
+                       (track_name,))
+        return [{'staff_name': r[0], 'version': r[1], 'submission_date': r[2],
+                 'effective_role': r[3]} for r in cursor.fetchall()]
+    except Exception as e:
+        print(f"Error getting bid summaries: {e}")
+        return []
+
+
+def count_bids_by_track():
+    """{track_name: submitted bid count} for every cycle, in one query."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT track_name, COUNT(*) FROM tracks GROUP BY track_name")
+        return dict(cursor.fetchall())
+    except Exception as e:
+        print(f"Error counting bids by track: {e}")
+        return {}
+
+
+def count_bid_access_by_track():
+    """{track_name: number of staff with bid access enabled} for every cycle, in one query."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""SELECT track_name, COUNT(*) FROM track_bid_access
+                          WHERE bid_access = 1 GROUP BY track_name""")
+        return dict(cursor.fetchall())
+    except Exception as e:
+        print(f"Error counting bid access by track: {e}")
+        return {}
+
+
 def get_all_bid_tracks(track_name):
     """Get all submitted bids for a given track_name."""
     try:

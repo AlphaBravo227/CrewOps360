@@ -51,7 +51,8 @@ from modules.db_utils import (
 )
 from modules.nondisplacing_assignment import draft_assignment, nondisplacing_bases, rank_options
 from modules.staffing_rebalance import _excel_download_button, find_shortfalls, load_report_context
-from modules.track_bidding import _bid_role_and_senior, _bidding_role_bucket, _max_possible_shifts
+from modules.track_bidding import (_bid_role_and_senior, _bidding_role_bucket,
+                                   _max_possible_shifts, clear_bidding_caches)
 
 _PERIOD_CODE = {'Day': 'D', 'Night': 'N'}
 _CODE_PERIOD = {'D': 'Day', 'N': 'Night'}
@@ -1776,8 +1777,7 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
                                       disabled=not o['still_valid'], use_container_width=True):
                         ok, msg = apply_offer(o, report_ctx, reviewer)
                         if ok:
-                            load_report_context.clear()
-                            load_swap_context.clear()
+                            clear_bidding_caches()
                         _flash(_ADMIN_FLASH, 'success' if ok else 'error', msg)
                         st.rerun()
                     if cols[3].button("Decline", key=f"needs_swap_decline_{o['id']}",
@@ -1858,7 +1858,6 @@ def _render_minimum_relaxations(track_name):
                           key="needs_swap_restore_minimum")
     if picked != '—' and st.button(f"Restore {picked}'s minimums", key="needs_swap_restore_btn"):
         ok, msg = clear_requirement_override(track_name, picked)
-        load_report_context.clear()
-        load_swap_context.clear()
+        clear_bidding_caches()
         _flash(_ADMIN_FLASH, 'success' if ok else 'error', msg)
         st.rerun()
