@@ -18,10 +18,18 @@ The eligibility rules, in one place:
     a need. Those floors are set apart from the cycle's own minimums, which are
     what decide whether a shift counts as a need at all.
   - Every (need, give-up) pairing is run through validate_track_comprehensive()
-    on the resulting hypothetical track, so nothing on offer can break the staff
-    member's own shifts/rest/weekend rules — plus cycle_wrap_issues() for the rest
-    and consecutive-shift rules across the Block C → Block A seam, which that
-    validator walks past (see its docstring).
+    on the resulting hypothetical track, plus cycle_wrap_issues() for the rest and
+    consecutive-shift rules across the Block C → Block A seam, which that validator
+    walks past (see its docstring). What blocks a swap is ENFORCED_RULES only:
+    shifts per pay period, the per-person weekly limit (weekly_shift_limit), rest,
+    consecutive shifts and the cycle seam. Night minimum, weekend minimum and
+    weekend group are ADVISORY_RULES — a volunteer is explicitly allowed to drop
+    below those to cover a need, and is told what it costs rather than being
+    silently excluded.
+
+Staffing Rebalance's admin candidate table runs the same two functions
+(surplus_shifts and validate_swap), so the two views cannot disagree about who is
+eligible for what.
 """
 
 import html
@@ -181,7 +189,7 @@ def surplus_shifts(staff_name, report_ctx, floors=None):
     role, is_senior = _bid_role_and_senior(
         bid, report_ctx['ctx']['role_mapping'], report_ctx['ctx']['no_matrix_mapping'])
     preassignments = _staff_preassignments(staff_name, report_ctx)
-    by_label = report_ctx['day_stats'].set_index('day_label').to_dict('index')
+    by_label = _day_stats_by_label(report_ctx)
 
     shifts = []
     for day, code in (bid['track_data'] or {}).items():
@@ -205,12 +213,20 @@ def surplus_shifts(staff_name, report_ctx, floors=None):
     return shifts
 
 
-def _staff_preassignments(staff_name, report_ctx):
-    from modules.track_management.preassignment import get_staff_preassignments
+def _day_stats_by_label(report_ctx):
+    """{day_label: day_stats row}, from the context when it was precomputed there."""
+    cached = report_ctx.get('day_stats_by_label')
+    if cached is not None:
+        return cached
+    return report_ctx['day_stats'].set_index('day_label').to_dict('index')
 
+
+def _staff_preassignments(staff_name, report_ctx):
     cached = report_ctx.get('preassignments_by_name')
     if cached is not None and staff_name in cached:
         return cached[staff_name]
+
+    from modules.track_management.preassignment import get_staff_preassignments
     return get_staff_preassignments(staff_name, report_ctx['ctx']['preassignment_df'],
                                      report_ctx['days'])
 
@@ -283,6 +299,60 @@ _ADVISORY_TEXT = {
 }
 
 
+def weekly_shift_limit(shifts_per_pay_period):
+    """
+    The most shifts one 7-day week may hold, derived from the staff member's own
+    shifts-per-pay-period requirement: a pay period is two weeks, so the split is
+    `spp / 2`.
+
+    Returns None when no weekly limit applies:
+      - odd `spp` can't be split evenly across the two weeks of a pay period, so
+        either week is allowed to carry the extra shift;
+      - a blank or zero `spp` (management, and anyone with no numeric requirement)
+        has no pay-period requirement to divide in the first place.
+
+    Deliberately kept here rather than in enhanced_track_validator, whose
+    validate_shifts_per_week_limit() hard-codes "fewer than 4 per week" for
+    everyone. That function still gates bid submission, the Admin Track Editor and
+    the PDF/email reports, and is left exactly as it is — this stricter,
+    per-person rule applies only to swap availability.
+    """
+    if not shifts_per_pay_period or shifts_per_pay_period % 2:
+        return None
+    return shifts_per_pay_period // 2
+
+
+def validate_weekly_limit(combined_track, days, limit):
+    """
+    Per-person weekly shift cap, in the same result shape as the other rules so it
+    can drop straight into a validate_track_comprehensive() result dict. Passes
+    unconditionally when `limit` is None (see weekly_shift_limit).
+    """
+    result = {'status': True, 'details': '', 'issues': []}
+
+    if limit is None:
+        result['details'] = "No weekly limit applies (odd or unset shifts per pay period)"
+        return result
+
+    violations = []
+    for i in range(0, len(days), 7):
+        week_days = days[i:i + 7]
+        week_num = (i // 7) + 1
+        count = sum(1 for d in week_days if combined_track.get(d, "") in ("D", "N", "AT"))
+        if count > limit:
+            violations.append({'week': week_num, 'count': count})
+            result['issues'].append(f"Week {week_num}: {count} shifts (limit: {limit})")
+
+    if violations:
+        result['status'] = False
+        result['details'] = ("Weekly limit violations: "
+                             + ", ".join(f"Week {v['week']}: {v['count']} shifts" for v in violations))
+        result['violations'] = violations
+    else:
+        result['details'] = f"All weeks are at or under {limit} shifts"
+    return result
+
+
 def failed_rules(validation):
     """The enforced rules a validation result breaks — what actually blocks a swap."""
     return [rule for rule in ENFORCED_RULES
@@ -300,6 +370,10 @@ def validate_track_for_staff(staff_name, track_data, report_ctx, baseline_track=
     ADVISORY_RULES). Anything they'd have blocked is listed under 'advisories'
     instead, for the UI to warn about.
 
+    'shifts_per_week' is likewise replaced with this staff member's own weekly limit
+    (weekly_shift_limit) rather than the shared validator's flat "fewer than 4",
+    which only happens to be right for the 6-shifts-per-pay-period majority.
+
     `baseline_track`, when given, is the track this one is a modification of: seam
     issues and advisory shortfalls that were already there are not counted against
     the change. Someone whose bid already sits below a minimum shouldn't be warned
@@ -309,7 +383,7 @@ def validate_track_for_staff(staff_name, track_data, report_ctx, baseline_track=
     and 'advisories' entries, or None when the staff member can't be evaluated (no
     numeric requirements — e.g. management).
     """
-    from modules.enhanced_track_validator import validate_track_comprehensive
+    from modules.enhanced_track_validator import create_combined_track, validate_track_comprehensive
 
     req = report_ctx['requirements_map'].get(staff_name)
     if not req or req.get('shifts_per_pay_period') is None:
@@ -317,16 +391,24 @@ def validate_track_for_staff(staff_name, track_data, report_ctx, baseline_track=
 
     preassignments = _staff_preassignments(staff_name, report_ctx)
     days = report_ctx['days']
+    spp = req.get('shifts_per_pay_period') or 0
 
     result = validate_track_comprehensive(
         track_data,
-        shifts_per_pay_period=req.get('shifts_per_pay_period') or 0,
+        shifts_per_pay_period=spp,
         night_minimum=req.get('night_minimum') or 0,
         weekend_minimum=req.get('weekend_minimum') or 0,
         preassignments=preassignments,
         days=days,
         weekend_group=req.get('weekend_group'),
     )
+
+    # Replace the shared validator's flat "fewer than 4 per week" with this staff
+    # member's own limit (see weekly_shift_limit). Only the copy of the rule inside
+    # this result dict changes — validate_track_comprehensive() itself, and so every
+    # other caller of it, is untouched.
+    result['shifts_per_week'] = validate_weekly_limit(
+        create_combined_track(track_data, preassignments), days, weekly_shift_limit(spp))
 
     issues = cycle_wrap_issues(track_data, preassignments, days)
     if baseline_track is not None:
@@ -408,7 +490,7 @@ def swap_options_for_staff(staff_name, needs, report_ctx, floors=None):
         bid, report_ctx['ctx']['role_mapping'], report_ctx['ctx']['no_matrix_mapping'])
     track_data = bid['track_data'] or {}
     preassignments = _staff_preassignments(staff_name, report_ctx)
-    by_label = report_ctx['day_stats'].set_index('day_label').to_dict('index')
+    by_label = _day_stats_by_label(report_ctx)
 
     give_up_pool = surplus_shifts(staff_name, report_ctx, floors)
     if not give_up_pool:
@@ -543,17 +625,14 @@ def load_swap_context(track_name, min_night_crews_for_sim=None):
     Returns (context, error). context is None on failure.
     """
     from modules.db_utils import get_track_capacity_by_weekday
-    from modules.track_management.preassignment import get_staff_preassignments
 
     report_ctx, err = load_report_context(track_name)
     if report_ctx is None:
         return None, err
 
+    # 'preassignments_by_name' and 'day_stats_by_label' already come from
+    # load_report_context — the admin candidate table needs them too.
     report_ctx['weekday_caps'] = get_track_capacity_by_weekday(track_name)
-    report_ctx['preassignments_by_name'] = {
-        name: get_staff_preassignments(name, report_ctx['ctx']['preassignment_df'], report_ctx['days'])
-        for name in report_ctx['bids_by_name']
-    }
 
     sim_floor = report_ctx['min_night'] if min_night_crews_for_sim is None else min_night_crews_for_sim
     shortfalls = find_shortfalls(
@@ -631,7 +710,7 @@ def offers_with_status(track_name, report_ctx):
 
     Adds to each offer dict: still_valid (bool), stale_reason (str or '').
     """
-    by_label = report_ctx['day_stats'].set_index('day_label').to_dict('index')
+    by_label = _day_stats_by_label(report_ctx)
 
     annotated = []
     for offer in get_need_swap_offers(track_name):
@@ -1442,7 +1521,7 @@ def _track_preview_html(offer, report_ctx, by_label):
 def _offers_dataframe(offers, report_ctx):
     seniority = report_ctx['ctx']['seniority_mapping']
     roles = report_ctx['ctx']['role_mapping']
-    by_label = report_ctx['day_stats'].set_index('day_label').to_dict('index')
+    by_label = _day_stats_by_label(report_ctx)
 
     def where(offer):
         base = best_base_for_need(offer['staff_name'], offer['need_day'],
@@ -1559,7 +1638,7 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
         st.info("Nothing pending — every offer has been decided.")
     else:
         needs_by_key = {(n['day_label'], n['period']): n for n in report_ctx['needs']}
-        by_label = report_ctx['day_stats'].set_index('day_label').to_dict('index')
+        by_label = _day_stats_by_label(report_ctx)
         by_need = {}
         for o in pending:
             by_need.setdefault((o['need_day'], o['need_period']), []).append(o)

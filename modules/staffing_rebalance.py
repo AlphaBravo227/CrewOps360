@@ -126,71 +126,72 @@ def find_shortfalls(days, day_stats, min_day, min_night, min_night_crews_for_sim
     return shortfalls
 
 
-def candidate_pool(shortfall, day_stats, roster_index, min_for_period):
+def candidate_pool(shortfall, report_ctx, floors):
     """
-    {candidate_name: source_day} for a shortfall: staff working `period` on another
-    day in the same week whose achievable crews for that period exceed the minimum
-    (i.e. genuinely extra, not just "also scheduled"), who aren't scheduled at all
-    (Day or Night) on the shortfall's own day.
+    {candidate_name: [give_up_day, ...]} for a shortfall: staff working `period`
+    elsewhere in the same week, who aren't scheduled at all (Day or Night) on the
+    shortfall's own day, paired with *every* day that week they'd be allowed to come
+    off of.
+
+    "Allowed to come off of" is surplus_shifts() — the same needs_swap_min_day /
+    needs_swap_min_night floors, applied at role level, that the staff-facing Needs
+    Swap view uses. Two things follow from sharing that function: a day only counts
+    as extra if the shift still holds its floor once *this particular person* is
+    removed from it (not merely because the day as a whole sits above the cycle
+    minimum), and preassigned days are never offered as give-ups, since clearing one
+    doesn't actually free the person up.
+
+    Returning every candidate day rather than the first one matters: the first extra
+    day of a week is often a Sunday, and a Sunday give-up is the one most likely to
+    trip a weekend advisory. Picking it and stopping used to drop people who had a
+    perfectly good midweek shift to trade instead.
+
+    The give-up doesn't have to be the same period as the need — a Night that week is
+    a valid thing to trade for a Day shortfall, since the swap is net-zero either way.
+    The staff view has always allowed that, so this does too.
     """
-    target_day, period, week = shortfall['day_label'], shortfall['period'], shortfall['week']
-    by_label = day_stats.set_index('day_label').to_dict('index')
+    from modules.track_needs_swap import surplus_shifts
+
+    target_day, week = shortfall['day_label'], shortfall['week']
+    roster_index = report_ctx['roster_index']
+    week_days = set(week) - {target_day}
 
     working_target_day = set(roster_index.get((target_day, 'Day'), [])) | \
         set(roster_index.get((target_day, 'Night'), []))
 
+    names = {name
+             for d in week_days
+             for p in ('Day', 'Night')
+             for name in roster_index.get((d, p), [])}
+
     candidates = {}
-    for d in week:
-        if d == target_day:
-            continue
-        row = by_label.get(d)
-        if row is None:
-            continue
-        achievable = row['day_max_shifts'] if period == 'Day' else row['night_max_shifts']
-        if achievable <= min_for_period:
-            continue  # not actually extra on this day
-        for name in roster_index.get((d, period), []):
-            if name in working_target_day or name in candidates:
-                continue
-            candidates[name] = d
+    for name in sorted(names - working_target_day):
+        give_ups = [s for s in surplus_shifts(name, report_ctx, floors)
+                    if s['day_label'] in week_days]
+        if give_ups:
+            candidates[name] = [(s['day_label'], s['period']) for s in give_ups]
     return candidates
 
 
-def validate_candidate_swap(name, source_day, target_day, period, bids_by_name, requirements_map,
-                             preassignment_df, days):
+def validate_candidate_swap(name, source_day, target_day, period, report_ctx):
     """
     Would name's own track still be valid if they swapped `source_day` for
-    `target_day` (same period, net-zero shift count)? Returns the
-    validate_track_comprehensive() result dict, or None if this candidate can't be
-    evaluated (no bid on file, or no numeric requirements — e.g. management).
+    `target_day` (same period, net-zero shift count)?
+
+    Delegates to the Needs Swap validator so this table and the staff-facing view
+    apply one rule set. In particular that means night minimum, weekend minimum and
+    weekend group do NOT block a candidate — someone covering a need is allowed to
+    drop below those, so they come back as 'advisories' to show the admin instead of
+    quietly removing the person. It also adds the Block C → Block A cycle-seam check,
+    which the shared validator can't see, and measures advisories against the
+    candidate's own bid so a track that was already short isn't blamed on this move.
+
+    Returns the validation result dict, or None if this candidate can't be evaluated
+    (no bid on file, or no numeric requirements — e.g. management).
     """
-    from modules.enhanced_track_validator import validate_track_comprehensive
-    from modules.track_management.preassignment import get_staff_preassignments
+    from modules.track_needs_swap import validate_swap
 
-    req = requirements_map.get(name)
-    if not req or req.get('shifts_per_pay_period') is None:
-        return None
-
-    bid = bids_by_name.get(name)
-    if not bid:
-        return None
-
-    code = 'D' if period == 'Day' else 'N'
-    hypothetical = dict(bid['track_data'] or {})
-    hypothetical[source_day] = ''
-    hypothetical[target_day] = code
-
-    preassignments = get_staff_preassignments(name, preassignment_df, days)
-
-    return validate_track_comprehensive(
-        hypothetical,
-        shifts_per_pay_period=req.get('shifts_per_pay_period') or 0,
-        night_minimum=req.get('night_minimum') or 0,
-        weekend_minimum=req.get('weekend_minimum') or 0,
-        preassignments=preassignments,
-        days=days,
-        weekend_group=req.get('weekend_group'),
-    )
+    return validate_swap(name, source_day, target_day, period, report_ctx)
 
 
 def rank_candidate(name, target_day, period, preferences_df, staff_col_prefs, role_col, seniority_col,
@@ -229,6 +230,7 @@ def load_report_context(track_name):
     Returns (context_dict, error_message). context_dict is None on failure.
     """
     from modules.hypothetical_scheduler_new import _load_all_base_preferences
+    from modules.track_management.preassignment import get_staff_preassignments
 
     ctx, err = _load_bidding_data_files()
     if ctx is None:
@@ -244,13 +246,23 @@ def load_report_context(track_name):
 
     days = ctx['days']
     day_stats = _compute_bid_day_stats(days, bids, ctx['role_mapping'], ctx['no_matrix_mapping'])
+    bids_by_name = {b['staff_name']: b for b in bids}
 
     return {
         'ctx': ctx,
+        'cfg': cfg,
         'bids': bids,
-        'bids_by_name': {b['staff_name']: b for b in bids},
+        'bids_by_name': bids_by_name,
         'roster_index': _build_roster_index(bids),
         'day_stats': day_stats,
+        # Both derived once here rather than per lookup: the candidate table now runs
+        # surplus_shifts() and validate_swap() for every name in a week, and each of
+        # those otherwise re-indexed day_stats and re-parsed the preassignment frame.
+        'day_stats_by_label': day_stats.set_index('day_label').to_dict('index'),
+        'preassignments_by_name': {
+            name: get_staff_preassignments(name, ctx['preassignment_df'], days)
+            for name in bids_by_name
+        },
         'days': days,
         'min_day': min_day,
         'min_night': min_night,
@@ -262,25 +274,42 @@ def load_report_context(track_name):
 
 def candidates_for_shortfall(shortfall, report_ctx, track_name):
     """
-    Full candidate table for one shortfall: pool -> validate (filters out anyone
-    whose swap would break their own track) -> rank (hypothetical assignment).
-    Returns a list of dicts, most-senior/best-ranked first isn't guaranteed by this
-    function — sort in the caller if a particular order is wanted.
-    """
-    ctx = report_ctx['ctx']
-    min_for_period = report_ctx['min_day'] if shortfall['period'] == 'Day' else report_ctx['min_night']
+    Full candidate table for one shortfall: pool -> validate every give-up day that
+    person has this week -> rank (hypothetical assignment).
 
-    pool = candidate_pool(shortfall, report_ctx['day_stats'], report_ctx['roster_index'], min_for_period)
+    A candidate survives if *any* of their give-up days validates, and the ones that
+    do are all reported — an admin asking someone to move should be able to see which
+    of their shifts is actually free to trade, not just that one of them is. Give-ups
+    that would only cost an advisory (a night, a weekend, a weekend-group period) are
+    kept and labelled, since dropping below those to cover a need is allowed.
+
+    Returns a list of dicts; sort in the caller if a particular order is wanted.
+    """
+    from modules.track_needs_swap import needs_swap_floors
+
+    ctx = report_ctx['ctx']
+    floors = needs_swap_floors(report_ctx.get('cfg'))
+    pool = candidate_pool(shortfall, report_ctx, floors)
 
     rows = []
-    for name, source_day in pool.items():
-        validation = validate_candidate_swap(
-            name, source_day, shortfall['day_label'], shortfall['period'],
-            report_ctx['bids_by_name'], report_ctx['requirements_map'],
-            ctx['preassignment_df'], report_ctx['days'],
-        )
-        if validation is None or not validation.get('overall_valid'):
-            continue  # can't evaluate them, or the swap would break their own track
+    for name, give_ups in pool.items():
+        usable = []
+        for source_day, source_period in give_ups:
+            validation = validate_candidate_swap(
+                name, source_day, shortfall['day_label'], shortfall['period'], report_ctx)
+            if validation is None or not validation.get('overall_valid'):
+                continue  # can't evaluate them, or this give-up would break their track
+            label = f"{source_day} {'D' if source_period == 'Day' else 'N'}"
+            usable.append((label, set(validation.get('advisories', []))))
+
+        if not usable:
+            continue
+
+        # Cheapest trade first, and the column reports only what they'd pay whichever
+        # shift they gave up — a Sunday that costs a weekend shift shouldn't make the
+        # candidate look expensive when they also have a free midweek day to trade.
+        usable.sort(key=lambda pair: len(pair[1]))
+        unavoidable = set.intersection(*(adv for _, adv in usable))
 
         hypo = rank_candidate(
             name, shortfall['day_label'], shortfall['period'],
@@ -293,7 +322,8 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
             'Role': ctx['role_mapping'].get(name, 'Unknown'),
             'Seniority': ctx['seniority_mapping'].get(name),
             'No Matrix': ctx['no_matrix_mapping'].get(name, False),
-            'Currently extra on': source_day,
+            'Could give up': ", ".join(_give_up_label(day, adv) for day, adv in usable),
+            'Trade-off': _advisory_summary(unavoidable),
             'Would get a shift?': hypo['assignment'] is not None,
             'Hypothetical base': hypo['assignment'],
             'Base preference rank': hypo['preference_score'],
@@ -302,6 +332,26 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
             'Why': hypo['reason'],
         })
     return rows
+
+
+_ADVISORY_SUMMARY = {
+    'night_minimum': 'below night minimum',
+    'weekend_minimum': 'below weekend minimum',
+    'weekend_group_assignment': 'weekend group short',
+}
+
+
+def _advisory_summary(advisories):
+    """What moving this candidate would cost them, beyond the rules that block a swap."""
+    from modules.track_needs_swap import ADVISORY_RULES
+
+    hit = [_ADVISORY_SUMMARY[r] for r in ADVISORY_RULES if r in advisories]
+    return ", ".join(hit) if hit else "—"
+
+
+def _give_up_label(day, advisories):
+    """One give-up day, tagged with what trading that particular shift would cost."""
+    return day if not advisories else f"{day} ({_advisory_summary(advisories)})"
 
 
 # ──────────────────────────────────────────────
@@ -354,11 +404,12 @@ def _render_staffing_rebalance_tab(config_names, default_track_index):
     st.markdown("### Staffing Rebalance")
     st.caption(
         "For every below-minimum Day/Night shift in a track cycle: the crew mix that would "
-        "close the gap, and who — within that same week, and only if it wouldn't break their "
-        "own track's validation rules — could be asked to move to cover it. Recommendations "
-        "only; nothing here changes the schedule. To ask staff to volunteer for these same "
-        "shifts instead of picking people yourself, open the swap window in the "
-        "**Needs Swap Requests** tab."
+        "close the gap, and who — within that same week — could be asked to move to cover it. "
+        "Eligibility is exactly what the staff-facing **Needs Swap Requests** tab shows those "
+        "same people: shifts per pay period, the weekly limit, rest, consecutive shifts and the "
+        "cycle seam all have to hold, but night and weekend minimums do not — someone covering a "
+        "need is allowed to drop below those, and the Trade-off column says when they would. "
+        "Recommendations only; nothing here changes the schedule."
     )
 
     if not config_names:
@@ -415,8 +466,9 @@ def _render_staffing_rebalance_tab(config_names, default_track_index):
 
     if not rows:
         st.warning(
-            "No one working this period elsewhere in the same week, who's off this day, "
-            "can be moved here without breaking their own track's validation rules."
+            "No one working this period elsewhere in the same week, who's off this day, has a "
+            "shift they could give up without breaking their own shifts-per-pay-period, weekly, "
+            "rest, consecutive-shift or cycle-seam rules."
         )
         return
 
