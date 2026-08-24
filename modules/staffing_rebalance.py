@@ -11,6 +11,7 @@ existing Admin Track Editor.
 """
 
 import io
+from collections import Counter
 from datetime import datetime
 
 import streamlit as st
@@ -415,6 +416,80 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
     return rows
 
 
+_INVALID_SHEET_CHARS = set("[]:*?/" + "\\")  # Excel forbids these in a sheet name
+
+_NO_CANDIDATES_NOTE = (
+    "No one available elsewhere in the same week would raise this shift's achievable "
+    "crews and has a shift they could give up without breaking their own "
+    "shifts-per-pay-period, weekly, rest, consecutive-shift or cycle-seam rules."
+)
+
+
+def candidate_sort_key(row):
+    """People who'd actually land a base first, then by how they'd place in the bid."""
+    return (not row['Would get a shift?'], row['Competition rank'] or 999)
+
+
+def sheet_names_for(shortfalls):
+    """
+    One Excel tab name per shortfall, in the same order: "Fri A 1 - Day".
+
+    The mode is left out — an admin reading the tab strip wants the day and period —
+    except where a Day is short both before and after the N-to-D flex simulation, in
+    which case the two tabs for that day are tagged "(no flex)" and "(flex)" so they
+    stay distinguishable. Names are then stripped of the characters Excel forbids in
+    a sheet name, capped at its 31-character limit, and suffixed if that truncation
+    happens to collide with a name already used.
+    """
+    counts = Counter((s['day_label'], s['period']) for s in shortfalls)
+
+    names, used = [], set()
+    for s in shortfalls:
+        base = f"{s['day_label']} - {s['period']}"
+        if counts[(s['day_label'], s['period'])] > 1:
+            base += " (flex)" if s['mode'] == 'flex' else " (no flex)"
+        base = ''.join(c for c in base if c not in _INVALID_SHEET_CHARS)[:31] or "Shortfall"
+
+        name, n = base, 2
+        while name.lower() in used:
+            suffix = f" ({n})"
+            name = base[:31 - len(suffix)] + suffix
+            n += 1
+        used.add(name.lower())
+        names.append(name)
+    return names
+
+
+def candidates_workbook(shortfalls, report_ctx, track_name, on_progress=None):
+    """
+    Every shortfall's candidate table in one workbook, a sheet apiece, in shortfall
+    order. A shortfall nobody can cover still gets its sheet — carrying the same note
+    the on-screen table shows — so the tabs line up one-for-one with the shortfall
+    summary rather than silently skipping days.
+
+    on_progress(index, shortfall), if given, is called before each shortfall is
+    computed: this re-runs the full eligibility check per below-minimum shift, so the
+    UI drives a progress bar off it.
+
+    Returns the workbook bytes.
+    """
+    names = sheet_names_for(shortfalls)
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        for i, (shortfall, sheet_name) in enumerate(zip(shortfalls, names)):
+            if on_progress:
+                on_progress(i, shortfall)
+            rows = candidates_for_shortfall(shortfall, report_ctx, track_name)
+            if rows:
+                rows.sort(key=candidate_sort_key)
+                df = pd.DataFrame(rows)
+            else:
+                df = pd.DataFrame([{'Note': _NO_CANDIDATES_NOTE}])
+            _write_excel_sheet(writer, df, sheet_name)
+    return buffer.getvalue()
+
+
 _ADVISORY_SUMMARY = {
     'night_minimum': 'below night minimum',
     'weekend_minimum': 'below weekend minimum',
@@ -455,29 +530,40 @@ def _safe_filename_part(text):
     return ''.join(c if c.isalnum() else '_' for c in text)
 
 
+def _write_excel_sheet(writer, df, sheet_name):
+    """One auto-width worksheet — same sizing the Bid Analysis exports use."""
+    from openpyxl.utils import get_column_letter
+
+    df.to_excel(writer, sheet_name=sheet_name, index=False)
+    ws = writer.sheets[sheet_name]
+    for col_idx, col in enumerate(df.columns, start=1):
+        # fillna first: a column that is entirely empty (e.g. no base preference on
+        # file for any candidate) stays None through astype(str), and len(None) fails.
+        content_width = (int(df[col].fillna('').astype(str).map(len).max())
+                         if len(df) else 0)
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(40, max(10, content_width + 2, len(str(col)) + 2))
+
+
+def _excel_filename(prefix):
+    from modules.track_bidding import _eastern_tz
+
+    return f"{_safe_filename_part(prefix)}_{datetime.now(_eastern_tz).strftime('%Y%m%d%H%M%S')}.xlsx"
+
+
+_EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
 def _excel_download_button(df, label, file_prefix, key, sheet_name="Sheet1"):
     """'Download as Excel' button for a DataFrame — same ExcelWriter+download_button
     pattern as the Bid Analysis tab's Day/Night breakdown export."""
-    from openpyxl.utils import get_column_letter
-    from modules.track_bidding import _eastern_tz
-
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name=sheet_name, index=False)
-        ws = writer.sheets[sheet_name]
-        for col_idx, col in enumerate(df.columns, start=1):
-            # fillna first: a column that is entirely empty (e.g. no base preference on
-            # file for any candidate) stays None through astype(str), and len(None) fails.
-            content_width = (int(df[col].fillna('').astype(str).map(len).max())
-                             if len(df) else 0)
-            ws.column_dimensions[get_column_letter(col_idx)].width = min(40, max(10, content_width + 2, len(str(col)) + 2))
+        _write_excel_sheet(writer, df, sheet_name)
     buffer.seek(0)
 
     st.download_button(
-        label, data=buffer,
-        file_name=f"{_safe_filename_part(file_prefix)}_{datetime.now(_eastern_tz).strftime('%Y%m%d%H%M%S')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key=key,
+        label, data=buffer, file_name=_excel_filename(file_prefix),
+        mime=_EXCEL_MIME, key=key,
     )
 
 
@@ -548,19 +634,53 @@ def _render_staffing_rebalance_tab(config_names, default_track_index):
     with st.spinner("Checking who's extra elsewhere this week and whether they'd still pass validation..."):
         rows = candidates_for_shortfall(shortfall, report_ctx, track_name)
 
-    if not rows:
-        st.warning(
-            "No one available elsewhere in the same week would raise this shift's achievable "
-            "crews and has a shift they could give up without breaking their own "
-            "shifts-per-pay-period, weekly, rest, consecutive-shift or cycle-seam rules."
-        )
-        return
+    if rows:
+        rows.sort(key=candidate_sort_key)
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.warning(_NO_CANDIDATES_NOTE)
 
-    rows.sort(key=lambda r: (not r['Would get a shift?'], r['Competition rank'] or 999))
-    candidates_df = pd.DataFrame(rows)
-    st.dataframe(candidates_df, use_container_width=True, hide_index=True)
-    _excel_download_button(
-        candidates_df, "📥 Download candidates as Excel",
-        f"{track_name}_{shortfall['day_label']}_{shortfall['period']}_{shortfall['mode']}_candidates",
-        key=f"download_rebalance_candidates_{picked_label}", sheet_name="Candidates",
+    _render_all_candidates_download(shortfalls, report_ctx, track_name, min_night_crews_for_sim)
+
+
+def _render_all_candidates_download(shortfalls, report_ctx, track_name, min_night_crews_for_sim):
+    """
+    The Excel export covers every shortfall, not just the one picked above — one tab
+    per below-minimum shift, named for its day and period.
+
+    It's built on an explicit click rather than on every render: the workbook re-runs
+    the whole eligibility check once per shortfall, which is far too slow to sit in
+    the render path of a tab that recomputes on every interaction anywhere on the
+    page. The finished bytes are held in session_state under a key carrying the
+    inputs that determine them, so changing track cycle or the night-minimum
+    simulation retires the old workbook instead of handing out a stale one.
+    """
+    state_key = f"rebalance_all_candidates_{track_name}_{min_night_crews_for_sim}"
+
+    st.markdown("#### Download every shortfall's candidates")
+    st.caption(
+        f"One workbook, one tab per shortfall (all {len(shortfalls)} of them), each named for "
+        "its day and period — not just the shortfall picked above. Building it re-checks "
+        "every below-minimum shift, so it takes a moment."
     )
+
+    if st.button("🛠️ Build candidate workbook", key="build_rebalance_all_candidates"):
+        progress = st.progress(0.0, text="Checking candidates...")
+
+        def on_progress(i, shortfall):
+            progress.progress(i / len(shortfalls),
+                              text=f"Checking {_format_shortfall_label(shortfall)}...")
+
+        try:
+            st.session_state[state_key] = candidates_workbook(
+                shortfalls, report_ctx, track_name, on_progress=on_progress)
+        finally:
+            progress.empty()
+
+    workbook = st.session_state.get(state_key)
+    if workbook:
+        st.download_button(
+            "📥 Download candidates as Excel", data=workbook,
+            file_name=_excel_filename(f"{track_name}_all_shortfall_candidates"),
+            mime=_EXCEL_MIME, key="download_rebalance_all_candidates",
+        )
