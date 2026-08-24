@@ -344,6 +344,11 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
     staff count toward a medic shortfall — _max_possible_shifts() flexes them to the
     medic side, so achievable_change() credits them for it.
 
+    Every give-up also carries what surrendering that particular shift would do to
+    it — achievable crews and the headcount left in the candidate's own role bucket
+    — so the cost of the move is visible next to the move itself (see
+    _give_up_cells).
+
     Returns a list of dicts; sort in the caller if a particular order is wanted.
     """
     from modules.track_needs_swap import achievable_change, needs_swap_floors
@@ -371,7 +376,7 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
             validation = validate_at_conversion(name, need_day, period, report_ctx)
             if validation is None or not validation.get('overall_valid'):
                 continue
-            usable = [("AT converts in place", set(validation.get('advisories', [])))]
+            usable = [(None, None, set(validation.get('advisories', [])))]
         else:
             usable = []
             for source_day, source_period in give_ups:
@@ -379,17 +384,17 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
                     name, source_day, need_day, period, report_ctx)
                 if validation is None or not validation.get('overall_valid'):
                     continue  # can't evaluate them, or this give-up would break their track
-                label = f"{source_day} {'D' if source_period == 'Day' else 'N'}"
-                usable.append((label, set(validation.get('advisories', []))))
+                usable.append((source_day, source_period, set(validation.get('advisories', []))))
 
         if not usable:
             continue
 
-        # Cheapest trade first, and the column reports only what they'd pay whichever
-        # shift they gave up — a Sunday that costs a weekend shift shouldn't make the
-        # candidate look expensive when they also have a free midweek day to trade.
-        usable.sort(key=lambda pair: len(pair[1]))
-        unavoidable = set.intersection(*(adv for _, adv in usable))
+        # Cheapest trade first, and the Trade-off column reports only what they'd pay
+        # whichever shift they gave up — a Sunday that costs a weekend shift shouldn't
+        # make the candidate look expensive when they also have a free midweek day to
+        # trade. Per-give-up costs stay on their own give-up, in its own column pair.
+        usable.sort(key=lambda opt: len(opt[2]))
+        unavoidable = set.intersection(*(adv for _, _, adv in usable))
 
         hypo = rank_candidate(
             name, need_day, period,
@@ -397,23 +402,85 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
             report_ctx['all_base_prefs'], track_name, report_ctx['base_shift_counts'],
         )
 
-        rows.append({
+        candidate = {
             'Name': name,
             'Role': ctx['role_mapping'].get(name, 'Unknown'),
             'Seniority': ctx['seniority_mapping'].get(name),
             'No Matrix': ctx['no_matrix_mapping'].get(name, False),
-            'Could give up': ", ".join(_give_up_label(day, adv) for day, adv in usable),
+        }
+        candidate.update(_give_up_cells(usable, name, role, is_senior, report_ctx))
+        candidate.update({
             'Crews here': f"{before} → {after}",
             'On AT here': "Yes" if on_at else "—",
             'Trade-off': _advisory_summary(unavoidable),
-            'Would get a shift?': hypo['assignment'] is not None,
             'Hypothetical base': hypo['assignment'],
             'Base preference rank': hypo['preference_score'],
             'Competition rank': hypo.get('competition_rank'),
             'Competitors': hypo.get('total_competitors'),
             'Why': hypo['reason'],
         })
+        rows.append(candidate)
     return rows
+
+
+# One "Could give up (X)" / "Impact (X)" pair per shift a candidate could trade. Three
+# slots are always rendered — the most anyone works in a week — and the letters run
+# further only if some candidate on that shortfall really does have more.
+_GIVE_UP_SLOTS = "ABCDEFG"
+_MIN_GIVE_UP_SLOTS = 3
+
+_CANDIDATE_LEAD_COLUMNS = ['Name', 'Role', 'Seniority', 'No Matrix']
+_CANDIDATE_TAIL_COLUMNS = ['Crews here', 'On AT here', 'Trade-off', 'Hypothetical base',
+                            'Base preference rank', 'Competition rank', 'Competitors', 'Why']
+
+
+def _give_up_cells(usable, name, role, is_senior, report_ctx):
+    """
+    {'Could give up (A)': 'Wed A 1 D', 'Impact (A)': '−1 crew (7 → 6) · nurses 9 → 8', ...}
+    — each shift this candidate could trade, paired with what that shift would be left
+    with if they did.
+
+    The impact is the same shift_impact() the Needs Swap review uses on a submitted
+    offer, so a give-up costed here reads identically once the person actually offers
+    it. Someone converting an AT in place gives nothing up, so their single slot says
+    so and carries no impact.
+    """
+    from modules.track_needs_swap import shift_impact, give_up_impact_text
+
+    by_label = report_ctx['day_stats_by_label']
+    cells = {}
+    for slot, (source_day, source_period, advisories) in zip(_GIVE_UP_SLOTS, usable):
+        if source_day is None:
+            cells[f'Could give up ({slot})'] = "AT converts in place"
+            cells[f'Impact ({slot})'] = "Nothing given up"
+            continue
+        label = f"{source_day} {'D' if source_period == 'Day' else 'N'}"
+        cells[f'Could give up ({slot})'] = _give_up_label(label, advisories)
+
+        row = by_label.get(source_day)
+        impact = (shift_impact(row, source_period, role, is_senior, -1)
+                  if row is not None else None)
+        cells[f'Impact ({slot})'] = give_up_impact_text(impact)
+    return cells
+
+
+def candidates_dataframe(rows):
+    """
+    Candidate rows as a DataFrame with a stable column order: the give-up/impact pairs
+    sit together in the middle, and every table keeps at least A/B/C so shortfalls
+    stay comparable side by side even when nobody on one of them has three shifts to
+    trade. Unfilled slots read empty rather than NaN.
+    """
+    filled = max((i for i, slot in enumerate(_GIVE_UP_SLOTS, start=1)
+                  if any(f'Could give up ({slot})' in r for r in rows)), default=0)
+    slots = _GIVE_UP_SLOTS[:max(_MIN_GIVE_UP_SLOTS, filled)]
+
+    give_up_columns = [f'{kind} ({slot})' for slot in slots
+                       for kind in ('Could give up', 'Impact')]
+    df = pd.DataFrame(rows, columns=_CANDIDATE_LEAD_COLUMNS + give_up_columns
+                      + _CANDIDATE_TAIL_COLUMNS)
+    df[give_up_columns] = df[give_up_columns].fillna('')
+    return df
 
 
 _INVALID_SHEET_CHARS = set("[]:*?/" + "\\")  # Excel forbids these in a sheet name
@@ -427,7 +494,7 @@ _NO_CANDIDATES_NOTE = (
 
 def candidate_sort_key(row):
     """People who'd actually land a base first, then by how they'd place in the bid."""
-    return (not row['Would get a shift?'], row['Competition rank'] or 999)
+    return (row['Hypothetical base'] is None, row['Competition rank'] or 999)
 
 
 def sheet_names_for(shortfalls):
@@ -483,7 +550,7 @@ def candidates_workbook(shortfalls, report_ctx, track_name, on_progress=None):
             rows = candidates_for_shortfall(shortfall, report_ctx, track_name)
             if rows:
                 rows.sort(key=candidate_sort_key)
-                df = pd.DataFrame(rows)
+                df = candidates_dataframe(rows)
             else:
                 df = pd.DataFrame([{'Note': _NO_CANDIDATES_NOTE}])
             _write_excel_sheet(writer, df, sheet_name)
@@ -578,8 +645,11 @@ def _render_staffing_rebalance_tab(config_names, default_track_index):
         "need is allowed to drop below those, and the Trade-off column says when they would. "
         "Only people whose arrival would actually raise that shift's achievable crews are listed "
         "(duals count toward a medic shortfall). Anyone already on AT that day can simply cover "
-        "it — their AT becomes the shift and they give nothing up. Recommendations only; nothing "
-        "here changes the schedule."
+        "it — their AT becomes the shift and they give nothing up. Each shift someone could "
+        "trade gets a **Could give up** column and an **Impact** column beside it: what that "
+        "shift would be left with — achievable crews, then the headcount in their own role "
+        "bucket (nurse counts include duals) — if they came off it. Recommendations only; "
+        "nothing here changes the schedule."
     )
 
     if not config_names:
@@ -636,7 +706,7 @@ def _render_staffing_rebalance_tab(config_names, default_track_index):
 
     if rows:
         rows.sort(key=candidate_sort_key)
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(candidates_dataframe(rows), use_container_width=True, hide_index=True)
     else:
         st.warning(_NO_CANDIDATES_NOTE)
 

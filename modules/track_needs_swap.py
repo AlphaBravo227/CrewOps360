@@ -154,6 +154,62 @@ def achievable_change(row, period, role, is_senior, delta):
     return before, after
 
 
+def shift_impact(row, period, role, is_senior, delta):
+    """
+    Both numbers worth weighing when one body of `role` joins (delta=+1) or leaves
+    (delta=-1) a day/period: the shift's achievable crews, and the headcount left in
+    that person's own role bucket (nurse — dual included, as _max_possible_shifts
+    counts them — or medic).
+
+    Crews alone hide half the cost. A shift that keeps its crew count when a nurse
+    comes off it only does so because it was already nurse-heavy; it still has one
+    fewer nurse standing between it and the next request, which is exactly what an
+    admin is trying to see before moving somebody.
+
+    Returns a dict: crew_before, crew_after, role, bucket, role_before, role_after.
+    """
+    crew_before, crew_after = achievable_change(row, period, role, is_senior, delta)
+    bucket = _bidding_role_bucket(role)
+    p = 'day' if period == 'Day' else 'night'
+    role_before = int(row[f'{p}_{bucket}'])
+    return {
+        'crew_before': crew_before, 'crew_after': crew_after,
+        'role': role, 'bucket': bucket,
+        'role_before': role_before, 'role_after': max(0, role_before + delta),
+    }
+
+
+def role_count_text(impact):
+    """'medics 9 → 8' — the role-bucket side of a shift_impact()."""
+    label = 'medics' if impact['bucket'] == 'medic' else 'nurses'
+    return f"{label} {impact['role_before']} → {impact['role_after']}"
+
+
+def give_up_impact_text(impact):
+    """'−1 crew (6 → 5) · medics 9 → 8' — what a shift loses if this person comes off it."""
+    if impact is None:
+        return "Unknown"
+    before, after = impact['crew_before'], impact['crew_after']
+    if after < before:
+        drop = before - after
+        crew = f"−{drop} crew{'s' if drop != 1 else ''} ({before} → {after})"
+    else:
+        crew = f"No crew lost — extra {impact['role']}"
+    return f"{crew} · {role_count_text(impact)}"
+
+
+def pickup_impact_text(impact):
+    """'4 → 5 crews · medics 8 → 9' — what a shift gains if this person moves onto it."""
+    if impact is None:
+        return "Unknown"
+    before, after = impact['crew_before'], impact['crew_after']
+    if after > before:
+        crew = f"{before} → {after} crews"
+    else:
+        crew = f"No change — role isn't the bottleneck ({before} crews)"
+    return f"{crew} · {role_count_text(impact)}"
+
+
 # ──────────────────────────────────────────────
 # Per-staff eligibility
 # ──────────────────────────────────────────────
@@ -1830,57 +1886,33 @@ def _render_review_note_prompt(offers, report_ctx, reviewer):
     _review_note_dialog()
 
 
-def _give_up_impact(offer, report_ctx, by_label):
+def _offer_impact(offer, report_ctx, by_label, side):
     """
-    (before, after, role) achievable crews for the give-up shift's period if this
-    offer's staff member actually comes off it — recomputed against report_ctx's
-    live day_stats, not whatever the picture looked like when they submitted, so
-    an approval earlier in the same review pass is reflected. None if the staff
-    member's bid or the day itself can't be found.
+    shift_impact() for one side of an offer: side='give_up' for the shift they'd come
+    off (delta -1), side='need' for the one they'd move onto (delta +1).
+
+    Recomputed against report_ctx's live day_stats, not whatever the picture looked
+    like when they submitted, so an approval earlier in the same review pass is
+    reflected. None if the staff member's bid or the day itself can't be found.
     """
     bid = report_ctx['bids_by_name'].get(offer['staff_name'])
-    row = by_label.get(offer['give_up_day'])
+    row = by_label.get(offer[f'{side}_day'])
     if not bid or row is None:
         return None
     role, is_senior = _bid_role_and_senior(
         bid, report_ctx['ctx']['role_mapping'], report_ctx['ctx']['no_matrix_mapping'])
-    before, after = achievable_change(row, offer['give_up_period'], role, is_senior, -1)
-    return before, after, role
+    delta = -1 if side == 'give_up' else +1
+    return shift_impact(row, offer[f'{side}_period'], role, is_senior, delta)
 
 
-def _give_up_impact_text(impact):
-    """'−1 crew (6 → 5)' or 'No crew lost — extra medic' for a give-up shift's staffing cost."""
-    if impact is None:
-        return "Unknown"
-    before, after, role = impact
-    if after < before:
-        drop = before - after
-        return f"−{drop} crew{'s' if drop != 1 else ''} ({before} → {after})"
-    return f"No crew lost — extra {role}"
+def _give_up_impact(offer, report_ctx, by_label):
+    """What the give-up shift loses if this offer's staff member comes off it."""
+    return _offer_impact(offer, report_ctx, by_label, 'give_up')
 
 
 def _pickup_impact(offer, report_ctx, by_label):
-    """(before, after) achievable crews for the need's period if this offer's staff
-    member actually moves onto it — the mirror of _give_up_impact for the other side
-    of the swap."""
-    bid = report_ctx['bids_by_name'].get(offer['staff_name'])
-    row = by_label.get(offer['need_day'])
-    if not bid or row is None:
-        return None
-    role, is_senior = _bid_role_and_senior(
-        bid, report_ctx['ctx']['role_mapping'], report_ctx['ctx']['no_matrix_mapping'])
-    before, after = achievable_change(row, offer['need_period'], role, is_senior, +1)
-    return before, after
-
-
-def _pickup_impact_text(impact):
-    """'4 → 5 crews' or 'No change — role isn't the bottleneck' for a pickup's staffing gain."""
-    if impact is None:
-        return "Unknown"
-    before, after = impact
-    if after > before:
-        return f"{before} → {after} crews"
-    return f"No change — role isn't the bottleneck ({before} crews)"
+    """What the need gains if this offer's staff member moves onto it."""
+    return _offer_impact(offer, report_ctx, by_label, 'need')
 
 
 def _expected_base_for_day(staff_name, day_label, period, role_bucket, report_ctx):
@@ -2006,8 +2038,8 @@ def _track_preview_html(offer, report_ctx, by_label):
         bid, report_ctx['ctx']['role_mapping'], report_ctx['ctx']['no_matrix_mapping'])
     role_bucket = _bidding_role_bucket(role)
 
-    drop_text = html.escape(_give_up_impact_text(_give_up_impact(offer, report_ctx, by_label)))
-    pickup_text = html.escape(_pickup_impact_text(_pickup_impact(offer, report_ctx, by_label)))
+    drop_text = html.escape(give_up_impact_text(_give_up_impact(offer, report_ctx, by_label)))
+    pickup_text = html.escape(pickup_impact_text(_pickup_impact(offer, report_ctx, by_label)))
 
     give_up_week = _week_key(offer['give_up_day'])
     need_week = _week_key(offer['need_day'])
@@ -2098,7 +2130,7 @@ def _offers_dataframe(offers, report_ctx):
         'Role': roles.get(o['staff_name'], 'Unknown'),
         'Seniority': seniority.get(o['staff_name']),
         'Would give up': _shift_label(o['give_up_day'], o['give_up_period']),
-        'Give-up impact': _give_up_impact_text(_give_up_impact(o, report_ctx, by_label)),
+        'Give-up impact': give_up_impact_text(_give_up_impact(o, report_ctx, by_label)),
         'Their rank': o['preference_rank'],
         'Hypothetical Shift': where(o),
         'Status': _STATUS_LABEL.get(o['status'], o['status']),
@@ -2233,7 +2265,7 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
                                                o['need_period'], report_ctx)
                     where = (f"hypothetical shift {base['base']} ({_rank_text(base)})" if base
                              else "no hypothetical shift can be promised")
-                    impact_text = _give_up_impact_text(_give_up_impact(o, report_ctx, by_label))
+                    impact_text = give_up_impact_text(_give_up_impact(o, report_ctx, by_label))
                     line = (f"**{o['staff_name']}** ({role}, seniority {seniority}) — "
                             f"give up {_shift_label(o['give_up_day'], o['give_up_period'])} "
                             f"*({impact_text})* "
