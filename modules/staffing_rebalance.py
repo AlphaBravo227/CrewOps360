@@ -11,7 +11,6 @@ existing Admin Track Editor.
 """
 
 import io
-from collections import Counter
 from datetime import datetime
 
 import streamlit as st
@@ -497,24 +496,40 @@ def candidate_sort_key(row):
     return (row['Hypothetical base'] is None, row['Competition rank'] or 999)
 
 
+def distinct_shift_shortfalls(shortfalls):
+    """
+    One entry per (day, period), keeping the first — which is the worst, since
+    find_shortfalls() emits the raw Day case before the post-flex one.
+
+    A Day that is short both before and after the N-to-D flex simulation appears
+    twice, but candidates_for_shortfall() reads only the day, the period and the week
+    those give — never the mode, the deficit or the achievable count — so the two
+    would produce identical candidate tables. Reporting on them separately is worth
+    it in the shortfall summary, where the numbers differ; in the candidate workbook
+    it is just the same tab twice.
+    """
+    seen, distinct = set(), []
+    for s in shortfalls:
+        key = (s['day_label'], s['period'])
+        if key not in seen:
+            seen.add(key)
+            distinct.append(s)
+    return distinct
+
+
 def sheet_names_for(shortfalls):
     """
     One Excel tab name per shortfall, in the same order: "Fri A 1 - Day".
 
-    The mode is left out — an admin reading the tab strip wants the day and period —
-    except where a Day is short both before and after the N-to-D flex simulation, in
-    which case the two tabs for that day are tagged "(no flex)" and "(flex)" so they
-    stay distinguishable. Names are then stripped of the characters Excel forbids in
-    a sheet name, capped at its 31-character limit, and suffixed if that truncation
-    happens to collide with a name already used.
+    The mode is left out — an admin reading the tab strip wants the day and period,
+    and distinct_shift_shortfalls() has already collapsed the modes that would share
+    a name. Names are stripped of the characters Excel forbids in a sheet name,
+    capped at its 31-character limit, and suffixed if that truncation happens to
+    collide with a name already used.
     """
-    counts = Counter((s['day_label'], s['period']) for s in shortfalls)
-
     names, used = [], set()
     for s in shortfalls:
         base = f"{s['day_label']} - {s['period']}"
-        if counts[(s['day_label'], s['period'])] > 1:
-            base += " (flex)" if s['mode'] == 'flex' else " (no flex)"
         base = ''.join(c for c in base if c not in _INVALID_SHEET_CHARS)[:31] or "Shortfall"
 
         name, n = base, 2
@@ -529,17 +544,19 @@ def sheet_names_for(shortfalls):
 
 def candidates_workbook(shortfalls, report_ctx, track_name, on_progress=None):
     """
-    Every shortfall's candidate table in one workbook, a sheet apiece, in shortfall
-    order. A shortfall nobody can cover still gets its sheet — carrying the same note
-    the on-screen table shows — so the tabs line up one-for-one with the shortfall
-    summary rather than silently skipping days.
+    Every below-minimum shift's candidate table in one workbook, a sheet apiece, in
+    shortfall order — one tab per day and period, since the pre- and post-flex forms
+    of the same Day shortfall have the same candidates (distinct_shift_shortfalls).
+    A shift nobody can cover still gets its sheet, carrying the same note the
+    on-screen table shows, rather than being silently skipped.
 
-    on_progress(index, shortfall), if given, is called before each shortfall is
-    computed: this re-runs the full eligibility check per below-minimum shift, so the
-    UI drives a progress bar off it.
+    on_progress(index, shortfall), if given, is called before each shift is computed:
+    this re-runs the full eligibility check per shift, so the UI drives a progress bar
+    off it.
 
     Returns the workbook bytes.
     """
+    shortfalls = distinct_shift_shortfalls(shortfalls)
     names = sheet_names_for(shortfalls)
 
     buffer = io.BytesIO()
@@ -726,19 +743,22 @@ def _render_all_candidates_download(shortfalls, report_ctx, track_name, min_nigh
     simulation retires the old workbook instead of handing out a stale one.
     """
     state_key = f"rebalance_all_candidates_{track_name}_{min_night_crews_for_sim}"
+    shifts = distinct_shift_shortfalls(shortfalls)
 
     st.markdown("#### Download every shortfall's candidates")
     st.caption(
-        f"One workbook, one tab per shortfall (all {len(shortfalls)} of them), each named for "
-        "its day and period — not just the shortfall picked above. Building it re-checks "
-        "every below-minimum shift, so it takes a moment."
+        f"One workbook, one tab per below-minimum shift (all {len(shifts)} of them), each "
+        "named for its day and period — not just the shortfall picked above. A Day that is "
+        "short both before and after the flex simulation gets one tab, not two: the "
+        "candidates are the same either way. Building it re-checks every shift, so it takes "
+        "a moment."
     )
 
     if st.button("🛠️ Build candidate workbook", key="build_rebalance_all_candidates"):
         progress = st.progress(0.0, text="Checking candidates...")
 
         def on_progress(i, shortfall):
-            progress.progress(i / len(shortfalls),
+            progress.progress(i / len(shifts),
                               text=f"Checking {_format_shortfall_label(shortfall)}...")
 
         try:
