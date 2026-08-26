@@ -7,16 +7,30 @@ import json
 class TrainingTrackManager:
     """Enhanced Track Manager that includes CCEMT schedule integration from Excel"""
     
-    def __init__(self, tracks_db_path=None):
+    def __init__(self, tracks_db_path=None, track_cohort=None, pattern_start=None):
+        """
+        Args:
+            tracks_db_path: Path to the tracks database.
+            track_cohort: track_configs.track_name whose tracks to load. None loads
+                whichever cohort is active, which is only correct when the training
+                year and the active track cohort are the same one.
+            pattern_start: Date the 42-day pattern's "Sun A 1" falls on for this
+                cohort. None keeps the FY26 anchor.
+        """
         self.tracks_db_path = tracks_db_path
+        self.track_cohort = track_cohort
         self.tracks_cache = {}
         self.ccemt_schedule_cache = {}
         self.ccemt_raw_cache = {}  # Raw CCEMT shift codes (e.g., 'PG', 'NP') for display purposes
         self.tracks_excel_handler = None  # Fallback CCEMT source when the database has none
         self.enrollment_excel_handler = None  # For getting staff roles from enrollment sheet
         
-        # Pattern configuration for regular tracks
-        self.pattern_start = datetime(2025, 9, 14)  # Sun A 1 - pattern start date
+        # Pattern configuration for regular tracks. The anchor is the date that counts
+        # as "Sun A 1"; it is per-cohort, because a 364-day fiscal year is not a whole
+        # number of 42-day cycles and each year's grid is laid out from its own start.
+        # A wrong anchor shifts every conflict check by a few days without erroring,
+        # so it is configurable rather than assumed.
+        self.pattern_start = pattern_start or datetime(2025, 9, 14)  # Sun A 1
         self.pattern_length = 42  # 6 weeks = 42 days
         
         # CCEMT schedule start date — the date the 28-day pattern's first column falls
@@ -199,7 +213,14 @@ class TrainingTrackManager:
             traceback.print_exc()
     
     def reload_tracks(self):
-        """Reload track data from database"""
+        """Reload track data from database.
+
+        Loads the cohort named by track_cohort when one is set, rather than
+        whichever cohort happens to be active. During a fiscal-year cutover those
+        differ: FY27's tracks are promoted to active months before FY26's last
+        classes are taught, and checking a September FY26 class against an FY27
+        track produces conflicts that aren't real.
+        """
         if not self.tracks_db_path:
             return
         
@@ -207,14 +228,35 @@ class TrainingTrackManager:
             conn = sqlite3.connect(self.tracks_db_path)
             cursor = conn.cursor()
             
-            # Get active tracks
-            cursor.execute("""
-                SELECT staff_name, track_data 
-                FROM tracks 
-                WHERE is_active = 1
-            """)
+            if self.track_cohort:
+                cursor.execute("""
+                    SELECT staff_name, track_data
+                    FROM tracks
+                    WHERE track_name = ?
+                """, (self.track_cohort,))
+                results = cursor.fetchall()
+                source = f"cohort '{self.track_cohort}'"
+                if not results:
+                    # A cohort that was named but never populated would silently
+                    # disable conflict checking; fall back to the active tracks.
+                    print(f"No tracks found for {source}; falling back to the active cohort")
+                    cursor.execute("""
+                        SELECT staff_name, track_data
+                        FROM tracks
+                        WHERE is_active = 1
+                    """)
+                    results = cursor.fetchall()
+                    source = "the active cohort"
+            else:
+                # Get active tracks
+                cursor.execute("""
+                    SELECT staff_name, track_data 
+                    FROM tracks 
+                    WHERE is_active = 1
+                """)
+                results = cursor.fetchall()
+                source = "the active cohort"
             
-            results = cursor.fetchall()
             self.tracks_cache = {}
             
             for staff_name, track_data_json in results:
@@ -226,7 +268,7 @@ class TrainingTrackManager:
                         continue
             
             conn.close()
-            print(f"Loaded {len(self.tracks_cache)} tracks from database")
+            print(f"Loaded {len(self.tracks_cache)} tracks from {source}")
             
         except Exception as e:
             print(f"Error loading tracks: {e}")

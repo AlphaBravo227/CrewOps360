@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 class UIComponents:
     
     @staticmethod
-    def display_enrollment_metrics(assigned_classes, enrolled_classes, live_meeting_count, excel_handler):
+    def display_enrollment_metrics(assigned_classes, enrolled_classes, live_meeting_count,
+                                   excel_handler, enrollment_manager=None):
         """Display enrollment metrics including LIVE staff meeting count"""
         col1, col2, col3, col4 = st.columns(4)
         
@@ -19,7 +20,11 @@ class UIComponents:
             # Check if user has any staff meetings assigned
             has_staff_meetings = any(excel_handler.is_staff_meeting(cls) for cls in assigned_classes)
             if has_staff_meetings:
-                st.metric("FY26 LIVE Staff Meetings", f"{live_meeting_count}/2")
+                # Label the year being viewed - the requirement is per fiscal year,
+                # and this metric used to name FY26 whatever year it was showing.
+                year_label = getattr(enrollment_manager, 'training_year', None) if enrollment_manager else None
+                prefix = f"{year_label} " if year_label else ""
+                st.metric(f"{prefix}LIVE Staff Meetings", f"{live_meeting_count}/2")
                 if live_meeting_count >= 2:
                     st.success("✅ LIVE meeting requirement met!")
                 else:
@@ -85,8 +90,12 @@ class UIComponents:
             return [base_date]
 
     @staticmethod
-    def display_enrollment_row(enrollment, excel_handler, enrollment_manager):
-        """Display a single enrollment row with conflict indicator"""
+    def display_enrollment_row(enrollment, excel_handler, enrollment_manager, read_only=False):
+        """Display a single enrollment row with conflict indicator.
+
+        read_only drops the cancel button - a closed training year is a record of
+        what happened, not something to edit.
+        """
         col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 1])
         
         with col1:
@@ -177,6 +186,10 @@ class UIComponents:
             # Clean the key to remove spaces and special characters that might cause issues
             unique_key = unique_key.replace(' ', '_').replace('/', '_').replace(':', '_').replace('-', '_').replace(',', '_')
             
+            if read_only:
+                st.caption("🔒 Closed")
+                return False
+
             # For two-day classes, show special cancel text
             is_two_day = UIComponents._is_two_day_class(enrollment_manager, class_name)
             cancel_text = "Cancel Both Days" if is_two_day else "Cancel"

@@ -1,10 +1,10 @@
 # Training Roster Upload Folder
 
 This folder holds the Excel roster file(s) that drive the Training & Events
-module (class assignments, enrollment, educator signups). The app reads
-whichever file is currently marked **active** in **Training Admin → Training
-Years** — it does not automatically pick up a file just because it's dropped
-in here.
+module (class assignments, enrollment, educator signups). One workbook per
+fiscal year, each registered in **Training Admin → Training Years** — the app
+reads the file that year's entry names, and does not automatically pick up a
+file just because it's dropped in here.
 
 ## Starting a new fiscal year (e.g. FY26 → FY27)
 
@@ -31,14 +31,48 @@ in here.
    - **Year label**: `FY27`
    - **Roster filename**: `FY27 Education Classes Roster.xlsx` (must match
      the filename in this folder exactly, including spaces/capitalization)
-   - **Linked track cohort**: optional — the matching Track Bidding cohort
-     name, for reference only
-   - **Start/end date**: optional, for reference only
+   - **Linked track cohort**: the matching Track Bidding cohort. Set this —
+     it's what schedule-conflict checking runs against. Without it, a class
+     in this year is checked against whichever cohort is active *today*,
+     which is the wrong one once the year has closed.
+   - **Pattern start date**: the date that cohort's 42-day track pattern
+     counts as "Sun A 1". **Verify this against the bid grid** — a wrong
+     anchor shifts every conflict check by a few days and reports nothing.
+     Leave blank to inherit FY26's anchor (2025-09-14).
+   - **Start/end date**: the fiscal year's span. The end date is what
+     closes the year automatically (see step 5), so it's worth filling in.
+
+   New years are created as a **draft**: admin-visible only, so a
+   half-finished roster is never exposed to staff.
 
 4. When you're ready to cut over, open the FY27 entry and click **Promote to
-   Active**. This immediately switches what every staff member sees on the
-   registration screen to the FY27 roster. The previous year's config and
-   file are left in place — nothing is deleted.
+   Active**. FY27 becomes the year the registration screen opens on, and
+   both years are now **open**: staff get a year picker and can still cancel
+   and re-book their remaining FY26 classes. Nothing is deleted.
+
+   The confirm dialog has a **"make the outgoing year read-only right
+   away"** checkbox. Leave it unchecked for a normal cutover — the outgoing
+   fiscal year still has months of classes left to run.
+
+5. FY26 closes itself once its **end date** passes: it flips to **read-only**,
+   staff can still see what they took but can't enroll or cancel, and the
+   requirement counts they see for FY27 start from zero. To close it sooner,
+   set its status to Read-only by hand.
+
+## Training year statuses
+
+| Status | Staff see it | Can enroll/cancel | Use it for |
+|---|---|---|---|
+| **Draft** | No | No | A year you're still building |
+| **Open** | Yes | Yes | The current year — and the outgoing one, during a cutover |
+| **Read-only** | Yes | No | A finished year staff should still be able to review |
+| **Archived** | No | No | Old years you want out of the picker |
+
+More than one year can be **Open** at a time; that overlap is what makes a
+cutover work. Everything a staff member sees — enrollments, seat counts,
+staff-meeting progress, LIVE-meeting counts — is scoped to the year selected
+at the top of the registration screen, so requirements reset cleanly at the
+year boundary without anyone deleting last year's records.
 
 ## Excel format
 

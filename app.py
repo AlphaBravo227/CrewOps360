@@ -78,7 +78,8 @@ from modules.track_data_admin_ui import display_track_data_admin
 
 # Import training modules with new unified database approach
 try:
-    from training_modules.unified_database import UnifiedDatabase, get_active_roster_path
+    from training_modules.unified_database import (
+        UnifiedDatabase, get_active_roster_path, YEAR_STATUS_OPEN)
     from training_modules.excel_handler import ExcelHandler
     from training_modules.enrollment_manager import EnrollmentManager
     from training_modules.ui_components import UIComponents as TrainingUIComponents  # Renamed to avoid conflict
@@ -457,9 +458,52 @@ def display_training_events_app():
         if 'training_excel_handler' in st.session_state and st.session_state.training_excel_handler:
             st.session_state.unified_db.excel_handler = st.session_state.training_excel_handler
 
+        # Work out which training year this session is looking at before anything is
+        # loaded: the roster, the enrollments and the conflict checks all have to come
+        # from the same year, so the choice can't be made after the handlers are built.
+        visible_years = st.session_state.unified_db.get_staff_visible_training_years()
+        active_year = st.session_state.unified_db.get_active_training_year()
+        default_year_label = None
+        if active_year:
+            default_year_label = active_year['year_label']
+        elif visible_years:
+            default_year_label = visible_years[0]['year_label']
+
+        selected_year_label = st.session_state.get('training_selected_year') or default_year_label
+        visible_labels = [y['year_label'] for y in visible_years]
+        # A year that stopped being visible mid-session (archived by an admin) falls
+        # back to the default rather than leaving the page pinned to something gone.
+        if visible_labels and selected_year_label not in visible_labels:
+            selected_year_label = default_year_label
+        st.session_state.training_selected_year = selected_year_label
+
+        selected_year = next(
+            (y for y in visible_years if y['year_label'] == selected_year_label), None)
+        # Status is already on each row; derive writability from it rather than asking
+        # the database once per option per render.
+        writable_by_label = {
+            y['year_label']: y['status'] == YEAR_STATUS_OPEN for y in visible_years
+        }
+        year_is_writable = writable_by_label.get(
+            selected_year_label,
+            st.session_state.unified_db.is_training_year_writable(selected_year_label))
+
+        # Switching years means a different roster workbook, so the cached handlers
+        # built against the old one have to go.
+        if st.session_state.get('training_loaded_year') != selected_year_label:
+            for key in ('training_excel_handler', 'training_track_manager',
+                        'training_enrollment_manager', 'training_educator_manager',
+                        'training_excel_admin_functions'):
+                st.session_state.pop(key, None)
+            st.session_state.training_loaded_year = selected_year_label
+
         # Initialize Excel handler
         if 'training_excel_handler' not in st.session_state:
-            excel_path = get_active_roster_path()
+            if selected_year and selected_year.get('roster_filename'):
+                excel_path = os.path.join('training', 'upload',
+                                          selected_year['roster_filename'])
+            else:
+                excel_path = get_active_roster_path()
 
             if not os.path.exists(excel_path):
                 st.error(f"Excel file not found: {excel_path}")
@@ -474,7 +518,27 @@ def display_training_events_app():
 
         # Initialize Track Manager (existing code)
         if 'training_track_manager' not in st.session_state:
-            st.session_state.training_track_manager = TrainingTrackManager('data/medflight_tracks.db')
+            # Conflict checking has to run against the track cohort that was in force
+            # during the year being viewed, on that year's pattern grid - not against
+            # whatever cohort is active today.
+            cohort = (selected_year or {}).get('linked_track_name') or None
+            pattern_start = None
+            pattern_start_raw = (selected_year or {}).get('pattern_start_date')
+            if pattern_start_raw:
+                try:
+                    pattern_start = datetime.strptime(pattern_start_raw.strip(), '%Y-%m-%d')
+                except ValueError:
+                    st.warning(
+                        f"{selected_year_label}'s pattern start date "
+                        f"'{pattern_start_raw}' isn't a valid YYYY-MM-DD date. "
+                        f"Using the default; check Training Admin > Training Years."
+                    )
+
+            st.session_state.training_track_manager = TrainingTrackManager(
+                'data/medflight_tracks.db',
+                track_cohort=cohort,
+                pattern_start=pattern_start,
+            )
             print("✓ Track Manager initialized")
 
             # CCEMT schedules come from the database (Track Data admin); the enrollment
@@ -484,12 +548,14 @@ def display_training_events_app():
             )
             print("✓ CCEMT schedules loaded")
 
-        # Initialize enrollment manager
+        # Initialize enrollment manager, pinned to the year being viewed so a closed
+        # year reports its own enrollments rather than the active year's.
         if 'training_enrollment_manager' not in st.session_state:
             st.session_state.training_enrollment_manager = EnrollmentManager(
                 st.session_state.unified_db,
                 st.session_state.training_excel_handler,
-                st.session_state.training_track_manager
+                st.session_state.training_track_manager,
+                training_year=selected_year_label
             )
 
         # Initialize educator manager - NEW
@@ -498,7 +564,8 @@ def display_training_events_app():
             st.session_state.training_educator_manager = EducatorManager(
                 st.session_state.unified_db,
                 st.session_state.training_excel_handler,
-                st.session_state.training_track_manager
+                st.session_state.training_track_manager,
+                training_year=selected_year_label
             )
 
         # Initialize admin access
@@ -547,9 +614,36 @@ def display_training_events_app():
             st.warning("⚠️ No track database found")
 
     # USER INTERFACE - This should be accessible to all authenticated users
-    active_training_year = st.session_state.unified_db.get_active_training_year()
-    if active_training_year:
-        st.caption(f"📅 Registering for: **{active_training_year['year_label']}**")
+    # During a fiscal-year cutover two years are open at once: the outgoing year still
+    # has classes to finish and the incoming year is taking signups. Offer the choice
+    # only when there is one to make.
+    if len(visible_years) > 1:
+        year_choice = st.selectbox(
+            "Training year",
+            options=visible_labels,
+            index=visible_labels.index(selected_year_label) if selected_year_label in visible_labels else 0,
+            format_func=lambda label: (
+                f"{label} (current)" if active_year and label == active_year['year_label']
+                else f"{label} (closed)" if not writable_by_label.get(label, True)
+                else label
+            ),
+            key="training_year_selector",
+        )
+        if year_choice != selected_year_label:
+            st.session_state.training_selected_year = year_choice
+            st.rerun()
+    elif selected_year_label:
+        st.caption(f"📅 Registering for: **{selected_year_label}**")
+
+    if selected_year_label and not year_is_writable:
+        end_date = (selected_year or {}).get('end_date')
+        closed_note = f" It ended {end_date}." if end_date else ""
+        st.warning(
+            f"**{selected_year_label} is closed.**{closed_note} You can review what you "
+            f"took, but enrolling and cancelling are no longer available for this year."
+            + (f" Switch to {active_year['year_label']} above to register."
+               if active_year and active_year['year_label'] != selected_year_label else "")
+        )
 
     # Staff selection
     staff_list = st.session_state.training_excel_handler.get_staff_list()
@@ -615,7 +709,12 @@ def display_training_events_app():
                     # Enroll in Classes Tab - UPDATED to keep classes expanded after enrollment
                     st.header("📝 Enroll in Classes")
                     
-                    if not assigned_classes:
+                    if not year_is_writable:
+                        st.info(
+                            f"{selected_year_label} is closed - no new enrollments. "
+                            f"Your record for the year is under **My Enrollments**."
+                        )
+                    elif not assigned_classes:
                         st.info("You have no classes assigned at this time.")
                     else:
                         # Display ALL assigned classes - always keep them expanded to show enrollment options
@@ -676,7 +775,8 @@ def display_training_events_app():
                         if TrainingUIComponents.display_enrollment_row(
                             enrollment, 
                             st.session_state.training_excel_handler, 
-                            st.session_state.training_enrollment_manager
+                            st.session_state.training_enrollment_manager,
+                            read_only=not year_is_writable
                         ):
                             # Handle cancellation
                             if st.session_state.training_enrollment_manager.cancel_enrollment(enrollment['id']):
@@ -693,7 +793,8 @@ def display_training_events_app():
                 from training_modules.educator_ui_components import EducatorUIComponents
                 EducatorUIComponents.display_staff_educator_enrollments(
                     st.session_state.training_educator_manager,
-                    selected_staff
+                    selected_staff,
+                    read_only=not year_is_writable
                 )
 
         with tab3:
@@ -735,11 +836,17 @@ def display_training_events_app():
                 
                 st.markdown("---")
                 
-                # Display available educator opportunities (THIS IS THE CORRECT METHOD)
-                EducatorUIComponents.display_educator_opportunities(
-                    st.session_state.training_educator_manager,
-                    selected_staff
-                )
+                if not year_is_writable:
+                    st.info(
+                        f"{selected_year_label} is closed - no new educator signups. "
+                        f"What you taught that year is listed under **My Enrollments**."
+                    )
+                else:
+                    # Display available educator opportunities (THIS IS THE CORRECT METHOD)
+                    EducatorUIComponents.display_educator_opportunities(
+                        st.session_state.training_educator_manager,
+                        selected_staff
+                    )
 
         # Track Schedule tab (always the last tab) - keep original placeholder
         schedule_tab = tab5 if is_educator_authorized else tab4

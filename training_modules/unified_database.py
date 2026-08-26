@@ -23,6 +23,21 @@ LEGACY_TRAINING_YEAR = 'FY26'
 # column default, but COALESCE keeps the filter correct even if a NULL slips through.
 _YEAR_MATCH = "COALESCE(training_year, '%s') = ?" % LEGACY_TRAINING_YEAR
 
+# Training year lifecycle. A single is_active flag can't express the overlap a
+# fiscal-year cutover needs - the outgoing year has to stay editable for its last
+# few months while the incoming year takes signups - so status carries that and
+# is_active only marks which year the registration screen opens on.
+YEAR_STATUS_DRAFT = 'draft'        # being built; admin-only, invisible to staff
+YEAR_STATUS_OPEN = 'open'          # accepting signups; more than one year may be open
+YEAR_STATUS_READONLY = 'readonly'  # visible to staff, no enrolling or cancelling
+YEAR_STATUS_ARCHIVED = 'archived'  # hidden from staff; admin and reporting only
+
+YEAR_STATUSES = (YEAR_STATUS_DRAFT, YEAR_STATUS_OPEN,
+                 YEAR_STATUS_READONLY, YEAR_STATUS_ARCHIVED)
+
+# Statuses a staff member can see at all, and the one status that accepts writes.
+STAFF_VISIBLE_STATUSES = (YEAR_STATUS_OPEN, YEAR_STATUS_READONLY)
+
 
 class UnifiedDatabase:
     def __init__(self, db_path, excel_handler=None):
@@ -154,14 +169,41 @@ class UnifiedDatabase:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 year_label TEXT NOT NULL UNIQUE,
                 is_active INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'draft',
                 roster_filename TEXT,
                 linked_track_name TEXT,
+                pattern_start_date TEXT,
                 start_date TEXT,
                 end_date TEXT,
                 created_date TEXT NOT NULL,
                 modified_date TEXT NOT NULL
             )
         ''')
+
+        # Add the status column if missing (migration). Existing rows take their
+        # status from is_active: the active year was open, every other year was a
+        # past cohort nobody should still be writing to.
+        self.cursor.execute("PRAGMA table_info(training_years)")
+        year_columns = [col[1] for col in self.cursor.fetchall()]
+        if 'status' not in year_columns:
+            self.cursor.execute(
+                f"ALTER TABLE training_years ADD COLUMN status TEXT DEFAULT '{YEAR_STATUS_OPEN}'"
+            )
+            self.cursor.execute(
+                "UPDATE training_years SET status = CASE WHEN is_active = 1 THEN ? ELSE ? END",
+                (YEAR_STATUS_OPEN, YEAR_STATUS_READONLY)
+            )
+
+        if 'pattern_start_date' not in year_columns:
+            self.cursor.execute(
+                "ALTER TABLE training_years ADD COLUMN pattern_start_date TEXT"
+            )
+            # FY26's anchor is the one the code carried hardcoded; record it so the
+            # value is visible and editable rather than implied.
+            self.cursor.execute(
+                "UPDATE training_years SET pattern_start_date = '2025-09-14' "
+                "WHERE year_label = 'FY26' AND pattern_start_date IS NULL"
+            )
 
         # Add training_year column to enrollment/signup tables if missing (migration).
         # Existing rows backfill to 'FY26' since that's the only cohort that existed
@@ -181,10 +223,10 @@ class UnifiedDatabase:
             now = self._format_eastern_timestamp(self._get_eastern_time())
             self.cursor.execute('''
                 INSERT INTO training_years
-                    (year_label, is_active, roster_filename, linked_track_name,
-                     start_date, end_date, created_date, modified_date)
-                VALUES ('FY26', 1, ?, 'FY26', '2025-09-28', '2026-09-26', ?, ?)
-            ''', (FY26_ROSTER_FILENAME, now, now))
+                    (year_label, is_active, status, roster_filename, linked_track_name,
+                     pattern_start_date, start_date, end_date, created_date, modified_date)
+                VALUES ('FY26', 1, ?, ?, 'FY26', '2025-09-14', '2025-09-28', '2026-09-26', ?, ?)
+            ''', (YEAR_STATUS_OPEN, FY26_ROSTER_FILENAME, now, now))
 
         # Point any year still naming the pre-FY27 "MASTER" roster at its renamed file.
         # The workbook became FY26-specific when FY27 got its own; a database written
@@ -210,8 +252,10 @@ class UnifiedDatabase:
             'id': row['id'],
             'year_label': row['year_label'],
             'is_active': row['is_active'],
+            'status': row['status'] or YEAR_STATUS_DRAFT,
             'roster_filename': row['roster_filename'],
             'linked_track_name': row['linked_track_name'],
+            'pattern_start_date': row['pattern_start_date'],
             'start_date': row['start_date'],
             'end_date': row['end_date'],
             'created_date': row['created_date'],
@@ -266,18 +310,115 @@ class UnifiedDatabase:
         finally:
             self.disconnect()
 
+    def _auto_close_expired_years(self):
+        """Move any non-active year past its end date to read-only.
+
+        Freezing the outgoing year is the kind of thing that gets forgotten in the
+        weeks after a cutover, so it happens on its own once the year is over.
+        Only years that are currently open move: draft years aren't published yet
+        and archived years are already past read-only. The active year is left
+        alone - if its end date has passed and nothing has been promoted, staff
+        still need somewhere to register.
+        Requires an open connection.
+        """
+        today = self._get_eastern_time().strftime('%Y-%m-%d')
+        self.cursor.execute("""
+            UPDATE training_years
+            SET status = ?, modified_date = ?
+            WHERE status = ? AND is_active = 0
+                  AND end_date IS NOT NULL AND end_date != '' AND end_date < ?
+        """, (YEAR_STATUS_READONLY,
+              self._format_eastern_timestamp(self._get_eastern_time()),
+              YEAR_STATUS_OPEN, today))
+        return self.cursor.rowcount
+
+    def set_training_year_status(self, year_label, status):
+        """Set a training year's lifecycle status."""
+        if status not in YEAR_STATUSES:
+            return False, f"Unknown status '{status}'"
+        self.connect()
+        try:
+            self.cursor.execute("SELECT is_active FROM training_years WHERE year_label = ?",
+                                (year_label,))
+            row = self.cursor.fetchone()
+            if not row:
+                return False, f"Training year '{year_label}' not found"
+            if row['is_active'] and status != YEAR_STATUS_OPEN:
+                return False, (f"'{year_label}' is the active year - promote another year "
+                               f"first, then set this one to {status}")
+
+            self.cursor.execute(
+                "UPDATE training_years SET status = ?, modified_date = ? WHERE year_label = ?",
+                (status, self._format_eastern_timestamp(self._get_eastern_time()), year_label)
+            )
+            self.conn.commit()
+            return True, f"'{year_label}' is now {status}"
+        except Exception as e:
+            return False, f"Error updating status: {e}"
+        finally:
+            self.disconnect()
+
+    def get_staff_visible_training_years(self):
+        """Return the years staff may see, active year first, then newest.
+
+        Expired years are closed off first so the list reflects today, not
+        whenever an admin last touched the screen.
+        """
+        self.connect()
+        try:
+            self._auto_close_expired_years()
+            self.conn.commit()
+            placeholders = ','.join('?' for _ in STAFF_VISIBLE_STATUSES)
+            self.cursor.execute(
+                f"SELECT * FROM training_years WHERE status IN ({placeholders}) "
+                f"ORDER BY is_active DESC, created_date DESC",
+                STAFF_VISIBLE_STATUSES
+            )
+            return [self._training_year_row_to_dict(r) for r in self.cursor.fetchall()]
+        finally:
+            self.disconnect()
+
+    def _year_accepts_writes(self, year_label):
+        """Whether year_label is open for enrolling/cancelling. Requires an open
+        connection, so write paths can check without a second connect()."""
+        self.cursor.execute("SELECT status FROM training_years WHERE year_label = ?", (year_label,))
+        row = self.cursor.fetchone()
+        if not row:
+            return True  # no config row: the pre-training_years state, always writable
+        return (row['status'] or YEAR_STATUS_DRAFT) == YEAR_STATUS_OPEN
+
+    def is_training_year_writable(self, year_label=None):
+        """Whether enrolling and cancelling are allowed in this year.
+
+        Only an open year accepts writes; a read-only, archived or draft year does
+        not. Callers pass the year a staff member is looking at, which is not
+        necessarily the active one.
+        """
+        self.connect()
+        try:
+            self._auto_close_expired_years()
+            self.conn.commit()
+            return self._year_accepts_writes(self._resolve_training_year(year_label))
+        finally:
+            self.disconnect()
+
     def create_training_year(self, year_label, roster_filename=None, linked_track_name=None,
-                              start_date=None, end_date=None):
-        """Create a new training year (inactive by default)."""
+                              start_date=None, end_date=None, status=YEAR_STATUS_DRAFT,
+                              pattern_start_date=None):
+        """Create a new training year. Starts as a draft: admin-visible only, so a
+        half-built roster is never exposed to staff before it's ready."""
+        if status not in YEAR_STATUSES:
+            return False, f"Unknown status '{status}'"
         self.connect()
         try:
             now = self._format_eastern_timestamp(self._get_eastern_time())
             self.cursor.execute('''
                 INSERT INTO training_years
-                    (year_label, is_active, roster_filename, linked_track_name,
-                     start_date, end_date, created_date, modified_date)
-                VALUES (?, 0, ?, ?, ?, ?, ?, ?)
-            ''', (year_label, roster_filename, linked_track_name, start_date, end_date, now, now))
+                    (year_label, is_active, status, roster_filename, linked_track_name,
+                     pattern_start_date, start_date, end_date, created_date, modified_date)
+                VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (year_label, status, roster_filename, linked_track_name,
+                  pattern_start_date, start_date, end_date, now, now))
             self.conn.commit()
             return True, f"Training year '{year_label}' created successfully"
         except sqlite3.IntegrityError:
@@ -289,7 +430,8 @@ class UnifiedDatabase:
 
     def update_training_year(self, year_label, **kwargs):
         """Update roster_filename/linked_track_name/start_date/end_date on a training year."""
-        allowed = {'roster_filename', 'linked_track_name', 'start_date', 'end_date'}
+        allowed = {'roster_filename', 'linked_track_name', 'start_date', 'end_date',
+                   'pattern_start_date'}
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return False, "No valid fields to update"
@@ -306,23 +448,40 @@ class UnifiedDatabase:
         finally:
             self.disconnect()
 
-    def promote_training_year_to_active(self, year_label):
-        """Deactivate the currently active training year and activate year_label."""
+    def promote_training_year_to_active(self, year_label, close_previous=False):
+        """Make year_label the year the registration screen opens on.
+
+        The outgoing year stays open by default. A fiscal year ends months after
+        the next one starts taking signups, and staff still need to cancel and
+        re-book their remaining classes in it; it goes read-only on its end date,
+        or immediately if close_previous is set.
+        """
         self.connect()
         try:
             now = self._format_eastern_timestamp(self._get_eastern_time())
             active_row = self._fetch_active_training_year_row()
-            if active_row:
+            previous_label = active_row['year_label'] if active_row else None
+            if previous_label:
                 self.cursor.execute(
-                    "UPDATE training_years SET is_active = 0, modified_date = ? WHERE year_label = ?",
-                    (now, active_row['year_label'])
+                    "UPDATE training_years SET is_active = 0, status = ?, modified_date = ? "
+                    "WHERE year_label = ?",
+                    (YEAR_STATUS_READONLY if close_previous else YEAR_STATUS_OPEN,
+                     now, previous_label)
                 )
             self.cursor.execute(
-                "UPDATE training_years SET is_active = 1, modified_date = ? WHERE year_label = ?",
-                (now, year_label)
+                "UPDATE training_years SET is_active = 1, status = ?, modified_date = ? "
+                "WHERE year_label = ?",
+                (YEAR_STATUS_OPEN, now, year_label)
             )
+            self._auto_close_expired_years()
             self.conn.commit()
-            return True, f"'{year_label}' is now the active training year"
+
+            message = f"'{year_label}' is now the active training year"
+            if previous_label and close_previous:
+                message += f"; '{previous_label}' is now read-only"
+            elif previous_label:
+                message += f"; '{previous_label}' stays open for signups"
+            return True, message
         except Exception as e:
             return False, f"Error promoting training year: {e}"
         finally:
@@ -438,6 +597,13 @@ class UnifiedDatabase:
         
         self.connect()
         try:
+            self._auto_close_expired_years()
+            active_row = self._fetch_active_training_year_row()
+            active_label = active_row['year_label'] if active_row else LEGACY_TRAINING_YEAR
+            if not self._year_accepts_writes(active_label):
+                print(f"DEBUG: {active_label} is not open for signups; enrollment refused")
+                return False
+
             # First, check if this exact enrollment already exists
             self.cursor.execute('''
                 SELECT id, status FROM training_enrollments 
@@ -549,9 +715,20 @@ class UnifiedDatabase:
             self.disconnect()
     
     def cancel_enrollment(self, enrollment_id):
-        """Cancel a training enrollment"""
+        """Cancel a training enrollment. Refused once its year is read-only."""
         self.connect()
         try:
+            self._auto_close_expired_years()
+            # Check against the row's own year, not the active one - a closed year's
+            # enrollments stay frozen even while a newer year is open.
+            self.cursor.execute(
+                "SELECT COALESCE(training_year, ?) AS year FROM training_enrollments WHERE id = ?",
+                (LEGACY_TRAINING_YEAR, enrollment_id))
+            year_row = self.cursor.fetchone()
+            if year_row and not self._year_accepts_writes(year_row['year']):
+                print(f"DEBUG: {year_row['year']} is read-only; cancellation refused")
+                return False
+
             # Get enrollment details for audit
             self.cursor.execute('''
                 SELECT staff_name, class_name, class_date, role, meeting_type, 
@@ -595,6 +772,13 @@ class UnifiedDatabase:
         """Add a new educator signup - COMPLETELY FIXED"""
         self.connect()
         try:
+            self._auto_close_expired_years()
+            active_row = self._fetch_active_training_year_row()
+            active_label = active_row['year_label'] if active_row else LEGACY_TRAINING_YEAR
+            if not self._year_accepts_writes(active_label):
+                print(f"DEBUG: {active_label} is not open for signups; educator signup refused")
+                return False
+
             current_time = self._get_eastern_time()
             signup_timestamp = self._format_eastern_timestamp(current_time)
             override_timestamp = self._format_eastern_timestamp(current_time) if conflict_override else None
@@ -714,9 +898,18 @@ class UnifiedDatabase:
             self.disconnect()
     
     def cancel_educator_signup(self, signup_id):
-        """Cancel an educator signup"""
+        """Cancel an educator signup. Refused once its year is read-only."""
         self.connect()
         try:
+            self._auto_close_expired_years()
+            self.cursor.execute(
+                "SELECT COALESCE(training_year, ?) AS year FROM training_educator_signups WHERE id = ?",
+                (LEGACY_TRAINING_YEAR, signup_id))
+            year_row = self.cursor.fetchone()
+            if year_row and not self._year_accepts_writes(year_row['year']):
+                print(f"DEBUG: {year_row['year']} is read-only; cancellation refused")
+                return False
+
             # Get signup details for audit
             self.cursor.execute('''
                 SELECT staff_name, class_name, class_date, conflict_override, conflict_details

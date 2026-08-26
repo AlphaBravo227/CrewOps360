@@ -17,8 +17,13 @@ class StaffMeetingComponents:
         # Get progress data
         progress = enrollment_manager.get_staff_meeting_progress(staff_name)
         
-        # Create progress display
-        st.markdown("### 📋 Staff Meeting Progress")
+        # Create progress display. Name the year: the requirement resets each fiscal
+        # year, and during a cutover two years' progress bars look identical otherwise.
+        year_label = getattr(enrollment_manager, 'training_year', None)
+        heading = "### 📋 Staff Meeting Progress"
+        if year_label:
+            heading += f" - {year_label}"
+        st.markdown(heading)
         
         # Main metrics row
         col1, col2, col3, col4 = st.columns(4)

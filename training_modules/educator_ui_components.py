@@ -261,8 +261,11 @@ class EducatorUIComponents:
                         st.rerun()
     
     @staticmethod
-    def display_staff_educator_enrollments(educator_manager, staff_name):
-        """Display staff member's educator signups with enhanced colleague info"""
+    def display_staff_educator_enrollments(educator_manager, staff_name, read_only=False):
+        """Display staff member's educator signups with enhanced colleague info.
+
+        read_only drops the cancel buttons, for a training year that has closed.
+        """
         signups = educator_manager.get_staff_educator_signups(staff_name)
         
         if not signups:
@@ -325,7 +328,9 @@ class EducatorUIComponents:
                             st.write("*Only educator signed up*")
                 
                 with col4:
-                    if st.button("Cancel", key=f"cancel_educator_{signup['id']}"):
+                    if read_only:
+                        st.caption("🔒 Closed")
+                    elif st.button("Cancel", key=f"cancel_educator_{signup['id']}"):
                         if educator_manager.cancel_educator_signup(signup['id']):
                             st.success("Educator signup cancelled!")
                             st.rerun()

@@ -1352,8 +1352,23 @@ class AdminAccess:
         st.subheader("🗓️ Training Years")
         st.caption(
             "Each training year points at its own roster file in training/upload/ and can be "
-            "linked to a Track Bidding cohort for reference. Promoting a year to active switches "
-            "which roster the registration screen loads for everyone."
+            "linked to a Track Bidding cohort. Promoting a year to active switches which roster "
+            "the registration screen opens on; the outgoing year stays open until you close it "
+            "or its end date passes."
+        )
+        with st.expander("What the statuses mean", expanded=False):
+            st.markdown(
+                "- **Draft** - you're still building it. Admin-only; staff never see it.\n"
+                "- **Open** - accepting signups. More than one year can be open at once, "
+                "which is what lets the outgoing year finish while the new one starts.\n"
+                "- **Read-only** - staff can see their enrollments but can't add or cancel. "
+                "A year that isn't active moves here on its own once its end date passes.\n"
+                "- **Archived** - hidden from staff entirely. Admin reporting only."
+            )
+
+        from .unified_database import (
+            YEAR_STATUS_DRAFT, YEAR_STATUS_OPEN, YEAR_STATUS_READONLY,
+            YEAR_STATUS_ARCHIVED, YEAR_STATUSES,
         )
 
         unified_db = st.session_state.get('unified_db')
@@ -1374,11 +1389,27 @@ class AdminAccess:
         if not all_years:
             st.info("No training years configured yet.")
 
+        status_labels = {
+            YEAR_STATUS_DRAFT: ("📝", "Draft"),
+            YEAR_STATUS_OPEN: ("🟢", "Open for signups"),
+            YEAR_STATUS_READONLY: ("🔒", "Read-only"),
+            YEAR_STATUS_ARCHIVED: ("📦", "Archived"),
+        }
+
         for ty in all_years:
             label = ty['year_label']
             is_active = bool(ty['is_active'])
-            status_icon = "🟢" if is_active else "⚪"
-            with st.expander(f"{status_icon} {label} {'(Active)' if is_active else ''}", expanded=False):
+            status = ty.get('status') or YEAR_STATUS_DRAFT
+            icon, status_text = status_labels.get(status, ("⚪", status))
+            header = f"{icon} {label} - {status_text}"
+            if is_active:
+                header += " (Active)"
+            with st.expander(header, expanded=False):
+                if is_active:
+                    st.info(
+                        "This is the active year - the one the registration screen opens on. "
+                        "Promote another year before closing it."
+                    )
                 roster_filename = ty.get('roster_filename') or ""
                 if roster_filename:
                     roster_path = os.path.join('training', 'upload', roster_filename)
@@ -1398,7 +1429,19 @@ class AdminAccess:
                 u_track = st.selectbox(
                     "Linked track cohort", options=track_options, index=track_index,
                     key=f"ty_track_{label}",
-                    help="For reference only - which Track Bidding cohort's dates this training year corresponds to"
+                    help="Which Track Bidding cohort this year's classes are checked "
+                         "against for schedule conflicts. Set this: without it, conflict "
+                         "checking uses whichever cohort is active today, which is the "
+                         "wrong one for a year that has closed."
+                )
+                u_pattern = st.text_input(
+                    "Pattern start date (YYYY-MM-DD)",
+                    value=ty.get('pattern_start_date') or "",
+                    key=f"ty_pattern_{label}",
+                    help="The date this cohort's 42-day track pattern counts as "
+                         "'Sun A 1'. Verify it against the bid grid: a wrong anchor "
+                         "shifts every conflict check by a few days without any error. "
+                         "Leave blank to use FY26's anchor (2025-09-14)."
                 )
                 col1, col2 = st.columns(2)
                 with col1:
@@ -1416,13 +1459,35 @@ class AdminAccess:
                     ok, msg = unified_db.update_training_year(
                         label, roster_filename=u_roster.strip(),
                         linked_track_name=u_track, start_date=u_start.strip(),
-                        end_date=u_end.strip()
+                        end_date=u_end.strip(), pattern_start_date=u_pattern.strip()
                     )
                     if ok:
                         st.success(msg)
                         st.rerun()
                     else:
                         st.error(msg)
+
+                if not is_active:
+                    st.markdown("---")
+                    st.markdown("**Status**")
+                    status_options = [s for s in YEAR_STATUSES]
+                    new_status = st.selectbox(
+                        "Lifecycle status",
+                        options=status_options,
+                        index=status_options.index(status) if status in status_options else 0,
+                        format_func=lambda s: status_labels.get(s, ("", s))[1],
+                        key=f"ty_status_{label}",
+                        label_visibility="collapsed",
+                    )
+                    if new_status != status:
+                        if st.button(f"Set {label} to {status_labels.get(new_status, ('', new_status))[1]}",
+                                     key=f"ty_status_set_{label}"):
+                            ok, msg = unified_db.set_training_year_status(label, new_status)
+                            if ok:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
 
                 if not is_active:
                     st.markdown("---")
@@ -1437,10 +1502,19 @@ class AdminAccess:
                                 f"This switches the registration screen to {label}'s roster "
                                 f"for all staff. Are you sure?"
                             )
+                            close_previous = st.checkbox(
+                                "Also make the outgoing year read-only right away",
+                                value=False, key=f"ty_close_prev_{label}",
+                                help="Leave this unchecked during a normal cutover: the "
+                                     "outgoing fiscal year still has months of classes left, "
+                                     "and staff need to cancel and re-book in it. It closes "
+                                     "on its own once its end date passes."
+                            )
                             yc, nc = st.columns(2)
                             with yc:
                                 if st.button("Yes, Promote", key=f"ty_promote_yes_{label}"):
-                                    ok, msg = unified_db.promote_training_year_to_active(label)
+                                    ok, msg = unified_db.promote_training_year_to_active(
+                                        label, close_previous=close_previous)
                                     st.session_state[f'confirm_ty_promote_{label}'] = False
                                     if ok:
                                         # Force the training subsystem to reload against the
@@ -1489,11 +1563,20 @@ class AdminAccess:
                 placeholder="FY27 Education Classes Roster.xlsx"
             )
             new_track = st.selectbox("Linked track cohort", options=track_options, key="new_ty_track")
+            new_pattern = st.text_input(
+                "Pattern start date (YYYY-MM-DD)", key="new_ty_pattern",
+                help="The date this cohort's 42-day track pattern counts as 'Sun A 1'. "
+                     "Verify it against the bid grid before staff start enrolling."
+            )
             c1, c2 = st.columns(2)
             with c1:
                 new_start = st.text_input("Start date (YYYY-MM-DD)", key="new_ty_start")
             with c2:
                 new_end = st.text_input("End date (YYYY-MM-DD)", key="new_ty_end")
+            st.caption(
+                "New years are created as a **draft** - staff won't see them until you "
+                "set the status to Open or promote the year to active."
+            )
 
             submitted = st.form_submit_button("Create Training Year")
             if submitted:
@@ -1503,7 +1586,8 @@ class AdminAccess:
                     ok, msg = unified_db.create_training_year(
                         new_label.strip(), roster_filename=new_roster.strip() or None,
                         linked_track_name=new_track or None,
-                        start_date=new_start.strip() or None, end_date=new_end.strip() or None
+                        start_date=new_start.strip() or None, end_date=new_end.strip() or None,
+                        pattern_start_date=new_pattern.strip() or None
                     )
                     if ok:
                         st.success(msg)
