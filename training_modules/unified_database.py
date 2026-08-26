@@ -15,6 +15,19 @@ from .training_email_notifications import send_training_event_notification
 FY26_ROSTER_FILENAME = 'FY26 Education Classes Roster.xlsx'
 LEGACY_ROSTER_FILENAME = 'MASTER Education Classes Roster.xlsx'
 
+# A training year runs on the calendar - 10/1 through 9/30 - which is NOT the span of
+# the track cohort it is checked against. Track cohorts start on whichever Sunday
+# begins their 42-day pattern (FY26: 2025-09-28, FY27: 2026-09-27), so the two differ
+# by a few days at each end. These are the training-year dates; the track cohort's
+# grid is anchored separately by pattern_start_date.
+FY26_TRAINING_YEAR_START = '2025-10-01'
+FY26_TRAINING_YEAR_END = '2026-09-30'
+
+# What the FY26 row was seeded with before the two spans were told apart: the track
+# cohort's dates. Used to spot an untouched row that still needs correcting.
+_LEGACY_FY26_START = '2025-09-28'
+_LEGACY_FY26_END = '2026-09-26'
+
 # FY26 was the only cohort that existed before enrollments carried a training_year,
 # so every row written back then belongs to it.
 LEGACY_TRAINING_YEAR = 'FY26'
@@ -225,8 +238,22 @@ class UnifiedDatabase:
                 INSERT INTO training_years
                     (year_label, is_active, status, roster_filename, linked_track_name,
                      pattern_start_date, start_date, end_date, created_date, modified_date)
-                VALUES ('FY26', 1, ?, ?, 'FY26', '2025-09-14', '2025-09-28', '2026-09-26', ?, ?)
-            ''', (YEAR_STATUS_OPEN, FY26_ROSTER_FILENAME, now, now))
+                VALUES ('FY26', 1, ?, ?, 'FY26', '2025-09-14', ?, ?, ?, ?)
+            ''', (YEAR_STATUS_OPEN, FY26_ROSTER_FILENAME,
+                  FY26_TRAINING_YEAR_START, FY26_TRAINING_YEAR_END, now, now))
+
+        # Correct an FY26 row still carrying the track cohort's dates rather than the
+        # training year's. The two were conflated when there was only one year and
+        # nothing depended on the difference; end_date now drives auto-close, and
+        # closing on 9/26 would freeze the year while classes still ran to 9/30.
+        # Only an untouched row is corrected - an admin's own dates are left alone.
+        self.cursor.execute(
+            "UPDATE training_years SET start_date = ?, end_date = ?, modified_date = ? "
+            "WHERE year_label = 'FY26' AND start_date = ? AND end_date = ?",
+            (FY26_TRAINING_YEAR_START, FY26_TRAINING_YEAR_END,
+             self._format_eastern_timestamp(self._get_eastern_time()),
+             _LEGACY_FY26_START, _LEGACY_FY26_END)
+        )
 
         # Point any year still naming the pre-FY27 "MASTER" roster at its renamed file.
         # The workbook became FY26-specific when FY27 got its own; a database written

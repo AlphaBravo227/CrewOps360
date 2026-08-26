@@ -9,6 +9,35 @@ import os
 _eastern_tz = pytz.timezone('America/New_York')
 
 # Update the AdminAccess class to include availability analyzer initialization
+@st.cache_data(show_spinner=False)
+def _roster_last_class_date(roster_path, _mtime):
+    """Latest class date in a roster workbook, or None.
+
+    _mtime is part of the cache key only - editing the workbook re-reads it.
+    A year whose end date falls before this still has classes to teach, and
+    auto-close would freeze it with staff mid-way through them.
+    """
+    from .excel_handler import ExcelHandler
+    from datetime import datetime
+
+    try:
+        handler = ExcelHandler(roster_path)
+        if handler.load_error:
+            return None
+        latest = None
+        for class_name in handler.get_all_classes():
+            for raw in handler.get_class_dates(class_name):
+                try:
+                    parsed = datetime.strptime(str(raw).strip(), '%m/%d/%Y').date()
+                except (ValueError, TypeError):
+                    continue
+                if latest is None or parsed > latest:
+                    latest = parsed
+        return latest
+    except Exception:
+        return None
+
+
 class AdminAccess:
     def __init__(self):
         self.admin_pin = "9999"
@@ -1435,25 +1464,63 @@ class AdminAccess:
                          "wrong one for a year that has closed."
                 )
                 u_pattern = st.text_input(
-                    "Pattern start date (YYYY-MM-DD)",
+                    "Track pattern start — 'Sun A 1' (YYYY-MM-DD)",
                     value=ty.get('pattern_start_date') or "",
                     key=f"ty_pattern_{label}",
-                    help="The date this cohort's 42-day track pattern counts as "
-                         "'Sun A 1'. Verify it against the bid grid: a wrong anchor "
-                         "shifts every conflict check by a few days without any error. "
-                         "Leave blank to use FY26's anchor (2025-09-14)."
+                    help="The date the linked track cohort's 42-day pattern counts as "
+                         "'Sun A 1' (FY26: 2025-09-14, FY27: 2026-09-27). This is the "
+                         "track grid, not the training year — verify it against the bid "
+                         "grid, because a wrong anchor shifts every conflict check by "
+                         "days without reporting anything."
                 )
+                st.markdown("**Training year span** (10/1 – 9/30)")
                 col1, col2 = st.columns(2)
                 with col1:
                     u_start = st.text_input(
                         "Start date (YYYY-MM-DD)", value=ty.get('start_date') or "",
-                        key=f"ty_start_{label}"
+                        key=f"ty_start_{label}",
+                        help="When this training year opens. Calendar-based (10/1), "
+                             "which is a few days off the track cohort's start."
                     )
                 with col2:
                     u_end = st.text_input(
                         "End date (YYYY-MM-DD)", value=ty.get('end_date') or "",
-                        key=f"ty_end_{label}"
+                        key=f"ty_end_{label}",
+                        help="When this training year ends (9/30). The year flips to "
+                             "read-only on its own the day after this date, so an "
+                             "incorrect value freezes it early or leaves it open."
                     )
+
+                # An end date before the roster's last class means auto-close would
+                # freeze the year while classes are still being taught.
+                if roster_filename:
+                    # roster_path was set above when the filename was checked
+                    if os.path.exists(roster_path):
+                        last_class = _roster_last_class_date(
+                            roster_path, os.path.getmtime(roster_path))
+                        if last_class:
+                            st.caption(f"Last class in this roster: **{last_class}**")
+                            end_raw = (u_end or "").strip()
+                            if end_raw:
+                                try:
+                                    end_parsed = datetime.strptime(end_raw, '%Y-%m-%d').date()
+                                except ValueError:
+                                    st.warning(
+                                        f"End date '{end_raw}' isn't a valid YYYY-MM-DD "
+                                        f"date, so this year will never auto-close."
+                                    )
+                                else:
+                                    if end_parsed < last_class:
+                                        st.warning(
+                                            f"⚠️ This year ends **{end_parsed}** but its "
+                                            f"roster has classes through **{last_class}**. "
+                                            f"It will go read-only while "
+                                            f"{(last_class - end_parsed).days} more day(s) "
+                                            f"of classes are still scheduled — staff won't "
+                                            f"be able to enroll in or cancel them. Either "
+                                            f"extend the end date past the last class, or "
+                                            f"move those dates to the next year's roster."
+                                        )
 
                 if st.button("Save", key=f"ty_save_{label}"):
                     ok, msg = unified_db.update_training_year(
@@ -1564,15 +1631,19 @@ class AdminAccess:
             )
             new_track = st.selectbox("Linked track cohort", options=track_options, key="new_ty_track")
             new_pattern = st.text_input(
-                "Pattern start date (YYYY-MM-DD)", key="new_ty_pattern",
-                help="The date this cohort's 42-day track pattern counts as 'Sun A 1'. "
-                     "Verify it against the bid grid before staff start enrolling."
+                "Track pattern start — 'Sun A 1' (YYYY-MM-DD)", key="new_ty_pattern",
+                placeholder="2026-09-27",
+                help="The date the linked track cohort's 42-day pattern counts as "
+                     "'Sun A 1'. Verify it against the bid grid before staff enroll."
             )
+            st.markdown("**Training year span** (10/1 – 9/30)")
             c1, c2 = st.columns(2)
             with c1:
-                new_start = st.text_input("Start date (YYYY-MM-DD)", key="new_ty_start")
+                new_start = st.text_input("Start date (YYYY-MM-DD)", key="new_ty_start",
+                                          placeholder="2026-10-01")
             with c2:
-                new_end = st.text_input("End date (YYYY-MM-DD)", key="new_ty_end")
+                new_end = st.text_input("End date (YYYY-MM-DD)", key="new_ty_end",
+                                        placeholder="2027-09-30")
             st.caption(
                 "New years are created as a **draft** - staff won't see them until you "
                 "set the status to Open or promote the year to active."

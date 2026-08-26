@@ -31,16 +31,28 @@ file just because it's dropped in here.
    - **Year label**: `FY27`
    - **Roster filename**: `FY27 Education Classes Roster.xlsx` (must match
      the filename in this folder exactly, including spaces/capitalization)
-   - **Linked track cohort**: the matching Track Bidding cohort. Set this —
-     it's what schedule-conflict checking runs against. Without it, a class
-     in this year is checked against whichever cohort is active *today*,
-     which is the wrong one once the year has closed.
-   - **Pattern start date**: the date that cohort's 42-day track pattern
-     counts as "Sun A 1". **Verify this against the bid grid** — a wrong
-     anchor shifts every conflict check by a few days and reports nothing.
-     Leave blank to inherit FY26's anchor (2025-09-14).
-   - **Start/end date**: the fiscal year's span. The end date is what
-     closes the year automatically (see step 5), so it's worth filling in.
+   - **Linked track cohort**: `FY27` — the matching Track Bidding cohort.
+     Set this; it's what schedule-conflict checking runs against. Without
+     it, a class in this year is checked against whichever cohort is active
+     *today*, which is the wrong one once the year has closed.
+   - **Track pattern start ("Sun A 1")**: `2026-09-27`. **Verify against
+     the bid grid** — a wrong anchor shifts every conflict check by days
+     and reports nothing.
+   - **Training year span**: `2026-10-01` to `2027-09-30`. The end date is
+     what closes the year automatically (see step 5), so fill it in.
+
+   ### These two dates are not the same thing
+
+   The **training year** runs on the calendar, 10/1 to 9/30. The **track
+   cohort** starts on whichever Sunday begins its 42-day pattern — 9/28/25
+   for FY26, 9/27/26 for FY27. They differ by a few days at each end, and
+   conflating them freezes a training year before its last classes are
+   taught. Keep them in their own fields:
+
+   | | FY26 | FY27 |
+   |---|---|---|
+   | Training year span | 2025-10-01 → 2026-09-30 | 2026-10-01 → 2027-09-30 |
+   | Track pattern "Sun A 1" | 2025-09-14 | 2026-09-27 |
 
    New years are created as a **draft**: admin-visible only, so a
    half-finished roster is never exposed to staff.
