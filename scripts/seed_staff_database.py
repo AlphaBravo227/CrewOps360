@@ -35,7 +35,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--roster', default=DEFAULT_ROSTER_PATH,
-                        help='Path to the MASTER Education Classes Roster workbook.')
+                        help='Path to the Education Classes Roster workbook.')
     parser.add_argument('--preferences', default=DEFAULT_PREFERENCES_PATH,
                         help='Path to the Preferences v6 workbook.')
     parser.add_argument('--db', default=None,

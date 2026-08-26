@@ -15,6 +15,12 @@ class ExcelAdminFunctions:
         self.enrollment = enrollment_manager
         self.db = database
         self.educator = educator_manager
+
+    @property
+    def training_year(self):
+        """The year reports cover - whichever one the enrollment manager is pointed at,
+        so an export of a closed year doesn't silently report the active year instead."""
+        return getattr(self.enrollment, 'training_year', None)
         
     def get_enrollment_compliance_report(self):
         """Generate compliance report showing enrollment status vs assignments - FIXED for cursor recursion"""
@@ -43,7 +49,7 @@ class ExcelAdminFunctions:
             enrolled_classes = self.enrollment.get_enrolled_classes(staff_name)
             
             # Get ALL enrollment records (with full details) from database
-            staff_enrollments = self.db.get_staff_enrollments(staff_name)
+            staff_enrollments = self.db.get_staff_enrollments(staff_name, training_year=self.training_year)
             
             # Get live meeting count - use a separate method call
             live_meeting_count = self.enrollment.get_live_staff_meeting_count(staff_name)
@@ -86,7 +92,7 @@ class ExcelAdminFunctions:
 
             # Calculate total staff meeting enrollments (LIVE + Virtual)
             # Count all SM enrollments including multiple enrollments in the same SM
-            staff_enrollments = self.db.get_staff_enrollments(staff_name)
+            staff_enrollments = self.db.get_staff_enrollments(staff_name, training_year=self.training_year)
             total_sm_enrolled = len([enrollment for enrollment in staff_enrollments 
                                     if self.excel.is_staff_meeting(enrollment['class_name'])])
             total_sm_assigned = len(staff_meetings_assigned)
@@ -102,13 +108,13 @@ class ExcelAdminFunctions:
             conflict_enrollments = []
             educator_conflicts = []
             try:
-                conflict_enrollments = self.db.get_conflict_override_enrollments(staff_name)
+                conflict_enrollments = self.db.get_conflict_override_enrollments(staff_name, training_year=self.training_year)
             except Exception as e:
                 print(f"Error getting conflict enrollments for {staff_name}: {e}")
             
             if self.educator:
                 try:
-                    educator_conflicts = self.db.get_conflict_override_educator_signups(staff_name)
+                    educator_conflicts = self.db.get_conflict_override_educator_signups(staff_name, training_year=self.training_year)
                 except Exception as e:
                     print(f"Error getting educator conflicts for {staff_name}: {e}")
 
@@ -227,7 +233,7 @@ class ExcelAdminFunctions:
             available_dates = opportunity['available_dates']
             
             for date in available_dates:
-                current_signups = self.db.get_educator_signup_count(class_name, date)
+                current_signups = self.db.get_educator_signup_count(class_name, date, training_year=self.training_year)
                 coverage_rate = (current_signups / instructor_requirement * 100) if instructor_requirement > 0 else 0
                 
                 # Get educator names
@@ -347,7 +353,7 @@ class ExcelAdminFunctions:
                 }
                 
                 # Get all enrollments for this staff member
-                staff_enrollments = self.db.get_staff_enrollments(staff_name)
+                staff_enrollments = self.db.get_staff_enrollments(staff_name, training_year=self.training_year)
                 
                 # Get all educator signups for this staff member
                 staff_educator_signups = []
@@ -552,7 +558,7 @@ class ExcelAdminFunctions:
                 full_date_str = date_str
             
             # Get the ACTUAL full class names from the database for this staff member on this date
-            staff_enrollments = self.db.get_staff_enrollments(staff_name)
+            staff_enrollments = self.db.get_staff_enrollments(staff_name, training_year=self.training_year)
             staff_educator_signups = []
             if self.educator:
                 staff_educator_signups = self.educator.get_staff_educator_signups(staff_name)
@@ -637,7 +643,7 @@ class ExcelAdminFunctions:
         """Get time and location details for a specific staff enrollment"""
         try:
             # Get the actual enrollment record for this staff member
-            enrollments = self.db.get_staff_enrollments(staff_name)
+            enrollments = self.db.get_staff_enrollments(staff_name, training_year=self.training_year)
             matching_enrollment = None
             
             for enrollment in enrollments:
@@ -978,7 +984,7 @@ class ExcelAdminFunctions:
                     
                     # Add educator data if available
                     if self.educator and instructor_requirement > 0:
-                        educator_signups = self.db.get_educator_signup_count(class_name, date_str)
+                        educator_signups = self.db.get_educator_signup_count(class_name, date_str, training_year=self.training_year)
                         total_educator_signups += educator_signups
                         educator_coverage += instructor_requirement
             
@@ -1008,7 +1014,7 @@ class ExcelAdminFunctions:
         
         for staff_name in all_staff:
             # Student enrollment conflicts
-            conflict_enrollments = self.db.get_conflict_override_enrollments(staff_name)
+            conflict_enrollments = self.db.get_conflict_override_enrollments(staff_name, training_year=self.training_year)
             
             for enrollment in conflict_enrollments:
                 conflict_data.append({
@@ -1024,7 +1030,7 @@ class ExcelAdminFunctions:
             
             # Educator signup conflicts
             if self.educator:
-                educator_conflicts = self.db.get_conflict_override_educator_signups(staff_name)
+                educator_conflicts = self.db.get_conflict_override_educator_signups(staff_name, training_year=self.training_year)
                 
                 for signup in educator_conflicts:
                     conflict_data.append({
@@ -1059,7 +1065,7 @@ class ExcelAdminFunctions:
         unused_classes = []
         
         for class_name in all_classes:
-            enrollments = self.db.get_class_enrollments(class_name)
+            enrollments = self.db.get_class_enrollments(class_name, training_year=self.training_year)
             if not enrollments:
                 unused_classes.append(class_name)
         
@@ -1164,7 +1170,7 @@ class ExcelAdminFunctions:
                 # Process each day (for two-day classes, this will be 2 iterations)
                 for process_date, day_label in dates_to_process:
                     # Get enrollments for this specific date
-                    date_enrollments = self.db.get_class_enrollments(class_name, process_date)
+                    date_enrollments = self.db.get_class_enrollments(class_name, process_date, training_year=self.training_year)
                     enrolled_count = len(date_enrollments)
                     conflict_count = sum(1 for e in date_enrollments if e.get('conflict_override', False))
                     
@@ -1173,7 +1179,7 @@ class ExcelAdminFunctions:
                     educator_conflicts = 0
                     educator_names = []
                     if self.educator:
-                        educator_signups = self.db.get_educator_signup_count(class_name, process_date)
+                        educator_signups = self.db.get_educator_signup_count(class_name, process_date, training_year=self.training_year)
                         educator_roster = self.educator.get_class_educator_roster(class_name, process_date)
                         educator_conflicts = sum(1 for e in educator_roster if e.get('has_conflict', False))
                         educator_names = [e['staff_name'] for e in educator_roster if e['status'] == 'active']
@@ -1240,7 +1246,7 @@ class ExcelAdminFunctions:
         
         # Get assigned vs enrolled staff
         assigned_staff = self._get_staff_assigned_to_class(class_name)
-        all_enrollments = self.db.get_class_enrollments(class_name)
+        all_enrollments = self.db.get_class_enrollments(class_name, training_year=self.training_year)
         enrolled_staff_names = list(set([e['staff_name'] for e in all_enrollments]))
         
         report['staff_analysis'] = {
@@ -1253,7 +1259,7 @@ class ExcelAdminFunctions:
         
         # Educator analysis
         if self.educator:
-            all_educator_signups = self.db.get_educator_signups_for_class(class_name)
+            all_educator_signups = self.db.get_educator_signups_for_class(class_name, training_year=self.training_year)
             unique_educators = list(set([e['staff_name'] for e in all_educator_signups]))
             
             report['educator_analysis'] = {
@@ -1292,11 +1298,11 @@ class ExcelAdminFunctions:
         """Export roster for a specific class/date in printable format"""
         if date_str:
             # Single date roster
-            enrollments = self.db.get_class_enrollments(class_name, date_str)
+            enrollments = self.db.get_class_enrollments(class_name, date_str, training_year=self.training_year)
             title = f"{class_name} - {date_str}"
         else:
             # All dates roster
-            enrollments = self.db.get_class_enrollments(class_name)
+            enrollments = self.db.get_class_enrollments(class_name, training_year=self.training_year)
             title = f"{class_name} - All Dates"
         
         roster_data = []
@@ -1356,7 +1362,7 @@ class ExcelAdminFunctions:
         completion_data = []
         
         for staff_name in assigned_staff:
-            staff_enrollments = [e for e in self.db.get_class_enrollments(class_name) 
+            staff_enrollments = [e for e in self.db.get_class_enrollments(class_name, training_year=self.training_year) 
                                if e['staff_name'] == staff_name]
             
             # Get all available dates for this class

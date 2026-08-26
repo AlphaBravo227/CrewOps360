@@ -113,7 +113,8 @@ class EducatorUIComponents:
                             # Show cancel button
                             if st.button("Cancel", key=f"cancel_{button_key}"):
                                 existing_signup = educator_manager.db.check_existing_educator_signup(
-                                    staff_name, class_name, date
+                                    staff_name, class_name, date,
+                                    training_year=educator_manager.training_year
                                 )
                                 if existing_signup and educator_manager.cancel_educator_signup(existing_signup['id']):
                                     st.success("Educator signup cancelled!")

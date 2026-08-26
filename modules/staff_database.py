@@ -9,7 +9,7 @@ every page load:
     - "upload files/Preferences v6.xlsx" -> STAFF NAME, ROLE, No Matrix, Seniority
     - "upload files/Requirements.xlsx" -> SHIFTS PER PAY PERIOD, NIGHT MINIMUM,
       WEEKEND MINIMUM, WEEKEND GROUP, EMAIL
-    - "training/upload/MASTER Education Classes Roster.xlsx" (Class_Enrollment sheet)
+    - "training/upload/FY26 Education Classes Roster.xlsx" (Class_Enrollment sheet)
       -> STAFF NAME, Role, MGMT, DUAL, Educator AT
 
 All three are now imported once (see modules/staff_import.py) into the `staff` table and

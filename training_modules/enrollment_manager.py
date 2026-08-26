@@ -7,7 +7,8 @@ from datetime import datetime, timedelta
 from .training_email_notifications import send_training_event_notification
 
 class EnrollmentManager:
-    def __init__(self, unified_database, excel_handler, track_manager=None):
+    def __init__(self, unified_database, excel_handler, track_manager=None,
+                 training_year=None):
         """
         Initialize with unified database instead of separate training database.
         
@@ -15,10 +16,18 @@ class EnrollmentManager:
             unified_database: UnifiedDatabase instance
             excel_handler: ExcelHandler instance
             track_manager: TrainingTrackManager instance (optional)
+            training_year: Year label every read is scoped to. None means the
+                active year, which is what the registration screen wants; a
+                prior year is passed when someone is viewing it read-only.
         """
         self.db = unified_database
         self.excel = excel_handler
         self.track_manager = track_manager
+        self.training_year = training_year
+
+    def set_training_year(self, training_year):
+        """Point this manager at a different training year (None = active year)."""
+        self.training_year = training_year
         
     def _get_two_day_dates(self, base_date_str):
         """Convert base date string to both days for two-day class"""
@@ -305,7 +314,7 @@ class EnrollmentManager:
                         break
                 
                 # Get total enrollment count for this class/date
-                class_enrollments = self.db.get_class_enrollments(class_name)
+                class_enrollments = self.db.get_class_enrollments(class_name, training_year=self.training_year)
                 date_enrollments = [e for e in class_enrollments if e['class_date'] == enrollment_dates[0]]
                 total_enrolled_count = len(date_enrollments)
                 
@@ -413,7 +422,7 @@ class EnrollmentManager:
                         break
                 
                 # Get remaining enrollment count for this class/date
-                class_enrollments = self.db.get_class_enrollments(class_name)
+                class_enrollments = self.db.get_class_enrollments(class_name, training_year=self.training_year)
                 date_enrollments = [e for e in class_enrollments if e['class_date'] == class_date]
                 total_enrolled_count = len(date_enrollments)
                 
@@ -619,13 +628,19 @@ class EnrollmentManager:
         
         # For staff meetings, we need to check meeting type specific slots
         if self.excel.is_staff_meeting(class_name) and meeting_type:
-            current_enrollment = self.db.get_enrollment_count(class_name, class_date, None, meeting_type, session_time)
+            current_enrollment = self.db.get_enrollment_count(
+                class_name, class_date, None, meeting_type, session_time,
+                training_year=self.training_year)
         elif class_details.get('nurses_medic_separate', 'No').lower() == 'yes' and role != 'General':
             # If nurses and medics are separate, check role-specific slots
             max_students = max_students // 2
-            current_enrollment = self.db.get_enrollment_count(class_name, class_date, role, meeting_type, session_time)
+            current_enrollment = self.db.get_enrollment_count(
+                class_name, class_date, role, meeting_type, session_time,
+                training_year=self.training_year)
         else:
-            current_enrollment = self.db.get_enrollment_count(class_name, class_date, None, meeting_type, session_time)
+            current_enrollment = self.db.get_enrollment_count(
+                class_name, class_date, None, meeting_type, session_time,
+                training_year=self.training_year)
         
         available_slots = max_students - current_enrollment
         
@@ -633,24 +648,28 @@ class EnrollmentManager:
 
     def get_enrolled_classes(self, staff_name):
         """Get list of class names the staff is enrolled in"""
-        enrollments = self.db.get_staff_enrollments(staff_name)
+        enrollments = self.db.get_staff_enrollments(staff_name, training_year=self.training_year)
         return list(set([e['class_name'] for e in enrollments]))
         
     def get_staff_enrollments(self, staff_name):
         """Get detailed enrollment information for a staff member"""
-        return self.db.get_staff_enrollments(staff_name)
+        return self.db.get_staff_enrollments(staff_name, training_year=self.training_year)
         
     def get_date_enrollment_count(self, class_name, class_date, role=None, meeting_type=None, session_time=None):
         """Get enrollment count for a specific date and role/meeting type/session"""
-        return self.db.get_enrollment_count(class_name, class_date, role, meeting_type, session_time)
+        return self.db.get_enrollment_count(
+            class_name, class_date, role, meeting_type, session_time,
+            training_year=self.training_year)
         
     def get_live_staff_meeting_count(self, staff_name):
         """Get count of LIVE staff meetings for a staff member"""
-        return self.db.get_live_staff_meeting_count(staff_name)
+        return self.db.get_live_staff_meeting_count(staff_name, training_year=self.training_year)
         
     def get_session_enrollments(self, class_name, class_date, session_time=None, meeting_type=None):
         """Get list of staff enrolled in a specific session"""
-        return self.db.get_session_enrollments(class_name, class_date, session_time, meeting_type)
+        return self.db.get_session_enrollments(
+            class_name, class_date, session_time, meeting_type,
+            training_year=self.training_year)
     
     def get_staff_meeting_enrollments(self, staff_name, class_name=None):
         """Get all Staff Meeting enrollments for a staff member"""
@@ -1012,7 +1031,7 @@ class EnrollmentManager:
 
     def get_class_enrollment_summary(self, class_name):
         """Get enrollment summary for a class with detailed statistics"""
-        enrollments = self.db.get_class_enrollments(class_name)
+        enrollments = self.db.get_class_enrollments(class_name, training_year=self.training_year)
         
         # Group by date
         summary = {}

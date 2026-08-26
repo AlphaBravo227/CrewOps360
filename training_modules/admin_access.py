@@ -976,11 +976,13 @@ class AdminAccess:
         # Create an expander for each session
         with st.expander(f"📅 {class_date}", expanded=False):
             # Get enrollments and educator signups for this session
-            enrollments = st.session_state.training_enrollment_manager.db.get_class_enrollments(
-                class_name, class_date
+            enrollment_manager = st.session_state.training_enrollment_manager
+            educator_manager = st.session_state.training_educator_manager
+            enrollments = enrollment_manager.db.get_class_enrollments(
+                class_name, class_date, training_year=enrollment_manager.training_year
             )
-            educator_signups = st.session_state.training_educator_manager.db.get_educator_signups_for_class(
-                class_name, class_date
+            educator_signups = educator_manager.db.get_educator_signups_for_class(
+                class_name, class_date, training_year=educator_manager.training_year
             )
 
             # Get class capacity
@@ -1190,8 +1192,10 @@ class AdminAccess:
                 # Check if this class has role-based enrollment
                 if 'Nurse' in class_type or 'Medic' in class_type or 'CCEMT' in class_type:
                     # Show current enrollment by role
-                    enrollments = st.session_state.training_enrollment_manager.db.get_class_enrollments(
-                        class_name, class_date
+                    enrollment_manager = st.session_state.training_enrollment_manager
+                    enrollments = enrollment_manager.db.get_class_enrollments(
+                        class_name, class_date,
+                        training_year=enrollment_manager.training_year
                     )
                     nurse_count = len([e for e in enrollments if e.get('role') == 'Nurse'])
                     medic_count = len([e for e in enrollments if e.get('role') == 'Medic'])

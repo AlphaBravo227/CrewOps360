@@ -6,7 +6,8 @@ with track conflict checking and proper 2-day class support.
 from datetime import datetime, timedelta
 
 class EducatorManager:
-    def __init__(self, unified_database, excel_handler, track_manager=None):
+    def __init__(self, unified_database, excel_handler, track_manager=None,
+                 training_year=None):
         """
         Initialize with unified database and other components.
         
@@ -14,10 +15,17 @@ class EducatorManager:
             unified_database: UnifiedDatabase instance
             excel_handler: ExcelHandler instance
             track_manager: TrainingTrackManager instance (optional)
+            training_year: Year label every read is scoped to. None means the
+                active year.
         """
         self.db = unified_database
         self.excel = excel_handler
         self.track_manager = track_manager
+        self.training_year = training_year
+
+    def set_training_year(self, training_year):
+        """Point this manager at a different training year (None = active year)."""
+        self.training_year = training_year
         
     def get_educator_opportunities(self):
         """Get all classes that need educators (non-zero instructor count) with expanded 2-day support"""
@@ -88,7 +96,8 @@ class EducatorManager:
         
         try:            
             # Check if already signed up for this specific class/date
-            existing_signup = self.db.check_existing_educator_signup(staff_name, class_name, class_date)
+            existing_signup = self.db.check_existing_educator_signup(
+                staff_name, class_name, class_date, training_year=self.training_year)
             if existing_signup:
                 return False, "Already signed up as educator for this date"
             
@@ -108,7 +117,8 @@ class EducatorManager:
                 return False, "No educator positions available for this class"
             
             # Check current signups vs capacity
-            current_signups = self.db.get_educator_signup_count(class_name, class_date)
+            current_signups = self.db.get_educator_signup_count(
+                class_name, class_date, training_year=self.training_year)
             
             if current_signups >= max_instructors:
                 return False, f"Educator positions full ({current_signups}/{max_instructors})"
@@ -123,7 +133,8 @@ class EducatorManager:
     
     def get_class_educator_roster(self, class_name, class_date=None):
         """Get educator roster for a specific class/date"""
-        signups = self.db.get_educator_signups_for_class(class_name, class_date)
+        signups = self.db.get_educator_signups_for_class(
+            class_name, class_date, training_year=self.training_year)
         
         roster_data = []
         for signup in signups:
@@ -148,7 +159,8 @@ class EducatorManager:
             instructor_count = opportunity['instructor_count']
             
             for date in opportunity['available_dates']:
-                current_signups = self.db.get_educator_signup_count(class_name, date)
+                current_signups = self.db.get_educator_signup_count(class_name, date,
+                                                                  training_year=self.training_year)
                 
                 if current_signups < instructor_count:
                     needs_educators.append({
@@ -339,11 +351,11 @@ class EducatorManager:
     
     def get_staff_educator_signups(self, staff_name):
         """Get all educator signups for a staff member"""
-        return self.db.get_staff_educator_signups(staff_name)
+        return self.db.get_staff_educator_signups(staff_name, training_year=self.training_year)
     
     def get_class_educator_summary(self, class_name):
         """Get educator signup summary for a class with detailed breakdown"""
-        signups = self.db.get_educator_signups_for_class(class_name)
+        signups = self.db.get_educator_signups_for_class(class_name, training_year=self.training_year)
         
         # Group by date
         summary = {}
@@ -389,8 +401,10 @@ class EducatorManager:
             # Add status for each date
             date_status = []
             for date in opportunity['available_dates']:
-                current_signups = self.db.get_educator_signup_count(class_name, date)
-                is_signed_up = self.db.check_existing_educator_signup(staff_name, class_name, date) is not None
+                current_signups = self.db.get_educator_signup_count(class_name, date,
+                                                                  training_year=self.training_year)
+                is_signed_up = self.db.check_existing_educator_signup(
+                    staff_name, class_name, date, training_year=self.training_year) is not None
                 
                 # Check for conflicts (for display purposes)
                 conflict_info = ""

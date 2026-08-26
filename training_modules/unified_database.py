@@ -10,6 +10,20 @@ import os
 import pytz
 from .training_email_notifications import send_training_event_notification
 
+# The roster workbook FY26 uses. Before FY27 got its own file there was only one
+# roster, named "MASTER", so a database written back then still points at that name.
+FY26_ROSTER_FILENAME = 'FY26 Education Classes Roster.xlsx'
+LEGACY_ROSTER_FILENAME = 'MASTER Education Classes Roster.xlsx'
+
+# FY26 was the only cohort that existed before enrollments carried a training_year,
+# so every row written back then belongs to it.
+LEGACY_TRAINING_YEAR = 'FY26'
+
+# Rows written before the training_year column existed were backfilled with the
+# column default, but COALESCE keeps the filter correct even if a NULL slips through.
+_YEAR_MATCH = "COALESCE(training_year, '%s') = ?" % LEGACY_TRAINING_YEAR
+
+
 class UnifiedDatabase:
     def __init__(self, db_path, excel_handler=None):
         '''
@@ -157,7 +171,8 @@ class UnifiedDatabase:
             existing_columns = [col[1] for col in self.cursor.fetchall()]
             if 'training_year' not in existing_columns:
                 self.cursor.execute(
-                    f"ALTER TABLE {table_name} ADD COLUMN training_year TEXT DEFAULT 'FY26'"
+                    f"ALTER TABLE {table_name} ADD COLUMN training_year TEXT "
+                    f"DEFAULT '{LEGACY_TRAINING_YEAR}'"
                 )
 
         # Seed the default FY26 training year if it doesn't exist yet
@@ -169,7 +184,18 @@ class UnifiedDatabase:
                     (year_label, is_active, roster_filename, linked_track_name,
                      start_date, end_date, created_date, modified_date)
                 VALUES ('FY26', 1, ?, 'FY26', '2025-09-28', '2026-09-26', ?, ?)
-            ''', ('MASTER Education Classes Roster.xlsx', now, now))
+            ''', (FY26_ROSTER_FILENAME, now, now))
+
+        # Point any year still naming the pre-FY27 "MASTER" roster at its renamed file.
+        # The workbook became FY26-specific when FY27 got its own; a database written
+        # before that rename still holds the old name, which no longer exists on disk.
+        self.cursor.execute(
+            "UPDATE training_years SET roster_filename = ?, modified_date = ? "
+            "WHERE roster_filename = ?",
+            (FY26_ROSTER_FILENAME,
+             self._format_eastern_timestamp(self._get_eastern_time()),
+             LEGACY_ROSTER_FILENAME)
+        )
 
         self.conn.commit()
         self.disconnect()
@@ -198,6 +224,18 @@ class UnifiedDatabase:
         manage connect/disconnect itself so it's safe to call mid-transaction."""
         self.cursor.execute("SELECT * FROM training_years WHERE is_active = 1 LIMIT 1")
         return self.cursor.fetchone()
+
+    def _resolve_training_year(self, training_year=None):
+        """Return the training year a query should be scoped to.
+
+        An explicit label wins; otherwise the active year is used, so callers that
+        don't care about history read the year staff are currently registering for.
+        Requires an open connection - callers already hold one via self.connect().
+        """
+        if training_year:
+            return training_year
+        row = self._fetch_active_training_year_row()
+        return row['year_label'] if row else LEGACY_TRAINING_YEAR
 
     def get_active_training_year(self):
         """Return the training_years row where is_active = 1, or None."""
@@ -420,13 +458,20 @@ class UnifiedDatabase:
                     enrollment_timestamp = self._format_eastern_timestamp(current_time)
                     override_timestamp = self._format_eastern_timestamp(current_time) if conflict_override else None
                     
+                    # Re-stamp the training year: reactivating a cancelled row during a
+                    # later year makes it an enrollment in that year, not the old one.
+                    active_year_row = self._fetch_active_training_year_row()
+                    training_year = (active_year_row['year_label'] if active_year_row
+                                     else LEGACY_TRAINING_YEAR)
+
                     self.cursor.execute('''
                         UPDATE training_enrollments 
                         SET status = 'active', role = ?, conflict_override = ?,
-                            conflict_details = ?, override_acknowledged = ?, enrollment_date = ?
+                            conflict_details = ?, override_acknowledged = ?, enrollment_date = ?,
+                            training_year = ?
                         WHERE id = ?
                     ''', (role, conflict_override, conflict_details, 
-                        override_timestamp, enrollment_timestamp, existing['id']))
+                        override_timestamp, enrollment_timestamp, training_year, existing['id']))
                     
                     self.conn.commit()
                     print(f"DEBUG: Enrollment reactivated successfully")
@@ -443,7 +488,8 @@ class UnifiedDatabase:
             print(f"DEBUG: Inserting new enrollment with timestamp {enrollment_timestamp}")
 
             active_year_row = self._fetch_active_training_year_row()
-            training_year = active_year_row['year_label'] if active_year_row else 'FY26'
+            training_year = (active_year_row['year_label'] if active_year_row
+                             else LEGACY_TRAINING_YEAR)
 
             # Insert with explicit column list (excludes id to allow auto-increment)
             self.cursor.execute('''
@@ -561,19 +607,25 @@ class UnifiedDatabase:
             existing = self.cursor.fetchone()
 
             if existing:
-                # Reactivate the cancelled signup instead of inserting a duplicate
+                # Reactivate the cancelled signup instead of inserting a duplicate,
+                # re-stamping the year so it belongs to the year it was revived in.
+                active_year_row = self._fetch_active_training_year_row()
+                training_year = (active_year_row['year_label'] if active_year_row
+                                 else LEGACY_TRAINING_YEAR)
+
                 self.cursor.execute('''
                     UPDATE training_educator_signups
                     SET status = 'active', conflict_override = ?, conflict_details = ?,
-                        override_acknowledged = ?, signup_date = ?
+                        override_acknowledged = ?, signup_date = ?, training_year = ?
                     WHERE id = ?
                 ''', (conflict_override, conflict_details, override_timestamp,
-                      signup_timestamp, existing['id']))
+                      signup_timestamp, training_year, existing['id']))
                 inserted_id = existing['id']
                 print(f"SUCCESS: Educator signup reactivated with ID: {inserted_id}")
             else:
                 active_year_row = self._fetch_active_training_year_row()
-                training_year = active_year_row['year_label'] if active_year_row else 'FY26'
+                training_year = (active_year_row['year_label'] if active_year_row
+                                 else LEGACY_TRAINING_YEAR)
 
                 # Insert with explicit column list (excludes id to allow auto-increment)
                 self.cursor.execute('''
@@ -728,25 +780,27 @@ class UnifiedDatabase:
         finally:
             self.disconnect()
 
-    def get_educator_signups_for_class(self, class_name, class_date=None):
-        """Get all educator signups for a class - FIXED"""
+    def get_educator_signups_for_class(self, class_name, class_date=None, training_year=None):
+        """Get all educator signups for a class within one training year"""
         self.connect()
+        year = self._resolve_training_year(training_year)
         if class_date:
-            self.cursor.execute('''
+            self.cursor.execute(f'''
                 SELECT id, staff_name, class_name, class_date, conflict_override,
                        conflict_details, signup_date, status
                 FROM training_educator_signups
                 WHERE class_name = ? AND class_date = ? AND status = 'active'
+                      AND {_YEAR_MATCH}
                 ORDER BY signup_date
-            ''', (class_name, class_date))
+            ''', (class_name, class_date, year))
         else:
-            self.cursor.execute('''
+            self.cursor.execute(f'''
                 SELECT id, staff_name, class_name, class_date, conflict_override,
                        conflict_details, signup_date, status
                 FROM training_educator_signups
-                WHERE class_name = ? AND status = 'active'
+                WHERE class_name = ? AND status = 'active' AND {_YEAR_MATCH}
                 ORDER BY class_date, signup_date
-            ''', (class_name,))
+            ''', (class_name, year))
         
         rows = self.cursor.fetchall()
         signups = []
@@ -765,25 +819,30 @@ class UnifiedDatabase:
         self.disconnect()
         return signups
     
-    def get_educator_signup_count(self, class_name, class_date):
-        """Get count of educator signups for a specific class and date"""
+    def get_educator_signup_count(self, class_name, class_date, training_year=None):
+        """Count educator signups for a class and date within one training year"""
         self.connect()
-        self.cursor.execute('''
+        year = self._resolve_training_year(training_year)
+        self.cursor.execute(f'''
             SELECT COUNT(*) as count FROM training_educator_signups
             WHERE class_name = ? AND class_date = ? AND status = 'active'
-        ''', (class_name, class_date))
+                  AND {_YEAR_MATCH}
+        ''', (class_name, class_date, year))
         count = self.cursor.fetchone()['count']
         self.disconnect()
         return count
     
-    def check_existing_educator_signup(self, staff_name, class_name, class_date):
-        """Check if staff member already signed up as educator - COMPLETELY FIXED"""
+    def check_existing_educator_signup(self, staff_name, class_name, class_date,
+                                       training_year=None):
+        """Check if staff member already signed up as educator in one training year"""
         self.connect()
-        self.cursor.execute('''
+        year = self._resolve_training_year(training_year)
+        self.cursor.execute(f'''
             SELECT id, staff_name, class_name, class_date, status
             FROM training_educator_signups
             WHERE staff_name = ? AND class_name = ? AND class_date = ? AND status = 'active'
-        ''', (staff_name, class_name, class_date))
+                  AND {_YEAR_MATCH}
+        ''', (staff_name, class_name, class_date, year))
         
         signup = self.cursor.fetchone()
         if signup:
@@ -802,20 +861,25 @@ class UnifiedDatabase:
     
     # EXISTING ENROLLMENT METHODS - FIXED
 
-    def get_staff_enrollments(self, staff_name):
-        """Get all training enrollments for a staff member - FIXED connection management"""
+    def get_staff_enrollments(self, staff_name, training_year=None):
+        """Get a staff member's training enrollments for one training year.
+
+        Defaults to the active year so a prior year's enrollments never count
+        toward the current one.
+        """
         self.connect()
         
         try:
+            year = self._resolve_training_year(training_year)
             # Explicit column selection
-            self.cursor.execute('''
+            self.cursor.execute(f'''
                 SELECT id, staff_name, class_name, class_date, role, meeting_type, 
                     session_time, conflict_override, conflict_details, 
-                    override_acknowledged, enrollment_date, status
+                    override_acknowledged, enrollment_date, status, training_year
                 FROM training_enrollments
-                WHERE staff_name = ? AND status = 'active'
+                WHERE staff_name = ? AND status = 'active' AND {_YEAR_MATCH}
                 ORDER BY class_date
-            ''', (staff_name,))
+            ''', (staff_name, year))
             
             rows = self.cursor.fetchall()
             enrollments = []
@@ -834,7 +898,8 @@ class UnifiedDatabase:
                     'conflict_details': row['conflict_details'],
                     'override_acknowledged': row['override_acknowledged'],
                     'enrollment_date': row['enrollment_date'],
-                    'status': row['status']
+                    'status': row['status'],
+                    'training_year': row['training_year']
                 }
                 
                 # Convert timestamps for display
@@ -854,23 +919,25 @@ class UnifiedDatabase:
         finally:
             self.disconnect()
 
-    def get_class_enrollments(self, class_name, class_date=None):
-        """Get all training enrollments for a class"""
+    def get_class_enrollments(self, class_name, class_date=None, training_year=None):
+        """Get all training enrollments for a class within one training year"""
         self.connect()
+        year = self._resolve_training_year(training_year)
         if class_date:
-            self.cursor.execute('''
+            self.cursor.execute(f'''
                 SELECT id, staff_name, class_name, class_date, role, meeting_type, 
                        session_time, conflict_override, conflict_details, status
                 FROM training_enrollments
                 WHERE class_name = ? AND class_date = ? AND status = 'active'
-            ''', (class_name, class_date))
+                      AND {_YEAR_MATCH}
+            ''', (class_name, class_date, year))
         else:
-            self.cursor.execute('''
+            self.cursor.execute(f'''
                 SELECT id, staff_name, class_name, class_date, role, meeting_type, 
                        session_time, conflict_override, conflict_details, status
                 FROM training_enrollments
-                WHERE class_name = ? AND status = 'active'
-            ''', (class_name,))
+                WHERE class_name = ? AND status = 'active' AND {_YEAR_MATCH}
+            ''', (class_name, year))
             
         rows = self.cursor.fetchall()
         enrollments = []
@@ -891,15 +958,22 @@ class UnifiedDatabase:
         self.disconnect()
         return enrollments
         
-    def get_enrollment_count(self, class_name, class_date, role=None, meeting_type=None, session_time=None):
-        """Get enrollment count for a specific class, date, and optional filters"""
+    def get_enrollment_count(self, class_name, class_date, role=None, meeting_type=None,
+                             session_time=None, training_year=None):
+        """Get enrollment count for a specific class, date, and optional filters.
+
+        Scoped to one training year so a prior year's enrollments never consume
+        this year's seats.
+        """
         self.connect()
         
-        query = '''
+        year = self._resolve_training_year(training_year)
+        query = f'''
             SELECT COUNT(*) as count FROM training_enrollments
             WHERE class_name = ? AND class_date = ? AND status = 'active'
+                  AND {_YEAR_MATCH}
         '''
-        params = [class_name, class_date]
+        params = [class_name, class_date, year]
         
         if role and role != 'General':
             query += ' AND role = ?'
@@ -918,17 +992,20 @@ class UnifiedDatabase:
         self.disconnect()
         return count
         
-    def get_session_enrollments(self, class_name, class_date, session_time=None, meeting_type=None):
-        """Get all enrollments for a specific training session"""
+    def get_session_enrollments(self, class_name, class_date, session_time=None,
+                                meeting_type=None, training_year=None):
+        """Get all enrollments for a specific training session in one training year"""
         self.connect()
         
-        query = '''
+        year = self._resolve_training_year(training_year)
+        query = f'''
             SELECT id, staff_name, class_name, class_date, role, meeting_type, 
                    session_time, conflict_override
             FROM training_enrollments
             WHERE class_name = ? AND class_date = ? AND status = 'active'
+                  AND {_YEAR_MATCH}
         '''
-        params = [class_name, class_date]
+        params = [class_name, class_date, year]
         
         if session_time:
             query += ' AND session_time = ?'
@@ -985,24 +1062,41 @@ class UnifiedDatabase:
             print(f"Warning: Could not parse timestamp {timestamp_str}: {e}")
             return timestamp_str  # Return original if parsing fails
             
-    def get_enrollment_stats(self):
-        """Get training enrollment statistics with Eastern time info"""
+    def get_enrollment_stats(self, training_year=None):
+        """Get training enrollment statistics for one training year.
+
+        Pass training_year='' to count every year at once; the default reports the
+        active year so the admin dashboard isn't inflated by closed years.
+        """
         self.connect()
         
+        all_years = training_year == ''
+        year = None if all_years else self._resolve_training_year(training_year)
+        year_clause = '' if all_years else f' AND {_YEAR_MATCH}'
+        year_params = () if all_years else (year,)
+        
         # Get total enrollments
-        self.cursor.execute("SELECT COUNT(*) as total FROM training_enrollments WHERE status = 'active'")
+        self.cursor.execute(
+            f"SELECT COUNT(*) as total FROM training_enrollments WHERE status = 'active'{year_clause}",
+            year_params)
         total_enrollments = self.cursor.fetchone()['total']
         
         # Get total educator signups
-        self.cursor.execute("SELECT COUNT(*) as total FROM training_educator_signups WHERE status = 'active'")
+        self.cursor.execute(
+            f"SELECT COUNT(*) as total FROM training_educator_signups WHERE status = 'active'{year_clause}",
+            year_params)
         total_educator_signups = self.cursor.fetchone()['total']
         
         # Get conflicts count
-        self.cursor.execute("SELECT COUNT(*) as conflicts FROM training_enrollments WHERE conflict_override = 1 AND status = 'active'")
+        self.cursor.execute(
+            "SELECT COUNT(*) as conflicts FROM training_enrollments "
+            f"WHERE conflict_override = 1 AND status = 'active'{year_clause}", year_params)
         enrollment_conflicts = self.cursor.fetchone()['conflicts']
         
         # Get educator conflicts count
-        self.cursor.execute("SELECT COUNT(*) as conflicts FROM training_educator_signups WHERE conflict_override = 1 AND status = 'active'")
+        self.cursor.execute(
+            "SELECT COUNT(*) as conflicts FROM training_educator_signups "
+            f"WHERE conflict_override = 1 AND status = 'active'{year_clause}", year_params)
         educator_conflicts = self.cursor.fetchone()['conflicts']
         
         # Get recent enrollments (last 24 hours Eastern time)
@@ -1010,22 +1104,23 @@ class UnifiedDatabase:
         yesterday = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
         yesterday_str = self._format_eastern_timestamp(yesterday)
         
-        self.cursor.execute('''
+        self.cursor.execute(f'''
             SELECT COUNT(*) as recent FROM training_enrollments 
-            WHERE status = 'active' AND enrollment_date >= ?
-        ''', (yesterday_str,))
+            WHERE status = 'active' AND enrollment_date >= ?{year_clause}
+        ''', (yesterday_str,) + year_params)
         recent_enrollments = self.cursor.fetchone()['recent']
         
         # Get recent educator signups
-        self.cursor.execute('''
+        self.cursor.execute(f'''
             SELECT COUNT(*) as recent FROM training_educator_signups 
-            WHERE status = 'active' AND signup_date >= ?
-        ''', (yesterday_str,))
+            WHERE status = 'active' AND signup_date >= ?{year_clause}
+        ''', (yesterday_str,) + year_params)
         recent_educator_signups = self.cursor.fetchone()['recent']
         
         self.disconnect()
         
         return {
+            'training_year': 'All years' if all_years else year,
             'total_enrollments': total_enrollments,
             'total_educator_signups': total_educator_signups,
             'enrollment_conflicts': enrollment_conflicts,
@@ -1036,40 +1131,47 @@ class UnifiedDatabase:
             'current_time_eastern': current_time.strftime('%m/%d/%Y %I:%M %p %Z')
         }
 
-    def get_live_staff_meeting_count(self, staff_name):
-        """Get count of LIVE staff meetings for a staff member - FIXED"""
+    def get_live_staff_meeting_count(self, staff_name, training_year=None):
+        """Count a staff member's LIVE staff meetings within one training year.
+
+        The LIVE requirement resets each year, so this must not see prior years.
+        """
         self.connect()
         try:
-            self.cursor.execute('''
+            year = self._resolve_training_year(training_year)
+            self.cursor.execute(f'''
                 SELECT COUNT(*) as count FROM training_enrollments
                 WHERE staff_name = ? AND meeting_type = 'LIVE' AND status = 'active'
-            ''', (staff_name,))
+                      AND {_YEAR_MATCH}
+            ''', (staff_name, year))
             count = self.cursor.fetchone()['count']
             return count
         finally:
             self.disconnect()
 
-    def get_conflict_override_enrollments(self, staff_name=None):
-        """Get all training enrollments with conflict overrides - FIXED"""
+    def get_conflict_override_enrollments(self, staff_name=None, training_year=None):
+        """Get training enrollments with conflict overrides for one training year"""
         self.connect()
         
         try:
+            year = self._resolve_training_year(training_year)
             if staff_name:
-                self.cursor.execute('''
+                self.cursor.execute(f'''
                     SELECT id, staff_name, class_name, class_date, role, meeting_type,
                         conflict_override, conflict_details, override_acknowledged
                     FROM training_enrollments
                     WHERE staff_name = ? AND conflict_override = 1 AND status = 'active'
+                          AND {_YEAR_MATCH}
                     ORDER BY class_date
-                ''', (staff_name,))
+                ''', (staff_name, year))
             else:
-                self.cursor.execute('''
+                self.cursor.execute(f'''
                     SELECT id, staff_name, class_name, class_date, role, meeting_type,
                         conflict_override, conflict_details, override_acknowledged
                     FROM training_enrollments
-                    WHERE conflict_override = 1 AND status = 'active'
+                    WHERE conflict_override = 1 AND status = 'active' AND {_YEAR_MATCH}
                     ORDER BY staff_name, class_date
-                ''')
+                ''', (year,))
                 
             rows = self.cursor.fetchall()
             enrollments = []
@@ -1097,27 +1199,29 @@ class UnifiedDatabase:
         finally:
             self.disconnect()
 
-    def get_conflict_override_educator_signups(self, staff_name=None):
-        """Get all educator signups with conflict overrides - FIXED"""
+    def get_conflict_override_educator_signups(self, staff_name=None, training_year=None):
+        """Get educator signups with conflict overrides for one training year"""
         self.connect()
         
         try:
+            year = self._resolve_training_year(training_year)
             if staff_name:
-                self.cursor.execute('''
+                self.cursor.execute(f'''
                     SELECT id, staff_name, class_name, class_date, conflict_override,
                         conflict_details, override_acknowledged
                     FROM training_educator_signups
                     WHERE staff_name = ? AND conflict_override = 1 AND status = 'active'
+                          AND {_YEAR_MATCH}
                     ORDER BY class_date
-                ''', (staff_name,))
+                ''', (staff_name, year))
             else:
-                self.cursor.execute('''
+                self.cursor.execute(f'''
                     SELECT id, staff_name, class_name, class_date, conflict_override,
                         conflict_details, override_acknowledged
                     FROM training_educator_signups
-                    WHERE conflict_override = 1 AND status = 'active'
+                    WHERE conflict_override = 1 AND status = 'active' AND {_YEAR_MATCH}
                     ORDER BY staff_name, class_date
-                ''')
+                ''', (year,))
                 
             rows = self.cursor.fetchall()
             signups = []
@@ -1143,19 +1247,20 @@ class UnifiedDatabase:
         finally:
             self.disconnect()
 
-    def get_staff_educator_signups(self, staff_name):
-        """Get all educator signups for a staff member - FIXED"""
+    def get_staff_educator_signups(self, staff_name, training_year=None):
+        """Get a staff member's educator signups for one training year"""
         self.connect()
         
         try:
+            year = self._resolve_training_year(training_year)
             # Explicit column selection ensures proper ordering
-            self.cursor.execute('''
+            self.cursor.execute(f'''
                 SELECT id, staff_name, class_name, class_date, conflict_override, 
                     conflict_details, override_acknowledged, signup_date, status
                 FROM training_educator_signups
-                WHERE staff_name = ? AND status = 'active'
+                WHERE staff_name = ? AND status = 'active' AND {_YEAR_MATCH}
                 ORDER BY class_date
-            ''', (staff_name,))
+            ''', (staff_name, year))
             
             rows = self.cursor.fetchall()
             signups = []
@@ -1192,12 +1297,13 @@ class UnifiedDatabase:
 
 
 def get_active_roster_path(db_path='data/medflight_tracks.db', upload_folder='training/upload',
-                            default_filename='MASTER Education Classes Roster.xlsx'):
+                            default_filename=FY26_ROSTER_FILENAME):
     """
     Resolve the Excel roster path for the currently active training year.
     Falls back to the historical default path if no training year is configured yet
     (e.g. the training_years table hasn't been created by initialize_training_tables() yet).
     """
+    filename = default_filename
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -1206,7 +1312,16 @@ def get_active_roster_path(db_path='data/medflight_tracks.db', upload_folder='tr
         row = cursor.fetchone()
         conn.close()
         if row and row['roster_filename']:
-            return os.path.join(upload_folder, row['roster_filename'])
+            filename = row['roster_filename']
     except sqlite3.OperationalError:
         pass
-    return os.path.join(upload_folder, default_filename)
+
+    # A database that predates the FY26 rename still names the "MASTER" workbook, and
+    # initialize_training_tables() may not have run yet to correct it. Resolve to the
+    # renamed file when the old name is gone so the roster still loads.
+    path = os.path.join(upload_folder, filename)
+    if filename == LEGACY_ROSTER_FILENAME and not os.path.exists(path):
+        renamed = os.path.join(upload_folder, FY26_ROSTER_FILENAME)
+        if os.path.exists(renamed):
+            return renamed
+    return path

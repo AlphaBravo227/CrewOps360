@@ -19,8 +19,8 @@ in here.
    filename doesn't have to follow this pattern, but keeping it consistent
    makes it obvious at a glance which file belongs to which year.)
 
-2. **Do not delete or overwrite the previous year's file** (e.g. `MASTER
-   Education Classes Roster.xlsx` / FY26's file). Class detail lookups
+2. **Do not delete or overwrite the previous year's file** (e.g. `FY26
+   Education Classes Roster.xlsx`). Class detail lookups
    (location, time, session count) for existing enrollment records are read
    live from the Excel file, not stored in the database — if the old file
    disappears, historical enrollments from that year can no longer show

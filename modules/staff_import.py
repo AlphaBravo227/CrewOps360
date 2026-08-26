@@ -6,7 +6,7 @@ The baseline list of names is the Education Classes Roster's Class_Enrollment sh
 the only roster that covers everyone, clinical and non-clinical. Attributes are taken
 from the two spreadsheets that used to be read on every page load:
 
-    MASTER Education Classes Roster.xlsx / Class_Enrollment
+    FY26 Education Classes Roster.xlsx / Class_Enrollment
         STAFF NAME    -> staff.staff_name
         Role          -> staff.role            (NURSE/MEDIC/COMMS/CCEMT/ATP/AMT)
         MGMT          -> staff.is_management
@@ -52,7 +52,7 @@ from .staff_database import (
 
 _eastern_tz = pytz.timezone('America/New_York')
 
-DEFAULT_ROSTER_PATH = 'training/upload/MASTER Education Classes Roster.xlsx'
+DEFAULT_ROSTER_PATH = 'training/upload/FY26 Education Classes Roster.xlsx'
 DEFAULT_PREFERENCES_PATH = 'upload files/Preferences v6.xlsx'
 DEFAULT_REQUIREMENTS_PATH = 'upload files/Requirements.xlsx'
 ENROLLMENT_SHEET = 'Class_Enrollment'

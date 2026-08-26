@@ -13,7 +13,7 @@ Staff identity and attributes used to be re-read from Excel uploads on every pag
 | --- | --- |
 | `upload files/Preferences v6.xlsx` | `STAFF NAME`, `ROLE`, `No Matrix`, `Seniority` |
 | `upload files/Requirements.xlsx` | `SHIFTS PER PAY PERIOD`, `NIGHT MINIMUM`, `WEEKEND MINIMUM`, `WEEKEND GROUP`, `EMAIL` |
-| `training/upload/MASTER Education Classes Roster.xlsx` (`Class_Enrollment`) | `STAFF NAME`, `Role`, `MGMT`, `DUAL`, `Educator AT` |
+| `training/upload/FY26 Education Classes Roster.xlsx` (`Class_Enrollment`) | `STAFF NAME`, `Role`, `MGMT`, `DUAL`, `Educator AT` |
 
 All of it now comes from the `staff` table. A staff member can be added, edited,
 deactivated, renamed or removed in the app, and the change takes effect everywhere at
@@ -173,7 +173,7 @@ the database file changes underneath (for example a restore from backup).
 
 ## Still Excel-driven
 
-One file remains: `training/upload/MASTER Education Classes Roster.xlsx` still supplies
+One file remains: `training/upload/FY26 Education Classes Roster.xlsx` still supplies
 **classes, class dates, per-staff class assignments and educator requirements** to the
 Training & Events module. Its staff columns (Role, MGMT, DUAL, Educator AT) are no longer
 read at runtime — only when an import is run.
