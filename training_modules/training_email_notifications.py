@@ -1,11 +1,16 @@
 # training_modules/training_email_notifications.py
 """
-Module for sending email notifications when staff enroll or cancel training events
-within 60 days of the current date
+Module for sending email notifications when staff enroll in, change, or cancel
+training events.
+
+The staff member is notified of every one of their own registrations whenever an
+email address is on file for them. The admin recipients keep the narrower 60-day
+window: they only hear about events happening within 60 days of today.
 """
 
 import smtplib
 import ssl
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
@@ -14,6 +19,9 @@ import os
 import pytz
 
 _eastern_tz = pytz.timezone('America/New_York')
+
+_EMAIL_RE = re.compile(r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
+
 
 class TrainingEmailNotifier:
     """Handle email notifications for training event enrollments and cancellations"""
@@ -92,15 +100,40 @@ class TrainingEmailNotifier:
         except Exception as e:
             print(f"Error checking date range: {e}")
             return False
-    
+
+    def get_staff_email(self, staff_name):
+        """
+        The staff member's own email address from the staff database.
+
+        Returns None when nothing usable is on file — plenty of records have no
+        email, and that must never stop the admin notification from going out.
+
+        Args:
+            staff_name (str): Name of staff member
+
+        Returns:
+            str or None: The address, or None when missing/malformed
+        """
+        try:
+            from modules.staff_database import get_email
+            email = (get_email(staff_name) or "").strip()
+        except Exception as e:
+            print(f"Error looking up email for {staff_name}: {e}")
+            return None
+
+        return email if email and _EMAIL_RE.match(email) else None
+
     def send_training_notification(self, staff_name, class_name, class_date, role, 
                                    action_type, conflict_override=False, conflict_details=None,
                                    total_enrolled=None, class_time=None, class_location=None,
                                    meeting_type=None):
         """
         Send email notification for training enrollment or cancellation
-        Only sends if class is within 60 days
-        
+
+        The staff member is always copied when an email address is on file for them,
+        no matter how far out the class is. The admin recipients are only added when
+        the class falls inside the 60-day window they watch.
+
         Args:
             staff_name (str): Name of staff member
             class_name (str): Name of the class
@@ -119,11 +152,11 @@ class TrainingEmailNotifier:
         """
         if not self.configured:
             return (False, "Email notifications not configured")
-        
-        # Check if class is within 60 days
-        if not self.is_within_60_days(class_date):
-            return (True, "Class is more than 60 days away - notification not sent")
-        
+
+        # Admins only watch the next 60 days; the staff member hears about their own
+        # registration whenever the class falls.
+        within_60_days = self.is_within_60_days(class_date)
+
         try:
             # Generate email content
             subject, body = self.create_notification_content(
@@ -132,27 +165,41 @@ class TrainingEmailNotifier:
                 class_time, class_location, meeting_type
             )
             
-            # Send to all notification recipients
+            # The staff member first, so they read as the primary recipient
             recipients = []
-                        
-            # Add notification recipients if configured
-            if self.notification_recipients:
+            staff_email = self.get_staff_email(staff_name)
+            if staff_email:
+                recipients.append(staff_email)
+
+            # Admin recipients only for events inside the 60-day window
+            if within_60_days and self.notification_recipients:
                 for email in self.notification_recipients:
                     if email not in recipients:  # Only add if not already in list
                         recipients.append(email)
-            
-            # If no recipients configured, return error
+
+            # Nothing to send: outside the window with no staff address on file is a
+            # normal outcome, an empty admin list inside the window is misconfiguration
             if not recipients:
+                if not within_60_days:
+                    return (True, "Class is more than 60 days away and no staff email "
+                                  "is on file - notification not sent")
                 return (False, "No email recipients configured")
-            
+
             # Send the email
             success = self.send_email(recipients, subject, body)
-            
+
             if success:
+                if staff_email and within_60_days:
+                    return (True, f"Training notification sent to {staff_name} "
+                                  f"({staff_email}) and admins.")
+                if staff_email:
+                    return (True, f"Training notification sent to {staff_name} "
+                                  f"({staff_email}). Class is more than 60 days away - "
+                                  f"admins not notified.")
                 return (True, "Training notification sent successfully.")
             else:
                 return (False, "Failed to send email notification")
-                
+
         except Exception as e:
             return (False, f"Error sending notification: {str(e)}")
     
@@ -214,7 +261,6 @@ Total Currently Enrolled: {total_enrolled}
         body += """
 ---
 This notification was automatically generated by the Boston MedFlight Training & Events system.
-Only events within 60 days trigger email notifications.
 
 To review enrollments, please access the Training & Events admin interface.
 """
@@ -276,7 +322,9 @@ def send_training_event_notification(staff_name, class_name, class_date, role,
                                      class_time=None, class_location=None, meeting_type=None):
     """
     Convenient function to send training event notification
-    Only sends if class is within 60 days of current date
+
+    The staff member is emailed whenever an address is on file for them; the admin
+    recipients are only notified for classes within 60 days of the current date.
 
     Args:
         staff_name (str): Name of staff member
