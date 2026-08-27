@@ -348,7 +348,15 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
     — so the cost of the move is visible next to the move itself (see
     _give_up_cells).
 
+    `shortfall` only needs day_label, period and week — a consolidated entry from
+    track_needs_swap.consolidate_needs() has all three, so this runs just as well
+    against a need as a raw shortfall (see the outreach-email composer on the Needs
+    Swap admin tab).
+
     Returns a list of dicts; sort in the caller if a particular order is wanted.
+    Each carries '_give_ups' — the same (source_day, source_period, advisories)
+    tuples _give_up_cells() renders into display strings, kept structured for a
+    caller that needs real (day, period) pairs rather than a label to re-parse.
     """
     from modules.track_needs_swap import achievable_change, needs_swap_floors
     from modules.track_bidding import _bid_role_and_senior
@@ -406,6 +414,14 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
             'Role': ctx['role_mapping'].get(name, 'Unknown'),
             'Seniority': ctx['seniority_mapping'].get(name),
             'No Matrix': ctx['no_matrix_mapping'].get(name, False),
+            # Underscore key: the structured (source_day, source_period, advisories)
+            # tuples _give_up_cells() below flattens into display strings. Kept
+            # alongside them — not just in them — for the Needs Swap outreach-email
+            # composer, which needs real (day, period) pairs to build a table and a
+            # pre-fill link, not a "Wed A 1 D" string to re-parse. candidates_dataframe()
+            # builds its columns from an explicit list, so this extra key never reaches
+            # the spreadsheet.
+            '_give_ups': usable,
         }
         candidate.update(_give_up_cells(usable, name, role, is_senior, report_ctx))
         candidate.update({

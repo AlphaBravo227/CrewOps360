@@ -51,9 +51,11 @@ from modules.db_utils import (
     update_track_config,
 )
 from modules.nondisplacing_assignment import draft_assignment, nondisplacing_bases, rank_options
-from modules.staffing_rebalance import _excel_download_button, find_shortfalls, load_report_context
+from modules.staffing_rebalance import (_excel_download_button, _GIVE_UP_SLOTS, candidates_for_shortfall,
+                                        find_shortfalls, load_report_context)
 from modules.track_bidding import (_bid_role_and_senior, _bidding_role_bucket,
                                    _max_possible_shifts, clear_bidding_caches)
+from modules.ui_components import get_query_params
 
 _PERIOD_CODE = {'Day': 'D', 'Night': 'N'}
 _CODE_PERIOD = {'D': 'Day', 'N': 'Night'}
@@ -1167,6 +1169,12 @@ def _compact_shift(day_label, period):
     return f"{day_label} {code}"
 
 
+def _day_tag(day_label):
+    """'Sun A 2' -> 'Sun A2' — the compact day header used on the track tables."""
+    parts = day_label.split()
+    return f"{parts[0]} {parts[1]}{parts[2]}" if len(parts) == 3 else day_label
+
+
 _WEEKDAY_ORDER = {d: i for i, d in enumerate(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])}
 
 
@@ -1190,6 +1198,17 @@ def _give_up_summary(options, limit=6):
     if len(options) > limit:
         text += f", +{len(options) - limit} more"
     return text
+
+
+def _join_with_or(items):
+    """['A'] -> 'A'; ['A','B'] -> 'A or B'; ['A','B','C'] -> 'A, B, or C' — for reading
+    a list of give-up shifts as one sentence in the outreach-email composer."""
+    items = list(items)
+    if len(items) <= 1:
+        return items[0] if items else ''
+    if len(items) == 2:
+        return f"{items[0]} or {items[1]}"
+    return f"{', '.join(items[:-1])}, or {items[-1]}"
 
 
 def _advisory_text(advisories):
@@ -1307,8 +1326,7 @@ def _render_staff_track_table(staff_name, report_ctx, menu):
                      f'Block {block}</div><div class="nswp-track-grid">')
         parts.append('<div class="nswp-track-rowhead"></div>')
         for i, day in enumerate(block_days):
-            day_parts = day.split()
-            tag = f"{day_parts[0]} {day_parts[1]}{day_parts[2]}" if len(day_parts) == 3 else day
+            tag = _day_tag(day)
             parts.append(f'<div class="nswp-track-daylabel" title="{html.escape(day)}">'
                          f'{html.escape(tag)}</div>')
 
@@ -1378,11 +1396,65 @@ def _render_existing_offers(track_name, staff_name):
     return offers
 
 
+_NSWP_DEEP_LINK_APPLIED = 'needs_swap_deep_link_applied'
+
+
+def _apply_needs_swap_deep_link_defaults(staff_names):
+    """
+    One-time seed from an admin-drafted outreach email's link (see
+    _build_deep_link() on the admin tab): ?staff=<name> pre-picks the staff
+    member below, ?need=<day>|<period> pre-checks that need in "Needs you'd
+    consider moving onto", ?giveup=<day>|<period>,... pre-ticks those specific
+    give-up rows in the editor that opens for it.
+
+    Applied once per browser session (guarded by _NSWP_DEEP_LINK_APPLIED) so it
+    never fights the visitor's own later clicks — including unchecking a give-up
+    the link pre-ticked — and silently does nothing when a value doesn't match
+    anything real (an old link, a typo, a staff member who's left the roster).
+    """
+    if st.session_state.get(_NSWP_DEEP_LINK_APPLIED):
+        return
+    st.session_state[_NSWP_DEEP_LINK_APPLIED] = True
+
+    qp = get_query_params()
+
+    staff = qp.get('staff')
+    if staff in staff_names:
+        st.session_state['needs_swap_staff_select'] = staff
+
+    need_param = qp.get('need')
+    if need_param and '|' in need_param:
+        day_label, period = need_param.split('|', 1)
+        st.session_state['_needs_swap_deep_link_need'] = (day_label, period)
+
+    giveup_param = qp.get('giveup')
+    if giveup_param:
+        pairs = set()
+        for item in giveup_param.split(','):
+            if '|' in item:
+                d, p = item.split('|', 1)
+                pairs.add((d, p))
+        st.session_state['_needs_swap_deep_link_giveups'] = pairs
+
+
 def display_staff_needs_swap(track_name=None):
     """
     Staff-facing "swap onto a need" page: pick your name, see the needs you could
     move onto, choose and rank the shifts you'd give up, and submit.
     """
+    if track_name is None:
+        # An outreach-email deep link names the exact cycle it was drafted
+        # against (?track=) so this doesn't have to guess via
+        # get_needs_swap_track_config()'s arbitrary "WHERE needs_swap_open = 1
+        # LIMIT 1" if an admin ever leaves two cycles' swap windows open at
+        # once. Only trusted when that cycle's window is actually open — a
+        # stale or tampered ?track= just falls back to the normal pick.
+        qp_track = get_query_params().get('track')
+        if qp_track:
+            qp_cfg = get_track_config_by_name(qp_track)
+            if qp_cfg and qp_cfg.get('needs_swap_open'):
+                track_name = qp_track
+
     cfg = get_needs_swap_track_config() if track_name is None else get_track_config_by_name(track_name)
     if not cfg or not cfg.get('needs_swap_open'):
         return False
@@ -1450,6 +1522,7 @@ pairing, and you'll see the status of each offer here and receive email when one
         return True
 
     staff_names = sorted(report_ctx['bids_by_name'].keys())
+    _apply_needs_swap_deep_link_defaults(staff_names)
     selected_staff = st.selectbox("Select Your Name to see your swap options",
                                    [""] + staff_names, key="needs_swap_staff_select")
     if not selected_staff:
@@ -1525,19 +1598,31 @@ pairing, and you'll see the status of each offer here and receive email when one
 
     labels = {_shift_label(m['need']['day_label'], m['need']['period']): m for m in menu}
     already = {(o['need_day'], o['need_period']) for o in existing if o['status'] == 'pending'}
+    # Popped, not read, so this is single-use: it should only ever seed the very
+    # first render of these widgets. Left in session_state indefinitely, it could
+    # bleed into a later cycle whose need/give-up day-labels happen to reuse the
+    # same generic per-block text (e.g. another cycle also has a "Wed A 1").
+    deep_link_need = st.session_state.pop('_needs_swap_deep_link_need', None)
     default_labels = [lbl for lbl, m in labels.items()
-                      if (m['need']['day_label'], m['need']['period']) in already]
+                      if (m['need']['day_label'], m['need']['period']) in already
+                      or (m['need']['day_label'], m['need']['period']) == deep_link_need]
 
     picked = st.multiselect("Needs you'd consider moving onto:", list(labels.keys()),
                             default=default_labels, key="needs_swap_picked")
 
     prior_ranks = {(o['need_day'], o['need_period'], o['give_up_day'], o['give_up_period']): o['preference_rank']
                    for o in existing if o['status'] == 'pending'}
+    deep_link_giveups = st.session_state.pop('_needs_swap_deep_link_giveups', None) or set()
 
     editors = {}
     for label in picked:
         m = labels[label]
         need = m['need']
+        # A give-up day/period can legitimately appear as an option under more
+        # than one need, so the deep link's ?giveup= match is scoped to its own
+        # ?need= too — otherwise a link built for one need could also pre-check
+        # "Offer this" under an unrelated need that happens to share a give-up.
+        is_deep_link_need = (need['day_label'], need['period']) == deep_link_need
         with st.expander(f"🔁 {label}", expanded=True):
             st.markdown(_need_headline(need))
             _render_base_outlook(selected_staff, need, report_ctx)
@@ -1551,7 +1636,8 @@ pairing, and you'll see the status of each offer here and receive email when one
                     'Crews without you': opt['after'],
                     'Minimum': opt['minimum'],
                     'Heads up': _advisory_text(opt.get('advisories')),
-                    'Offer this': key in prior_ranks,
+                    'Offer this': key in prior_ranks or (
+                        is_deep_link_need and (opt['day_label'], opt['period']) in deep_link_giveups),
                     'Rank': prior_ranks.get(key, i),
                 })
             editors[label] = st.data_editor(
@@ -2092,8 +2178,7 @@ def _track_preview_html(offer, report_ctx, by_label):
         parts.append('<div class="nswp-grid nswp-grid-wide-label">')
         parts.append('<div class="nswp-rowhead"></div>')
         for d in week_days:
-            d_parts = d.split()
-            tag = f"{d_parts[0]} {d_parts[1]}{d_parts[2]}" if len(d_parts) == 3 else d
+            tag = _day_tag(d)
             parts.append(f'<div class="nswp-daylabel">{html.escape(tag)}</div>')
         parts.append('<div class="nswp-rowhead">Assignment</div>')
         for d in week_days:
@@ -2186,6 +2271,484 @@ def _render_needs_swap_window_controls(cfg):
             )
 
 
+# ──────────────────────────────────────────────
+# Outreach-email composer — proactively asking one person, before they've offered
+# ──────────────────────────────────────────────
+
+_CREWOPS_BASE_URL = 'https://dashboard.crewops360.com/'
+
+
+def _build_deep_link(staff_name, need, give_up_options, track_name):
+    """
+    A URL that pre-fills this exact ask on the real page: which module to open,
+    whose name to pick, which need to check in "Needs you'd consider moving onto",
+    and which give-up shift(s) to default to "Offer this" — see app.py's module
+    routing and the deep-link seeding at the top of display_staff_needs_swap() for
+    what each parameter actually does.
+
+    Carries `track_name` explicitly rather than leaving display_staff_needs_swap()
+    to guess: it's normally called with track_name=None and falls back to
+    get_needs_swap_track_config()'s "WHERE needs_swap_open = 1 LIMIT 1" — an
+    arbitrary pick if an admin ever leaves two cycles' swap windows open at once.
+    Naming the cycle this ask was drafted against means the link still lands
+    correctly even then.
+
+    Never carries the 4-digit access code — that stays something the recipient
+    types themselves, so a forwarded email can't be used to skip it.
+    """
+    from urllib.parse import urlencode
+    params = {
+        'module': 'track_bidding',
+        'track': track_name,
+        'staff': staff_name,
+        'need': f"{need['day_label']}|{need['period']}",
+        'giveup': ','.join(f"{o['day_label']}|{o['period']}" for o in give_up_options),
+    }
+    return f"{_CREWOPS_BASE_URL}?{urlencode(params)}"
+
+
+def _build_module_link():
+    """The plain 'just open Track Bidding' link, for the ask email's fallback instructions."""
+    return f"{_CREWOPS_BASE_URL}?module=track_bidding"
+
+
+def _ask_track_table_html(staff_name, need, give_up_options, report_ctx):
+    """
+    Static <table> HTML (inline styles, not CSS grid) for the block(s) one
+    admin-drafted ask touches: the staff member's real Assignment row, an Open Need
+    row flagging just this one need, and a highlight on whichever give-up day(s)
+    are on offer.
+
+    Deliberately not _track_preview_html(): that one is built for the live page —
+    hover tooltips, a single give-up — while this is built to survive being copied
+    into an email (nothing behind a hover, nothing that depends on a <style> block
+    surviving the paste) and shows every give-up on offer at once, since the
+    composer lets an admin leave more than one checked.
+    """
+    bid = report_ctx['bids_by_name'].get(staff_name)
+    if not bid:
+        return "<p>No bid on file for this staff member.</p>"
+    track_data = bid['track_data'] or {}
+    role, _is_senior = _bid_role_and_senior(
+        bid, report_ctx['ctx']['role_mapping'], report_ctx['ctx']['no_matrix_mapping'])
+    role_bucket = _bidding_role_bucket(role)
+
+    give_up_days = {o['day_label'] for o in give_up_options}
+    touched_days = {need['day_label']} | give_up_days
+    blocks = ['A', 'B', 'C']
+    blocks_touched = [b for b in blocks if any(_week_key(d)[0] == b for d in touched_days)]
+
+    border = 'border:1px solid #d7dee3;'
+    head_bg = 'background:#f0f2f6;'
+
+    sections = []
+    for block in blocks_touched:
+        idx = blocks.index(block)
+        block_days = report_ctx['days'][idx * 14: idx * 14 + 14]
+        if not block_days:
+            continue
+
+        header_cells = ''.join(
+            f'<th style="{border}{head_bg}padding:6px 4px;font-size:11px;color:#33404b;'
+            f'white-space:nowrap;">{html.escape(_day_tag(d))}</th>'
+            for d in block_days)
+
+        asg_cells = []
+        for d in block_days:
+            code = track_data.get(d)
+            ring = 'box-shadow:inset 0 0 0 2px #a33b2c;' if d in give_up_days else ''
+            cell_style = f'{border}padding:6px 4px;text-align:center;font-family:monospace;font-weight:600;{ring}'
+            if code == 'D':
+                base = _expected_base_for_day(staff_name, d, 'Day', role_bucket, report_ctx)
+                base_html = (f'<br><span style="font-weight:500;opacity:.72;font-size:9.5px;">'
+                            f'{html.escape(base)}</span>' if base else '')
+                asg_cells.append(f'<td style="{cell_style}background:#d4edda;color:#1b4620;">D{base_html}</td>')
+            elif code == 'N':
+                base = _expected_base_for_day(staff_name, d, 'Night', role_bucket, report_ctx)
+                base_html = (f'<br><span style="font-weight:500;opacity:.72;font-size:9.5px;">'
+                            f'{html.escape(base)}</span>' if base else '')
+                asg_cells.append(f'<td style="{cell_style}background:#cce5ff;color:#173a63;">N{base_html}</td>')
+            elif code == 'AT':
+                asg_cells.append(f'<td style="{cell_style}background:#e2e3e5;color:#3a3a3a;">Pre: AT</td>')
+            else:
+                asg_cells.append(f'<td style="{border}padding:6px 4px;{ring}"></td>')
+
+        need_cells = []
+        for d in block_days:
+            if d != need['day_label']:
+                need_cells.append(f'<td style="{border}"></td>')
+                continue
+            letter = 'D' if need['period'] == 'Day' else 'N'
+            need_cells.append(
+                f'<td style="{border}padding:6px 4px;text-align:center;font-family:monospace;'
+                f'font-weight:600;background:rgba(230,184,0,.22);color:#5c4400;'
+                f'box-shadow:inset 0 0 0 2px #e6b800;">{letter}</td>')
+
+        sections.append(
+            f'<p style="font-size:12.5px;color:#5c6b78;margin:0 0 8px;font-weight:600;">'
+            f'Block {html.escape(block)}</p>'
+            f'<div style="overflow-x:auto;margin:0 0 16px;">'
+            f'<table style="border-collapse:collapse;width:100%;min-width:760px;">'
+            f'<thead><tr><th style="{border}{head_bg}"></th>{header_cells}</tr></thead>'
+            f'<tbody>'
+            f'<tr><th style="{border}{head_bg}text-align:left;padding:6px 9px;font-size:12px;'
+            f'color:#33404b;white-space:nowrap;">Assignment</th>{"".join(asg_cells)}</tr>'
+            f'<tr><th style="{border}{head_bg}text-align:left;padding:6px 9px;font-size:12px;'
+            f'color:#33404b;white-space:nowrap;">Open need</th>{"".join(need_cells)}</tr>'
+            f'</tbody></table></div>'
+        )
+    return ''.join(sections)
+
+
+def _ask_track_table_plain(staff_name, need, give_up_options, report_ctx):
+    """Plain-text mirror of _ask_track_table_html(), for clients that strip HTML."""
+    bid = report_ctx['bids_by_name'].get(staff_name)
+    if not bid:
+        return ""
+    track_data = bid['track_data'] or {}
+    role, _is_senior = _bid_role_and_senior(
+        bid, report_ctx['ctx']['role_mapping'], report_ctx['ctx']['no_matrix_mapping'])
+    role_bucket = _bidding_role_bucket(role)
+
+    give_up_days = {o['day_label'] for o in give_up_options}
+    touched_days = {need['day_label']} | give_up_days
+    blocks = ['A', 'B', 'C']
+    blocks_touched = [b for b in blocks if any(_week_key(d)[0] == b for d in touched_days)]
+
+    sections = []
+    for block in blocks_touched:
+        idx = blocks.index(block)
+        block_days = report_ctx['days'][idx * 14: idx * 14 + 14]
+        if not block_days:
+            continue
+        tag_width = max(len(_day_tag(d)) for d in block_days) + 2
+        rows = [f"YOUR BLOCK {block} TRACK"]
+        for d in block_days:
+            code = track_data.get(d)
+            if code == 'D':
+                base = _expected_base_for_day(staff_name, d, 'Day', role_bucket, report_ctx)
+                val = f"D ({base})" if base else "D"
+            elif code == 'N':
+                base = _expected_base_for_day(staff_name, d, 'Night', role_bucket, report_ctx)
+                val = f"N ({base})" if base else "N"
+            elif code == 'AT':
+                val = "Pre: AT"
+            else:
+                val = "—"
+            if d == need['day_label']:
+                val = f"OPEN NEED — {'D' if need['period'] == 'Day' else 'N'}"
+            mark = '  <- proposed give-up' if d in give_up_days else ''
+            rows.append(f"{_day_tag(d).ljust(tag_width)}{val}{mark}")
+        sections.append("\n".join(rows))
+    return "\n\n".join(sections)
+
+
+def _compose_ask_email(staff_name, need, need_base, give_up_options, note, sign_name, report_ctx, track_name):
+    """
+    Subject / rich HTML body / plain-text body / deep link for one admin-drafted ask
+    — the text a scheduler pastes into an email asking `staff_name` to move onto
+    `need` by giving up one of `give_up_options` (or, if empty, an AT that converts
+    in place — the caller passes no give-up options for that case).
+
+    Deliberately leaves out priority and staffing-impact language: those are for the
+    admin deciding who to ask, not for the person being asked. `need_base` is the
+    best_base_for_need()-shaped dict the caller already computed (so this never
+    redoes that lookup) — None means no base can be promised, in which case it's
+    simply left out of the ask rather than guessed at.
+    """
+    role, _is_senior = _bid_role_and_senior(
+        report_ctx['bids_by_name'][staff_name], report_ctx['ctx']['role_mapping'],
+        report_ctx['ctx']['no_matrix_mapping'])
+    role_bucket = _bidding_role_bucket(role)
+
+    need_text = f"{_day_tag(need['day_label'])} {need['period']}"
+    if need_base:
+        need_text += f" ({need_base['base']})"
+
+    no_give_up = not give_up_options
+    if no_give_up:
+        give_up_text = ''
+    else:
+        texts = []
+        for opt in give_up_options:
+            base = _expected_base_for_day(staff_name, opt['day_label'], opt['period'], role_bucket, report_ctx)
+            text = f"{_day_tag(opt['day_label'])} {opt['period']}"
+            texts.append(f"{text} ({base})" if base else text)
+        give_up_text = _join_with_or(texts)
+
+    link = _build_deep_link(staff_name, need, give_up_options, track_name)
+    module_link = _build_module_link()
+    subject = f"Track Change Request — {need_text}"
+
+    note = (note or "").strip()
+    sign = (sign_name or "").strip() or "Scheduling Team"
+
+    if no_give_up:
+        ask_line_html = (
+            f"We would like you to consider covering <b>{html.escape(need_text)}</b> — since "
+            "you're already scheduled for administrative time that day, this converts it into "
+            "the shift and doesn't require giving up anything else.")
+        ask_line_plain = (
+            f"We would like you to consider covering {need_text} — since you're already "
+            "scheduled for administrative time that day, this converts it into the shift and "
+            "doesn't require giving up anything else.")
+    else:
+        ask_line_html = (
+            f"We would like you to consider moving onto <b>{html.escape(need_text)}</b> by "
+            f"giving up your shift on <b>{html.escape(give_up_text)}</b>.")
+        ask_line_plain = (
+            f"We would like you to consider moving onto {need_text} by giving up your shift "
+            f"on {give_up_text}.")
+
+    table_html = _ask_track_table_html(staff_name, need, give_up_options, report_ctx)
+    table_plain = _ask_track_table_plain(staff_name, need, give_up_options, report_ctx)
+    note_html = (f'<p style="font-style:italic;color:#3a444d;margin:0 0 14px;">'
+                f'"{html.escape(note)}"</p>' if note else '')
+
+    html_body = (
+        f'<p style="font-size:14.5px;margin:0 0 14px;">Hi {html.escape(staff_name)},</p>'
+        '<p style="font-size:14.5px;line-height:1.65;margin:0 0 14px;">You have been identified '
+        'as a staff member who may be able to help balance the schedule by moving one of your '
+        'shifts to a day where we have an operational staffing need.</p>'
+        f'<p style="font-size:14.5px;line-height:1.65;margin:0 0 14px;">{ask_line_html}</p>'
+        f'{table_html}'
+        f'{note_html}'
+        '<p style="font-size:14.5px;line-height:1.65;margin:0 0 14px;">\U0001F449 '
+        f'<a href="{link}" style="color:#2563eb;font-weight:700;">Open your pre-filled offer</a> '
+        "— you'll still be asked for your usual 4-digit access code.</p>"
+        '<p style="font-size:14.5px;line-height:1.65;margin:0 0 14px;">Thank you for considering '
+        'this proposed track change. Please reply-all to the scheduling team if you have any '
+        "questions, or let us know if you aren't able to help with this offer. All changes "
+        f"you're eligible for can be viewed on the "
+        f'<a href="{module_link}" style="color:#2563eb;">Track Bidding page</a> '
+        '(<b>Track Needs — Swap Opportunities</b>).</p>'
+        f'<p style="font-size:14.5px;margin-top:18px;">Thanks,<br>{html.escape(sign)}</p>'
+    )
+
+    plain_lines = [
+        f"Hi {staff_name},", "",
+        "You have been identified as a staff member who may be able to help balance the schedule "
+        "by moving one of your shifts to a day where we have an operational staffing need.", "",
+        ask_line_plain, "",
+    ]
+    if table_plain:
+        plain_lines += [table_plain, ""]
+    if note:
+        plain_lines += [f'"{note}"', ""]
+    plain_lines += [
+        f"Open your pre-filled offer: {link}",
+        "(You'll still be asked for your usual 4-digit access code.)",
+        "",
+        "Thank you for considering this proposed track change. Please reply-all to the "
+        "scheduling team if you have any questions, or let us know if you aren't able to help "
+        "with this offer. All changes you're eligible for can be viewed on the Track Bidding "
+        f"page (Track Needs - Swap Opportunities): {module_link}",
+        "",
+        "Thanks,",
+        sign,
+    ]
+    return {'subject': subject, 'html_body': html_body, 'plain_body': "\n".join(plain_lines), 'link': link}
+
+
+_COPY_BUTTON_TEMPLATE = """
+<div style="font-family:-apple-system,'Segoe UI',sans-serif;">
+  <button id="nswpAskCopyBtn" style="background:#2563eb;color:#fff;border:none;
+    border-radius:7px;padding:9px 16px;font-size:14px;font-weight:600;cursor:pointer;">
+    Copy for emailing
+  </button>
+  <span id="nswpAskCopyStatus" style="margin-left:10px;font-size:12px;color:#2e7d4f;font-weight:600;"></span>
+</div>
+<script>
+(function(){
+  var htmlBody = __HTML_JSON__;
+  var plainBody = __PLAIN_JSON__;
+  var btn = document.getElementById('nswpAskCopyBtn');
+  var status = document.getElementById('nswpAskCopyStatus');
+  btn.addEventListener('click', async function(){
+    try {
+      if (navigator.clipboard && window.ClipboardItem) {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            'text/html': new Blob([htmlBody], {type: 'text/html'}),
+            'text/plain': new Blob([plainBody], {type: 'text/plain'}),
+          })
+        ]);
+        status.textContent = 'Copied — paste into your email';
+      } else {
+        await navigator.clipboard.writeText(plainBody);
+        status.textContent = 'Rich copy unsupported here — copied as plain text';
+      }
+    } catch (e) {
+      status.textContent = "Couldn't copy automatically — use the plain-text box below";
+    }
+    setTimeout(function(){ status.textContent = ''; }, 3000);
+  });
+})();
+</script>
+"""
+
+
+def _copy_button_html(html_body, plain_body):
+    """One blue 'Copy for emailing' button that writes both a rich (HTML) and a
+    plain-text clipboard payload in one click, with a plain-text fallback if the
+    browser can't do rich clipboard writes. Rendered via components.v1.html because
+    st.markdown(unsafe_allow_html=True) drops <script> tags — components.v1.html
+    renders into a real iframe, where they run."""
+    import json
+    return (_COPY_BUTTON_TEMPLATE
+            .replace('__HTML_JSON__', json.dumps(html_body))
+            .replace('__PLAIN_JSON__', json.dumps(plain_body)))
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _cached_candidates_for_need(track_name, need_day, need_period):
+    """
+    candidates_for_shortfall(), cached by the need's identity rather than
+    report_ctx (which isn't hashable). The composer calls this on every rerun
+    of the whole admin tab — typing in the reviewer field, approving an
+    unrelated offer — and each candidate costs a validate_swap() call plus a
+    database round trip in rank_candidate(), the same cost load_report_context's
+    own cache comment already calls out for this file. load_swap_context() is
+    already cached, so re-fetching it here is nearly free once warm.
+    """
+    report_ctx, err = load_swap_context(track_name)
+    if report_ctx is None:
+        return []
+    need = next((n for n in report_ctx['needs']
+                if n['day_label'] == need_day and n['period'] == need_period), None)
+    if need is None:
+        return []
+    return candidates_for_shortfall(need, report_ctx, track_name)
+
+
+def _render_needs_swap_compose_section(report_ctx, track_name, uncovered):
+    """
+    'Draft an outreach email' — the admin picks an open need, the tool finds who's
+    eligible to fill it (candidates_for_shortfall(), the same eligibility rules the
+    staff view runs), and builds a copy-ready email combining that person's current
+    track with the specific ask.
+
+    Nothing here writes to the database. The staff member's own Submit on the real
+    page is still what creates the offer; this only drafts the message asking them
+    to go do that — optionally via a link that gets them there pre-filled.
+    """
+    import streamlit.components.v1 as components
+
+    st.markdown("#### ✉️ Draft an outreach email")
+    st.caption(
+        "Ask one specific person to help cover a need — combines their current track "
+        "with the ask into text you can paste into an email."
+    )
+
+    all_needs = report_ctx['needs']
+    if not all_needs:
+        st.info("No open needs to draft an ask for.")
+        return
+
+    uncovered_keys = {(n['day_label'], n['period']) for n in uncovered}
+    need_labels = {}
+    for n in all_needs:
+        label = f"{_shift_label(n['day_label'], n['period'])} — {n['achievable']}/{n['minimum']}"
+        if (n['day_label'], n['period']) in uncovered_keys:
+            label += " • nobody has offered"
+        need_labels[label] = n
+
+    need_options = list(need_labels.keys())
+    default_label = next((lbl for lbl, n in need_labels.items()
+                          if (n['day_label'], n['period']) in uncovered_keys), need_options[0])
+    if st.session_state.get('needs_swap_compose_need') not in need_options:
+        st.session_state['needs_swap_compose_need'] = default_label
+    chosen_label = st.selectbox("Need:", need_options, key="needs_swap_compose_need")
+    need = need_labels[chosen_label]
+
+    with st.spinner("Finding who's eligible..."):
+        candidates = _cached_candidates_for_need(track_name, need['day_label'], need['period'])
+
+    # candidates_for_shortfall() doesn't check has_capacity_room() — the staff
+    # self-service page's swap_options_for_staff() does (see day_roster()'s
+    # bid-cap rule) — so without this, the composer could point an admin at a
+    # candidate the real page would filter back out, and the deep link would
+    # land on a need that never actually shows up in their "you could move
+    # onto" list.
+    need_row = _day_stats_by_label(report_ctx).get(need['day_label'])
+    if need_row is not None:
+        def _eligible(c):
+            role, _is_senior = _bid_role_and_senior(
+                report_ctx['bids_by_name'][c['Name']], report_ctx['ctx']['role_mapping'],
+                report_ctx['ctx']['no_matrix_mapping'])
+            return has_capacity_room(need_row, need['period'], role, report_ctx.get('weekday_caps'))
+        candidates = [c for c in candidates if _eligible(c)]
+
+    if not candidates:
+        st.info("Nobody on this cycle's roster is currently eligible to move onto this need.")
+        return
+
+    candidates.sort(key=lambda c: (
+        c['Hypothetical base'] is None,
+        c['Competition rank'] if c.get('Competition rank') is not None else 999,
+        c['Name'],
+    ))
+
+    def _cand_label(c):
+        where = c['Hypothetical base'] or "no base guaranteed"
+        return f"{c['Name']} — {where}"
+
+    cand_by_label = {_cand_label(c): c for c in candidates}
+    staff_widget_key = f"needs_swap_compose_staff::{chosen_label}"
+    chosen_cand_label = st.selectbox("Ask:", list(cand_by_label.keys()), key=staff_widget_key)
+    candidate = cand_by_label[chosen_cand_label]
+    staff_name = candidate['Name']
+    need_base = best_base_for_need(staff_name, need['day_label'], need['period'], report_ctx)
+
+    give_ups = candidate['_give_ups']
+    give_up_options = []
+
+    if len(give_ups) == 1 and give_ups[0][0] is None:
+        st.info(f"{staff_name} is already scheduled for administrative time that day — covering "
+               "this need converts it in place, with nothing to give up.")
+    else:
+        st.markdown("**Ask them to give up:**")
+        # Impact text is already sitting on the candidate row, computed once by
+        # _give_up_cells() in the same order as _give_ups — reused rather than
+        # recomputed here, so the number an admin sees while drafting an email
+        # always matches what the Staffing Rebalance candidate table shows for
+        # this exact give-up.
+        for slot, (source_day, source_period, advisories) in zip(_GIVE_UP_SLOTS, give_ups):
+            opt_key = f"needs_swap_compose_giveup_{chosen_label}_{staff_name}_{source_day}_{source_period}"
+            checked = st.checkbox(_shift_label(source_day, source_period), value=True, key=opt_key)
+            impact_text = candidate.get(f'Impact ({slot})', 'Unknown')
+            advisory = _advisory_text(advisories)
+            st.caption(impact_text if not advisory else f"{impact_text} — ⚠️ {advisory}")
+            if checked:
+                give_up_options.append({'day_label': source_day, 'period': source_period})
+
+        if not give_up_options:
+            st.warning("Tick at least one shift they could give up before drafting the email.")
+            return
+
+    note = st.text_area(
+        "Personal note (optional):",
+        key=f"needs_swap_compose_note_{staff_name}_{chosen_label}",
+        placeholder="Add anything only you'd know — e.g. why you're asking them specifically.")
+    sign = st.text_input("Sign as:", value=st.session_state.get('needs_swap_compose_sign', 'Scheduling Team'),
+                         key='needs_swap_compose_sign')
+
+    email = _compose_ask_email(staff_name, need, need_base, give_up_options, note, sign, report_ctx, track_name)
+
+    recipient_email = _staff_email(staff_name, report_ctx)
+    to_line = f"{staff_name} <{recipient_email}>" if recipient_email else f"{staff_name} (no email on file)"
+    st.markdown(f"**To:** {to_line}")
+    st.markdown(f"**Subject:** {email['subject']}")
+    st.caption(f"Link: {email['link']}")
+    st.markdown(email['html_body'], unsafe_allow_html=True)
+
+    plain_for_copy = f"Subject: {email['subject']}\n\n{email['plain_body']}"
+    components.html(_copy_button_html(email['html_body'], plain_for_copy), height=50)
+
+    with st.expander("Plain-text version (for clients that strip formatting)"):
+        st.code(plain_for_copy, language=None)
+
+
 def _render_needs_swap_admin_tab(config_names, default_track_index):
     st.markdown("### Needs Swap Requests")
     st.caption(
@@ -2216,98 +2779,106 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
             return
         offers = offers_with_status(track_name, report_ctx)
 
+    # A cycle with no offers yet is exactly when proactive outreach (below) matters
+    # most, so this no longer returns early — it just skips the offer-specific
+    # metrics and queue, which have nothing to show anyway.
     if not offers:
-        st.info(f"No staff have submitted swap offers for {track_name} yet.")
-        return
+        st.info(f"No staff have submitted swap offers for {track_name} yet — the "
+               "outreach composer below can ask someone directly.")
 
     pending = [o for o in offers if o['status'] == 'pending']
     approved = [o for o in offers if o['status'] == 'approved']
 
-    m = st.columns(4)
-    m[0].metric("Staff responded", len({o['staff_name'] for o in offers}))
-    m[1].metric("Pending pairings", len(pending))
-    m[2].metric("Approved", len(approved))
-    m[3].metric("Needs still open", len(report_ctx['needs']))
-
     reviewer = st.text_input("Reviewed by:", value=st.session_state.get('needs_swap_reviewer', 'Admin'),
                              key="needs_swap_reviewer")
 
-    _render_review_note_prompt(offers, report_ctx, reviewer)
+    if offers:
+        m = st.columns(4)
+        m[0].metric("Staff responded", len({o['staff_name'] for o in offers}))
+        m[1].metric("Pending pairings", len(pending))
+        m[2].metric("Approved", len(approved))
+        m[3].metric("Needs still open", len(report_ctx['needs']))
 
-    st.markdown("#### Pending offers, by need")
-    if not pending:
-        st.info("Nothing pending — every offer has been decided.")
-    else:
-        needs_by_key = {(n['day_label'], n['period']): n for n in report_ctx['needs']}
-        by_label = _day_stats_by_label(report_ctx)
-        by_need = {}
-        for o in pending:
-            by_need.setdefault((o['need_day'], o['need_period']), []).append(o)
+        _render_review_note_prompt(offers, report_ctx, reviewer)
 
-        for key, group in sorted(by_need.items(), key=lambda kv: -len(kv[1])):
-            need = needs_by_key.get(key)
-            label = _shift_label(*key)
-            headline = _need_headline(need) if need else f"**{label}** — no longer below minimum"
-            with st.expander(f"{label} — {len(group)} offer(s)", expanded=True):
-                st.markdown(headline)
-                if need and need['deficit']:
-                    st.caption(f"Crew mix needed: {_deficit_text(need['deficit']) or 'senior cap only'}")
-                if not need:
-                    st.warning("This shift is no longer below minimum — approving here would "
-                               "overstaff it. Decline these unless you have another reason.")
+        st.markdown("#### Pending offers, by need")
+        if not pending:
+            st.info("Nothing pending — every offer has been decided.")
+        else:
+            needs_by_key = {(n['day_label'], n['period']): n for n in report_ctx['needs']}
+            by_label = _day_stats_by_label(report_ctx)
+            by_need = {}
+            for o in pending:
+                by_need.setdefault((o['need_day'], o['need_period']), []).append(o)
 
-                group.sort(key=lambda o: (o['staff_name'], o['preference_rank']))
-                for o in group:
-                    cols = st.columns([4, 1.3, 1, 1])
-                    role = report_ctx['ctx']['role_mapping'].get(o['staff_name'], 'Unknown')
-                    seniority = report_ctx['ctx']['seniority_mapping'].get(o['staff_name'], '?')
-                    base = best_base_for_need(o['staff_name'], o['need_day'],
-                                               o['need_period'], report_ctx)
-                    where = (f"hypothetical shift {base['base']} ({_rank_text(base)})" if base
-                             else "no hypothetical shift can be promised")
-                    impact_text = give_up_impact_text(_give_up_impact(o, report_ctx, by_label))
-                    line = (f"**{o['staff_name']}** ({role}, seniority {seniority}) — "
-                            f"give up {_shift_label(o['give_up_day'], o['give_up_period'])} "
-                            f"*({impact_text})* "
-                            f"· their rank {o['preference_rank']} · {where}")
-                    if not o['still_valid']:
-                        line += f"  \n⚠️ {o['stale_reason']}"
-                    if o['staff_notes']:
-                        line += f"  \n💬 {o['staff_notes']}"
-                    cols[0].markdown(line)
+            for key, group in sorted(by_need.items(), key=lambda kv: -len(kv[1])):
+                need = needs_by_key.get(key)
+                label = _shift_label(*key)
+                headline = _need_headline(need) if need else f"**{label}** — no longer below minimum"
+                with st.expander(f"{label} — {len(group)} offer(s)", expanded=True):
+                    st.markdown(headline)
+                    if need and need['deficit']:
+                        st.caption(f"Crew mix needed: {_deficit_text(need['deficit']) or 'senior cap only'}")
+                    if not need:
+                        st.warning("This shift is no longer below minimum — approving here would "
+                                   "overstaff it. Decline these unless you have another reason.")
 
-                    preview_key = f"needs_swap_preview_open_{o['id']}"
-                    preview_open = st.session_state.get(preview_key, False)
-                    if cols[1].button("Hide track" if preview_open else "🔍 Preview track",
-                                      key=f"needs_swap_preview_btn_{o['id']}", use_container_width=True):
-                        st.session_state[preview_key] = not preview_open
-                        st.rerun()
-                    # Neither button decides anything on its own: both open the note
-                    # box, which is where the decision is actually confirmed.
-                    if cols[2].button("Approve", key=f"needs_swap_approve_{o['id']}",
-                                      disabled=not o['still_valid'], use_container_width=True):
-                        _queue_review_action(o['id'], 'approve')
-                        st.rerun()
-                    if cols[3].button("Decline", key=f"needs_swap_decline_{o['id']}",
-                                      use_container_width=True):
-                        _queue_review_action(o['id'], 'decline')
-                        st.rerun()
+                    group.sort(key=lambda o: (o['staff_name'], o['preference_rank']))
+                    for o in group:
+                        cols = st.columns([4, 1.3, 1, 1])
+                        role = report_ctx['ctx']['role_mapping'].get(o['staff_name'], 'Unknown')
+                        seniority = report_ctx['ctx']['seniority_mapping'].get(o['staff_name'], '?')
+                        base = best_base_for_need(o['staff_name'], o['need_day'],
+                                                   o['need_period'], report_ctx)
+                        where = (f"hypothetical shift {base['base']} ({_rank_text(base)})" if base
+                                 else "no hypothetical shift can be promised")
+                        impact_text = give_up_impact_text(_give_up_impact(o, report_ctx, by_label))
+                        line = (f"**{o['staff_name']}** ({role}, seniority {seniority}) — "
+                                f"give up {_shift_label(o['give_up_day'], o['give_up_period'])} "
+                                f"*({impact_text})* "
+                                f"· their rank {o['preference_rank']} · {where}")
+                        if not o['still_valid']:
+                            line += f"  \n⚠️ {o['stale_reason']}"
+                        if o['staff_notes']:
+                            line += f"  \n💬 {o['staff_notes']}"
+                        cols[0].markdown(line)
 
-                    if preview_open:
-                        st.markdown(_track_preview_html(o, report_ctx, by_label), unsafe_allow_html=True)
+                        preview_key = f"needs_swap_preview_open_{o['id']}"
+                        preview_open = st.session_state.get(preview_key, False)
+                        if cols[1].button("Hide track" if preview_open else "🔍 Preview track",
+                                          key=f"needs_swap_preview_btn_{o['id']}", use_container_width=True):
+                            st.session_state[preview_key] = not preview_open
+                            st.rerun()
+                        # Neither button decides anything on its own: both open the note
+                        # box, which is where the decision is actually confirmed.
+                        if cols[2].button("Approve", key=f"needs_swap_approve_{o['id']}",
+                                          disabled=not o['still_valid'], use_container_width=True):
+                            _queue_review_action(o['id'], 'approve')
+                            st.rerun()
+                        if cols[3].button("Decline", key=f"needs_swap_decline_{o['id']}",
+                                          use_container_width=True):
+                            _queue_review_action(o['id'], 'decline')
+                            st.rerun()
+
+                        if preview_open:
+                            st.markdown(_track_preview_html(o, report_ctx, by_label), unsafe_allow_html=True)
 
     uncovered = [n for n in report_ctx['needs']
                  if not any(o['status'] == 'pending' and o['need_day'] == n['day_label']
                             and o['need_period'] == n['period'] for o in offers)]
     if uncovered:
         st.markdown("#### Still-open needs nobody has offered to cover")
-        st.caption("Use the Staffing Rebalance tab to see who could be asked directly.")
+        st.caption("Draft an outreach email for one of these below, or use the Staffing "
+                   "Rebalance tab for the full candidate-ranking view.")
         st.dataframe(pd.DataFrame([{
             'Need': _shift_label(n['day_label'], n['period']),
             'Achievable': n['achievable'],
             'Minimum': n['minimum'],
             'Crew mix needed': _deficit_text(n['deficit']),
         } for n in uncovered]), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    _render_needs_swap_compose_section(report_ctx, track_name, uncovered)
 
     st.markdown("---")
     st.markdown("#### All responses")

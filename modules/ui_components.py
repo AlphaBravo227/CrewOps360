@@ -8,6 +8,30 @@ import pandas as pd
 import html
 
 
+def get_query_params():
+    """
+    dict[str, str] of the current URL's query parameters, regardless of which
+    query-param API the installed Streamlit has. st.query_params (stable since
+    1.30) behaves like a dict; the older st.experimental_get_query_params() —
+    what an older deployed Streamlit may still be on, see requirements.txt's
+    note on the streamlit version range — returns {key: [values]} instead.
+
+    Empty dict if neither is available or reading either one fails, so a
+    caller never needs its own try/except just to look for a link parameter.
+    """
+    qp = getattr(st, 'query_params', None)
+    if qp is not None:
+        try:
+            return dict(qp)
+        except Exception:
+            pass
+    try:
+        raw = st.experimental_get_query_params()
+        return {k: (v[0] if v else '') for k, v in raw.items()}
+    except Exception:
+        return {}
+
+
 def render_section_banner(title, subtitle=None, eyebrow=None, accent="#3498db", background="#eef5fc"):
     """
     Render a colored, left-bordered section header.
