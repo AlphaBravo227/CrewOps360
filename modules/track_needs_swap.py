@@ -38,6 +38,7 @@ import pandas as pd
 import streamlit as st
 
 from modules.db_utils import (
+    delete_needs_swap_outreach_entry,
     get_bid_track_from_db,
     get_need_swap_offers,
     get_needs_swap_outreach,
@@ -2766,42 +2767,66 @@ def _render_needs_swap_compose_section(report_ctx, track_name, uncovered, review
     plain_for_copy = f"Subject: {email['subject']}\n\n{email['plain_body']}"
     components.html(_copy_button_html(email['html_body'], plain_for_copy), height=50)
 
-    with st.expander("Plain-text version (for clients that strip formatting)"):
-        st.code(plain_for_copy, language=None)
-
     # Copy for emailing runs entirely inside the components.html iframe — there's
     # no channel back into Streamlit's Python state to auto-tick "emailed" the
     # instant that click happens, so this button is the one-click-later
-    # approximation: copy, then log it.
+    # approximation: copy, then log it. Kept directly under Copy rather than
+    # further down the page, since that's the exact moment it's needed.
+    if st.button("📋 Log as emailed", key=f"needs_swap_outreach_log_{staff_name}_{chosen_label}"):
+        upsert_needs_swap_outreach(track_name, staff_name, need['day_label'], need['period'],
+                                   emailed=True, emailed_by=reviewer)
+        st.rerun()
+
     logged = get_needs_swap_outreach_entry(track_name, staff_name, need['day_label'], need['period'])
-    status_col, log_col = st.columns([3, 1])
-    with status_col:
-        if logged and logged['emailed']:
-            reply_bit = f" · reply: {logged['reply_note']}" if logged['reply_note'] else ""
-            st.caption(f"📧 Logged as emailed by {logged['emailed_by'] or 'someone'} on "
-                      f"{logged['emailed_date']}{reply_bit} — see the outreach log below to update it.")
-        else:
-            st.caption("Not yet logged as emailed — click Copy above, then log it here once it's actually sent.")
-    with log_col:
-        if st.button("📋 Log as emailed", key=f"needs_swap_outreach_log_{staff_name}_{chosen_label}",
-                     use_container_width=True):
-            upsert_needs_swap_outreach(track_name, staff_name, need['day_label'], need['period'],
-                                       emailed=True, emailed_by=reviewer)
-            st.rerun()
+    if logged and logged['emailed']:
+        reply_bit = f" · reply: {logged['reply_note']}" if logged['reply_note'] else ""
+        st.caption(f"📧 Logged as emailed by {logged['emailed_by'] or 'someone'} on "
+                  f"{logged['emailed_date']}{reply_bit} — see the outreach log below to update it.")
+    else:
+        st.caption("Not yet logged as emailed — click Copy above, then Log as emailed once it's actually sent.")
+
+    with st.expander("Plain-text version (for clients that strip formatting)"):
+        st.code(plain_for_copy, language=None)
+
+
+def _outreach_response_text(row, offers_by_staff):
+    """
+    Whether this staff member has actually submitted a swap offer for this
+    exact need since the ask was emailed — checked against their real
+    track_need_offers rows, not left for the admin to remember or ask again.
+
+    Blank until the row is marked emailed (there's nothing to have responded
+    to yet). 'Not yet' if emailed but no matching offer's submission_date is at
+    or after emailed_date; otherwise the status of their most recent one.
+    Timestamps are only second-precision, so >= rather than > — a submission
+    logged in the same second as the email shouldn't read as "before" it.
+    """
+    if not row['emailed'] or not row['emailed_date']:
+        return ''
+    offers = offers_by_staff.get(row['staff_name'], [])
+    matches = [o for o in offers if o['need_day'] == row['need_day'] and o['need_period'] == row['need_period']
+              and o['submission_date'] and o['submission_date'] >= row['emailed_date']]
+    if not matches:
+        return 'Not yet'
+    matches.sort(key=lambda o: o['submission_date'], reverse=True)
+    return f"✅ {_STATUS_LABEL.get(matches[0]['status'], matches[0]['status'])}"
 
 
 def _render_needs_swap_outreach_log(track_name, reviewer):
     """
     Every (staff, need) pair logged from the composer above: whether it's been
-    marked emailed, who sent it, and any reply noted back — so an admin working
+    marked emailed, who sent it, whether they've actually since submitted an
+    offer for that need, and any reply noted back — so an admin working
     through several open needs can see at a glance who they've already reached
-    out to instead of re-checking each need's composer state one at a time.
+    out to and who's responded, instead of re-checking each need's composer
+    state one at a time.
 
-    Editable in bulk: tick/untick Emailed, fix who it was logged under, or add
-    a reply, for as many rows as changed, then one Save persists all of them.
-    Rows only exist once "Log as emailed" above has created one — this doesn't
-    let an admin add an arbitrary name here, only track outreach that was
-    actually drafted through the composer.
+    Editable in bulk: tick/untick Emailed, fix who it was logged under, add a
+    reply, or tick Delete to remove a row entirely — for as many rows as
+    changed, then one Save applies all of it. Rows only exist once "Log as
+    emailed" above has created one — this doesn't let an admin add an
+    arbitrary name here, only manage outreach that was actually drafted
+    through the composer.
     """
     st.markdown("#### 📋 Outreach log")
     rows = get_needs_swap_outreach(track_name)
@@ -2810,10 +2835,16 @@ def _render_needs_swap_outreach_log(track_name, reviewer):
         return
 
     st.caption(
-        "Tracks what the composer above can't see on its own: whether an ask actually got emailed. "
-        "Streamlit has no way to detect the clipboard copy itself, so this is logged by hand — tick "
-        "Emailed, fix who sent it, or add a reply below, then save."
+        "Tracks what the composer above can't see on its own: whether an ask actually got emailed, "
+        "and whether they've since submitted an offer for it. Streamlit has no way to detect the "
+        "clipboard copy itself, so \"Emailed\" is logged by hand — tick it, fix who sent it, add a "
+        "reply, or tick Delete to remove a row, then save."
     )
+
+    offers_by_staff = {}
+    for r in rows:
+        if r['staff_name'] not in offers_by_staff:
+            offers_by_staff[r['staff_name']] = get_need_swap_offers(track_name, staff_name=r['staff_name'])
 
     table = pd.DataFrame([{
         'Need': _shift_label(r['need_day'], r['need_period']),
@@ -2821,7 +2852,9 @@ def _render_needs_swap_outreach_log(track_name, reviewer):
         'Emailed': bool(r['emailed']),
         'Emailed by': r['emailed_by'] or '',
         'Emailed date': r['emailed_date'] or '',
+        'Responded?': _outreach_response_text(r, offers_by_staff),
         'Reply note': r['reply_note'] or '',
+        'Delete': False,
     } for r in rows])
 
     edited = st.data_editor(
@@ -2832,7 +2865,10 @@ def _render_needs_swap_outreach_log(track_name, reviewer):
             'Emailed': st.column_config.CheckboxColumn(help="Check when it's actually been sent; uncheck to retract."),
             'Emailed by': st.column_config.TextColumn(help="Who sent it — editable if it needs correcting."),
             'Emailed date': st.column_config.TextColumn(disabled=True, help="Stamped automatically when Emailed is first checked."),
+            'Responded?': st.column_config.TextColumn(
+                disabled=True, help="Checked against their actual submitted offers — not a memory aid."),
             'Reply note': st.column_config.TextColumn(width="large", help="What they said back, if anything."),
+            'Delete': st.column_config.CheckboxColumn(help="Check, then Save, to remove this row entirely."),
         },
     )
 
@@ -2843,17 +2879,29 @@ def _render_needs_swap_outreach_log(track_name, reviewer):
     row_by_key = {(_shift_label(r['need_day'], r['need_period']), r['staff_name']): r for r in rows}
 
     if st.button("💾 Save outreach log", key="needs_swap_outreach_save"):
+        saved, deleted = 0, 0
         for _, row in edited.iterrows():
             r = row_by_key.get((row['Need'], row['Staff']))
             if r is None:
                 continue
-            upsert_needs_swap_outreach(
+            if row['Delete']:
+                ok, _ = delete_needs_swap_outreach_entry(
+                    track_name, r['staff_name'], r['need_day'], r['need_period'])
+                deleted += ok
+                continue
+            ok, _ = upsert_needs_swap_outreach(
                 track_name, r['staff_name'], r['need_day'], r['need_period'],
                 emailed=bool(row['Emailed']),
                 emailed_by=(row['Emailed by'].strip() or reviewer) if row['Emailed'] else None,
                 reply_note=row['Reply note'].strip() or None,
             )
-        st.success("Outreach log saved.")
+            saved += ok
+        parts = []
+        if saved:
+            parts.append(f"saved {saved}")
+        if deleted:
+            parts.append(f"deleted {deleted}")
+        st.success(("Outreach log — " + ", ".join(parts) + ".") if parts else "No changes to save.")
         st.rerun()
 
 

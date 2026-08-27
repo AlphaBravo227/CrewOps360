@@ -3264,6 +3264,22 @@ def upsert_needs_swap_outreach(track_name, staff_name, need_day, need_period,
         return False, f"Error saving outreach status: {e}"
 
 
+def delete_needs_swap_outreach_entry(track_name, staff_name, need_day, need_period):
+    """Remove one outreach-log row entirely — for one logged by mistake, or an
+    admin who just wants it cleared out. Returns (success, message)."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""DELETE FROM needs_swap_outreach
+                          WHERE track_name = ? AND staff_name = ? AND need_day = ? AND need_period = ?""",
+                       (track_name, staff_name, need_day, need_period))
+        conn.commit()
+        return True, "Removed from the outreach log."
+    except Exception as e:
+        return False, f"Error removing outreach log entry: {e}"
+
+
 # Clean up connections when the module is unloaded
 import atexit
 atexit.register(close_all_connections)
