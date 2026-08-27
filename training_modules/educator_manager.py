@@ -331,7 +331,8 @@ class EducatorManager:
             
             # Perform the signup
             success = self.db.add_educator_signup(
-                staff_name, class_name, class_date, override_conflict, conflict_details
+                staff_name, class_name, class_date, override_conflict, conflict_details,
+                training_year=self.training_year
             )
             
             if success:

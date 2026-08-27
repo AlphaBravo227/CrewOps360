@@ -255,7 +255,8 @@ class EnrollmentManager:
             print(f"DEBUG: Attempting to add enrollment for {date}")
             success = self.db.add_enrollment(
                 staff_name, class_name, date, role, 
-                meeting_type, session_time, override_conflict, combined_conflict_str
+                meeting_type, session_time, override_conflict, combined_conflict_str,
+                training_year=self.training_year
             )
             
             if success:
@@ -348,6 +349,12 @@ class EnrollmentManager:
                 existing_enrollments = self.check_existing_enrollment(staff_name, class_name)
                 if existing_enrollments:
                     return "duplicate_found", existing_enrollments
+            # Name the closed year rather than reporting a mystery: a year that has
+            # gone read-only is the one predictable reason the write is refused.
+            if not self.db.is_training_year_writable(self.training_year):
+                year = self.training_year or "This training year"
+                return False, (f"{year} is closed - enrollments can no longer be added "
+                               f"or changed for that year.")
             return False, "Enrollment failed - unknown error"
 
     def cancel_enrollment(self, enrollment_id):
