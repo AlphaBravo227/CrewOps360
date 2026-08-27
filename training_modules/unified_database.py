@@ -618,17 +618,23 @@ class UnifiedDatabase:
     # STUDENT ENROLLMENT METHODS - COMPLETELY FIXED
     def add_enrollment(self, staff_name, class_name, class_date, role='General', 
                     meeting_type=None, session_time=None, conflict_override=False, 
-                    conflict_details=None):
-        """Add a new training enrollment - COMPLETELY FIXED"""
+                    conflict_details=None, training_year=None):
+        """Add a new training enrollment.
+
+        training_year is the year the enrollment belongs to, defaulting to the
+        active one. It must be the year the caller is *viewing*, not whichever is
+        active: during a cutover both are open, and a row stamped with the active
+        year while the staff member is looking at the other one is written
+        successfully and then filtered straight back out of their view.
+        """
         print(f"DEBUG: add_enrollment called for {staff_name}, {class_name}, {class_date}")
         
         self.connect()
         try:
             self._auto_close_expired_years()
-            active_row = self._fetch_active_training_year_row()
-            active_label = active_row['year_label'] if active_row else LEGACY_TRAINING_YEAR
-            if not self._year_accepts_writes(active_label):
-                print(f"DEBUG: {active_label} is not open for signups; enrollment refused")
+            target_year = self._resolve_training_year(training_year)
+            if not self._year_accepts_writes(target_year):
+                print(f"DEBUG: {target_year} is not open for signups; enrollment refused")
                 return False
 
             # First, check if this exact enrollment already exists
@@ -653,10 +659,6 @@ class UnifiedDatabase:
                     
                     # Re-stamp the training year: reactivating a cancelled row during a
                     # later year makes it an enrollment in that year, not the old one.
-                    active_year_row = self._fetch_active_training_year_row()
-                    training_year = (active_year_row['year_label'] if active_year_row
-                                     else LEGACY_TRAINING_YEAR)
-
                     self.cursor.execute('''
                         UPDATE training_enrollments 
                         SET status = 'active', role = ?, conflict_override = ?,
@@ -664,7 +666,7 @@ class UnifiedDatabase:
                             training_year = ?
                         WHERE id = ?
                     ''', (role, conflict_override, conflict_details, 
-                        override_timestamp, enrollment_timestamp, training_year, existing['id']))
+                        override_timestamp, enrollment_timestamp, target_year, existing['id']))
                     
                     self.conn.commit()
                     print(f"DEBUG: Enrollment reactivated successfully")
@@ -680,10 +682,6 @@ class UnifiedDatabase:
             
             print(f"DEBUG: Inserting new enrollment with timestamp {enrollment_timestamp}")
 
-            active_year_row = self._fetch_active_training_year_row()
-            training_year = (active_year_row['year_label'] if active_year_row
-                             else LEGACY_TRAINING_YEAR)
-
             # Insert with explicit column list (excludes id to allow auto-increment)
             self.cursor.execute('''
                 INSERT INTO training_enrollments
@@ -693,7 +691,7 @@ class UnifiedDatabase:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
             ''', (staff_name, class_name, class_date, role, meeting_type, session_time,
                 conflict_override, conflict_details, override_timestamp, enrollment_timestamp,
-                training_year))
+                target_year))
             
             # Get the auto-generated ID
             inserted_id = self.cursor.lastrowid
@@ -795,15 +793,19 @@ class UnifiedDatabase:
     
     # EDUCATOR SIGNUP METHODS - COMPLETELY FIXED
     def add_educator_signup(self, staff_name, class_name, class_date, 
-                           conflict_override=False, conflict_details=None):
-        """Add a new educator signup - COMPLETELY FIXED"""
+                           conflict_override=False, conflict_details=None,
+                           training_year=None):
+        """Add a new educator signup.
+
+        training_year is the year being viewed, defaulting to the active one - see
+        add_enrollment for why the distinction matters during a cutover.
+        """
         self.connect()
         try:
             self._auto_close_expired_years()
-            active_row = self._fetch_active_training_year_row()
-            active_label = active_row['year_label'] if active_row else LEGACY_TRAINING_YEAR
-            if not self._year_accepts_writes(active_label):
-                print(f"DEBUG: {active_label} is not open for signups; educator signup refused")
+            target_year = self._resolve_training_year(training_year)
+            if not self._year_accepts_writes(target_year):
+                print(f"DEBUG: {target_year} is not open for signups; educator signup refused")
                 return False
 
             current_time = self._get_eastern_time()
@@ -820,24 +822,16 @@ class UnifiedDatabase:
             if existing:
                 # Reactivate the cancelled signup instead of inserting a duplicate,
                 # re-stamping the year so it belongs to the year it was revived in.
-                active_year_row = self._fetch_active_training_year_row()
-                training_year = (active_year_row['year_label'] if active_year_row
-                                 else LEGACY_TRAINING_YEAR)
-
                 self.cursor.execute('''
                     UPDATE training_educator_signups
                     SET status = 'active', conflict_override = ?, conflict_details = ?,
                         override_acknowledged = ?, signup_date = ?, training_year = ?
                     WHERE id = ?
                 ''', (conflict_override, conflict_details, override_timestamp,
-                      signup_timestamp, training_year, existing['id']))
+                      signup_timestamp, target_year, existing['id']))
                 inserted_id = existing['id']
                 print(f"SUCCESS: Educator signup reactivated with ID: {inserted_id}")
             else:
-                active_year_row = self._fetch_active_training_year_row()
-                training_year = (active_year_row['year_label'] if active_year_row
-                                 else LEGACY_TRAINING_YEAR)
-
                 # Insert with explicit column list (excludes id to allow auto-increment)
                 self.cursor.execute('''
                     INSERT INTO training_educator_signups
@@ -845,7 +839,7 @@ class UnifiedDatabase:
                      override_acknowledged, signup_date, status, training_year)
                     VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
                 ''', (staff_name, class_name, class_date, conflict_override, conflict_details,
-                     override_timestamp, signup_timestamp, training_year))
+                     override_timestamp, signup_timestamp, target_year))
 
                 # Get the auto-generated ID
                 inserted_id = self.cursor.lastrowid

@@ -469,13 +469,19 @@ def display_training_events_app():
         elif visible_years:
             default_year_label = visible_years[0]['year_label']
 
-        selected_year_label = st.session_state.get('training_selected_year') or default_year_label
         visible_labels = [y['year_label'] for y in visible_years]
-        # A year that stopped being visible mid-session (archived by an admin) falls
-        # back to the default rather than leaving the page pinned to something gone.
-        if visible_labels and selected_year_label not in visible_labels:
+        # Only an explicit pick from the year selector is remembered. Defaulting used
+        # to be remembered too, which pinned a session opened before a cutover to the
+        # outgoing year: promoting FY27 left that browser still on FY26 with no sign
+        # anything had changed.
+        selected_year_label = st.session_state.get('training_selected_year')
+        # Drop a pick that no longer applies - the year was archived, or it was the
+        # only year when it was chosen and a promotion has since moved things on.
+        if selected_year_label and visible_labels and selected_year_label not in visible_labels:
+            selected_year_label = None
+            st.session_state.pop('training_selected_year', None)
+        if not selected_year_label:
             selected_year_label = default_year_label
-        st.session_state.training_selected_year = selected_year_label
 
         selected_year = next(
             (y for y in visible_years if y['year_label'] == selected_year_label), None)
