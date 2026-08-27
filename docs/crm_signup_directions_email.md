@@ -15,6 +15,11 @@ users get stuck:
 2. FY26 is still the active training year, so the Training Year dropdown opens
    on FY26. Crew must switch it to **FY27** or they will be looking at last
    fall's CRM dates.
+3. Email confirmations are described as coming shortly, not as already running,
+   and the "check Junk, click It's not junk" instruction is framed as a
+   one-time action that covers all later CrewOps messages. Once notifications
+   are live, change "We are turning on email confirmations shortly" to the
+   present tense.
 
 ---
 
@@ -92,9 +97,33 @@ want. You will see "✅ Successfully enrolled!" and the page will refresh on its
 own after a second or two.
 
 **8. Confirm it took.** Click the **📋 My Enrollments** tab. Your CRM date
-should be listed there with the date, time, and location. That listing is your
-confirmation — the system does not send you a confirmation email, so if it shows
-up here, you are signed up.
+should be listed there with the date, time, and location. **That listing is the
+authoritative confirmation** — if it shows up there, you are signed up.
+
+---
+
+### About the confirmation email
+
+We are turning on email confirmations shortly. Once that is live, if we have an
+email address on file for you, you will also get a confirmation message from the
+CrewOps system (**notifications@crewops360.com**) whenever you enroll in or
+cancel a class.
+
+A few notes on that:
+
+- **Check your Junk/Spam folder if it is not in your inbox.** The first message
+  from a new sender often lands there.
+- **When you find it, click "It's not junk"** (or "Not spam" / "Report not
+  junk," depending on your mail app). That tells your mail client to deliver
+  this message *and every later CrewOps message* to your inbox — enrollment
+  confirmations, cancellations, and class reminders. Doing it once saves you
+  from missing the ones that matter.
+- Better still, add **notifications@crewops360.com** to your contacts or safe
+  senders list.
+- **If we do not have an email address for you, no message will be sent.** That
+  does not mean your sign-up failed. The **My Enrollments** tab is the record
+  either way, and no email is coming today regardless — the notifications are
+  not switched on yet.
 
 ---
 
@@ -126,6 +155,11 @@ other class first from the My Enrollments tab.
 
 **No Enroll button, just "slot filled."** That date is full. Pick another date.
 
+**I did not get a confirmation email.** Email confirmations are not switched on
+yet, and when they are, they only go to people with an address on file. Check
+your Junk folder first; if it is not there either, your enrollment is still
+valid as long as it appears under **My Enrollments**.
+
 **I need to change my date.** Go to **📋 My Enrollments**, click **Cancel** next
 to the CRM entry, then go back to **📝 Enroll in Classes** and sign up for the
 date you want. Cancel first, or the system will ask you about the duplicate.
@@ -140,8 +174,9 @@ saved until you click an Enroll button.
 1. **Access code 2711.**
 2. **Switch the Training Year to FY27** — it opens on FY26. If the CRM dates are
    not in November 2026, you are in the wrong year.
-3. **If it shows under My Enrollments, you are signed up.** No email is coming.
-   If it is not there, you are not enrolled.
+3. **If it shows under My Enrollments, you are signed up.** That tab is the
+   record. When email confirmations go live, check your Junk folder for the
+   first one and click **"It's not junk"** so the rest reach your inbox.
 
 Questions, or anything on the screen that does not match these directions, send
 to [EDUCATION CONTACT].
