@@ -513,6 +513,27 @@ def initialize_database():
         )
         ''')
 
+        # Tracks the outreach-email composer on the Needs Swap admin tab, separately
+        # from track_need_offers above — this is drafted before anyone has offered
+        # anything, so an admin has somewhere to note "I already emailed this
+        # person about this need" and see it next time, without that being
+        # mistaken for an actual submitted offer.
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS needs_swap_outreach (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_name TEXT NOT NULL,
+            staff_name TEXT NOT NULL,
+            need_day TEXT NOT NULL,
+            need_period TEXT NOT NULL,
+            emailed INTEGER NOT NULL DEFAULT 0,
+            emailed_by TEXT,
+            emailed_date TEXT,
+            reply_note TEXT,
+            updated_date TEXT NOT NULL,
+            UNIQUE(track_name, staff_name, need_day, need_period)
+        )
+        ''')
+
         # Commit changes
         conn.commit()
         
@@ -3142,6 +3163,105 @@ def delete_need_swap_offers(track_name, staff_name=None):
         return True, f"Deleted {deleted} offer{'s' if deleted != 1 else ''}."
     except Exception as e:
         return False, f"Error deleting offers: {e}"
+
+
+_OUTREACH_COLUMNS = [
+    'id', 'track_name', 'staff_name', 'need_day', 'need_period',
+    'emailed', 'emailed_by', 'emailed_date', 'reply_note', 'updated_date',
+]
+
+
+def get_needs_swap_outreach(track_name):
+    """
+    The outreach-email log for one track cycle: every (staff, need) pair an
+    admin has drafted an ask for on the Needs Swap composer, whether it's been
+    marked emailed, who logged it, and any reply noted back. Most recently
+    updated first.
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"""SELECT {', '.join(_OUTREACH_COLUMNS)} FROM needs_swap_outreach
+                          WHERE track_name = ? ORDER BY updated_date DESC""", (track_name,))
+        return [dict(zip(_OUTREACH_COLUMNS, row)) for row in cursor.fetchall()]
+    except Exception as e:
+        print(f"Error getting needs swap outreach log: {e}")
+        return []
+
+
+def get_needs_swap_outreach_entry(track_name, staff_name, need_day, need_period):
+    """One outreach-log row for a (track, staff, need) triple, or None if never logged."""
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"""SELECT {', '.join(_OUTREACH_COLUMNS)} FROM needs_swap_outreach
+                          WHERE track_name = ? AND staff_name = ? AND need_day = ? AND need_period = ?""",
+                       (track_name, staff_name, need_day, need_period))
+        row = cursor.fetchone()
+        return dict(zip(_OUTREACH_COLUMNS, row)) if row else None
+    except Exception as e:
+        print(f"Error getting needs swap outreach entry: {e}")
+        return None
+
+
+def upsert_needs_swap_outreach(track_name, staff_name, need_day, need_period,
+                               emailed, emailed_by=None, reply_note=None):
+    """
+    Insert or update the outreach-log row for one (track, staff, need) triple —
+    always writes the full row (like update_need_swap_offer_status() does for
+    an actual offer), so the caller passes the complete current state rather
+    than a partial patch.
+
+    emailed_date is stamped to now the moment `emailed` turns True on a row
+    that wasn't already marked emailed; toggling it back to False clears
+    emailed_by/emailed_date, since an unmarked entry shouldn't carry a stale
+    sender/date around.
+
+    Returns (success, message).
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+        existing = get_needs_swap_outreach_entry(track_name, staff_name, need_day, need_period)
+        if emailed:
+            already_emailed = bool(existing and existing['emailed'])
+            emailed_date = existing['emailed_date'] if already_emailed else now
+            emailed_by = emailed_by or (existing['emailed_by'] if existing else None)
+        else:
+            emailed_by, emailed_date = None, None
+
+        # A blanket "save the whole log" from the admin's data_editor re-submits
+        # every row whether or not it actually changed — skip the write (and the
+        # updated_date bump that would otherwise make an untouched row look
+        # freshly edited) when nothing about it did.
+        if existing is not None and (
+            bool(existing['emailed']) == bool(emailed)
+            and existing['emailed_by'] == emailed_by
+            and (existing['reply_note'] or None) == (reply_note or None)
+        ):
+            return True, "No change."
+
+        if existing is None:
+            cursor.execute("""INSERT INTO needs_swap_outreach
+                (track_name, staff_name, need_day, need_period, emailed, emailed_by,
+                 emailed_date, reply_note, updated_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (track_name, staff_name, need_day, need_period, 1 if emailed else 0,
+                 emailed_by, emailed_date, reply_note, now))
+        else:
+            cursor.execute("""UPDATE needs_swap_outreach
+                SET emailed = ?, emailed_by = ?, emailed_date = ?, reply_note = ?, updated_date = ?
+                WHERE id = ?""",
+                (1 if emailed else 0, emailed_by, emailed_date, reply_note, now, existing['id']))
+        conn.commit()
+        return True, "Outreach status saved."
+    except Exception as e:
+        return False, f"Error saving outreach status: {e}"
 
 
 # Clean up connections when the module is unloaded

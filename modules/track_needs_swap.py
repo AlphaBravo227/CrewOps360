@@ -40,6 +40,8 @@ import streamlit as st
 from modules.db_utils import (
     get_bid_track_from_db,
     get_need_swap_offers,
+    get_needs_swap_outreach,
+    get_needs_swap_outreach_entry,
     get_needs_swap_track_config,
     get_track_config_by_name,
     save_bid_track_to_db,
@@ -49,6 +51,7 @@ from modules.db_utils import (
     supersede_sibling_need_offers,
     update_need_swap_offer_status,
     update_track_config,
+    upsert_needs_swap_outreach,
 )
 from modules.nondisplacing_assignment import draft_assignment, nondisplacing_bases, rank_options
 from modules.staffing_rebalance import (_excel_download_button, _GIVE_UP_SLOTS, candidates_for_shortfall,
@@ -2312,12 +2315,21 @@ def _build_module_link():
     return f"{_CREWOPS_BASE_URL}?module=track_bidding"
 
 
-def _ask_track_table_html(staff_name, need, give_up_options, report_ctx):
+def _ask_track_table_html(staff_name, need, need_base, give_up_options, report_ctx):
     """
     Static <table> HTML (inline styles, not CSS grid) for the block(s) one
     admin-drafted ask touches: the staff member's real Assignment row, an Open Need
-    row flagging just this one need, and a highlight on whichever give-up day(s)
-    are on offer.
+    row flagging just this one need (with the hypothetical base they'd get there,
+    same as an Assignment cell), and a highlight on whichever give-up day(s) are
+    on offer.
+
+    table-layout:fixed plus a <colgroup> keyed only off the row-label column's
+    width forces every day column to the same width regardless of content — the
+    natural per-content sizing otherwise let a long cell ("Pre: AT") widen just
+    its own column. Row height is forced the same way: every cell in both rows
+    gets an explicit height (both the attribute and the CSS property, since mail
+    clients vary in which one they honor), so a row of one-line cells doesn't end
+    up shorter than a row of two-line ones.
 
     Deliberately not _track_preview_html(): that one is built for the live page —
     hover tooltips, a single give-up — while this is built to survive being copied
@@ -2340,6 +2352,8 @@ def _ask_track_table_html(staff_name, need, give_up_options, report_ctx):
 
     border = 'border:1px solid #d7dee3;'
     head_bg = 'background:#f0f2f6;'
+    row_h = 40
+    row_cell = f'height:{row_h}px;{border}padding:6px 4px;text-align:center;font-family:monospace;font-weight:600;'
 
     sections = []
     for block in blocks_touched:
@@ -2348,59 +2362,63 @@ def _ask_track_table_html(staff_name, need, give_up_options, report_ctx):
         if not block_days:
             continue
 
+        colgroup = '<colgroup><col style="width:90px;">' + '<col>' * len(block_days) + '</colgroup>'
+
         header_cells = ''.join(
             f'<th style="{border}{head_bg}padding:6px 4px;font-size:11px;color:#33404b;'
-            f'white-space:nowrap;">{html.escape(_day_tag(d))}</th>'
+            f'text-align:center;white-space:nowrap;">{html.escape(_day_tag(d))}</th>'
             for d in block_days)
 
         asg_cells = []
         for d in block_days:
             code = track_data.get(d)
             ring = 'box-shadow:inset 0 0 0 2px #a33b2c;' if d in give_up_days else ''
-            cell_style = f'{border}padding:6px 4px;text-align:center;font-family:monospace;font-weight:600;{ring}'
+            cell_style = f'{row_cell}{ring}'
             if code == 'D':
                 base = _expected_base_for_day(staff_name, d, 'Day', role_bucket, report_ctx)
                 base_html = (f'<br><span style="font-weight:500;opacity:.72;font-size:9.5px;">'
                             f'{html.escape(base)}</span>' if base else '')
-                asg_cells.append(f'<td style="{cell_style}background:#d4edda;color:#1b4620;">D{base_html}</td>')
+                asg_cells.append(f'<td height="{row_h}" style="{cell_style}background:#d4edda;color:#1b4620;">D{base_html}</td>')
             elif code == 'N':
                 base = _expected_base_for_day(staff_name, d, 'Night', role_bucket, report_ctx)
                 base_html = (f'<br><span style="font-weight:500;opacity:.72;font-size:9.5px;">'
                             f'{html.escape(base)}</span>' if base else '')
-                asg_cells.append(f'<td style="{cell_style}background:#cce5ff;color:#173a63;">N{base_html}</td>')
+                asg_cells.append(f'<td height="{row_h}" style="{cell_style}background:#cce5ff;color:#173a63;">N{base_html}</td>')
             elif code == 'AT':
-                asg_cells.append(f'<td style="{cell_style}background:#e2e3e5;color:#3a3a3a;">Pre: AT</td>')
+                asg_cells.append(f'<td height="{row_h}" style="{cell_style}background:#e2e3e5;color:#3a3a3a;">Pre: AT</td>')
             else:
-                asg_cells.append(f'<td style="{border}padding:6px 4px;{ring}"></td>')
+                asg_cells.append(f'<td height="{row_h}" style="height:{row_h}px;{border}padding:6px 4px;{ring}"></td>')
 
         need_cells = []
         for d in block_days:
             if d != need['day_label']:
-                need_cells.append(f'<td style="{border}"></td>')
+                need_cells.append(f'<td height="{row_h}" style="height:{row_h}px;{border}"></td>')
                 continue
             letter = 'D' if need['period'] == 'Day' else 'N'
+            base_html = (f'<br><span style="font-weight:500;opacity:.72;font-size:9.5px;">'
+                        f'{html.escape(need_base["base"])}</span>' if need_base else '')
             need_cells.append(
-                f'<td style="{border}padding:6px 4px;text-align:center;font-family:monospace;'
-                f'font-weight:600;background:rgba(230,184,0,.22);color:#5c4400;'
-                f'box-shadow:inset 0 0 0 2px #e6b800;">{letter}</td>')
+                f'<td height="{row_h}" style="{row_cell}background:rgba(230,184,0,.22);color:#5c4400;'
+                f'box-shadow:inset 0 0 0 2px #e6b800;">{letter}{base_html}</td>')
 
         sections.append(
             f'<p style="font-size:12.5px;color:#5c6b78;margin:0 0 8px;font-weight:600;">'
             f'Block {html.escape(block)}</p>'
             f'<div style="overflow-x:auto;margin:0 0 16px;">'
-            f'<table style="border-collapse:collapse;width:100%;min-width:760px;">'
+            f'<table style="border-collapse:collapse;table-layout:fixed;width:100%;min-width:760px;">'
+            f'{colgroup}'
             f'<thead><tr><th style="{border}{head_bg}"></th>{header_cells}</tr></thead>'
             f'<tbody>'
-            f'<tr><th style="{border}{head_bg}text-align:left;padding:6px 9px;font-size:12px;'
-            f'color:#33404b;white-space:nowrap;">Assignment</th>{"".join(asg_cells)}</tr>'
-            f'<tr><th style="{border}{head_bg}text-align:left;padding:6px 9px;font-size:12px;'
-            f'color:#33404b;white-space:nowrap;">Open need</th>{"".join(need_cells)}</tr>'
+            f'<tr><th height="{row_h}" style="height:{row_h}px;{border}{head_bg}text-align:left;padding:6px 9px;'
+            f'font-size:12px;color:#33404b;white-space:nowrap;">Assignment</th>{"".join(asg_cells)}</tr>'
+            f'<tr><th height="{row_h}" style="height:{row_h}px;{border}{head_bg}text-align:left;padding:6px 9px;'
+            f'font-size:12px;color:#33404b;white-space:nowrap;">Open need</th>{"".join(need_cells)}</tr>'
             f'</tbody></table></div>'
         )
     return ''.join(sections)
 
 
-def _ask_track_table_plain(staff_name, need, give_up_options, report_ctx):
+def _ask_track_table_plain(staff_name, need, need_base, give_up_options, report_ctx):
     """Plain-text mirror of _ask_track_table_html(), for clients that strip HTML."""
     bid = report_ctx['bids_by_name'].get(staff_name)
     if not bid:
@@ -2436,7 +2454,8 @@ def _ask_track_table_plain(staff_name, need, give_up_options, report_ctx):
             else:
                 val = "—"
             if d == need['day_label']:
-                val = f"OPEN NEED — {'D' if need['period'] == 'Day' else 'N'}"
+                letter = 'D' if need['period'] == 'Day' else 'N'
+                val = f"OPEN NEED — {letter} ({need_base['base']})" if need_base else f"OPEN NEED — {letter}"
             mark = '  <- proposed give-up' if d in give_up_days else ''
             rows.append(f"{_day_tag(d).ljust(tag_width)}{val}{mark}")
         sections.append("\n".join(rows))
@@ -2500,8 +2519,8 @@ def _compose_ask_email(staff_name, need, need_base, give_up_options, note, sign_
             f"We would like you to consider moving onto {need_text} by giving up your shift "
             f"on {give_up_text}.")
 
-    table_html = _ask_track_table_html(staff_name, need, give_up_options, report_ctx)
-    table_plain = _ask_track_table_plain(staff_name, need, give_up_options, report_ctx)
+    table_html = _ask_track_table_html(staff_name, need, need_base, give_up_options, report_ctx)
+    table_plain = _ask_track_table_plain(staff_name, need, need_base, give_up_options, report_ctx)
     note_html = (f'<p style="font-style:italic;color:#3a444d;margin:0 0 14px;">'
                 f'"{html.escape(note)}"</p>' if note else '')
 
@@ -2621,16 +2640,18 @@ def _cached_candidates_for_need(track_name, need_day, need_period):
     return candidates_for_shortfall(need, report_ctx, track_name)
 
 
-def _render_needs_swap_compose_section(report_ctx, track_name, uncovered):
+def _render_needs_swap_compose_section(report_ctx, track_name, uncovered, reviewer):
     """
     'Draft an outreach email' — the admin picks an open need, the tool finds who's
     eligible to fill it (candidates_for_shortfall(), the same eligibility rules the
     staff view runs), and builds a copy-ready email combining that person's current
     track with the specific ask.
 
-    Nothing here writes to the database. The staff member's own Submit on the real
-    page is still what creates the offer; this only drafts the message asking them
-    to go do that — optionally via a link that gets them there pre-filled.
+    Drafting and copying write nothing to the database — the staff member's own
+    Submit on the real page is still what creates the offer. The one thing that
+    is persisted is the outreach log below: whether this particular ask has been
+    marked emailed, by whom, and any reply noted back (needs_swap_outreach table,
+    see _render_needs_swap_outreach_log()).
     """
     import streamlit.components.v1 as components
 
@@ -2747,6 +2768,93 @@ def _render_needs_swap_compose_section(report_ctx, track_name, uncovered):
 
     with st.expander("Plain-text version (for clients that strip formatting)"):
         st.code(plain_for_copy, language=None)
+
+    # Copy for emailing runs entirely inside the components.html iframe — there's
+    # no channel back into Streamlit's Python state to auto-tick "emailed" the
+    # instant that click happens, so this button is the one-click-later
+    # approximation: copy, then log it.
+    logged = get_needs_swap_outreach_entry(track_name, staff_name, need['day_label'], need['period'])
+    status_col, log_col = st.columns([3, 1])
+    with status_col:
+        if logged and logged['emailed']:
+            reply_bit = f" · reply: {logged['reply_note']}" if logged['reply_note'] else ""
+            st.caption(f"📧 Logged as emailed by {logged['emailed_by'] or 'someone'} on "
+                      f"{logged['emailed_date']}{reply_bit} — see the outreach log below to update it.")
+        else:
+            st.caption("Not yet logged as emailed — click Copy above, then log it here once it's actually sent.")
+    with log_col:
+        if st.button("📋 Log as emailed", key=f"needs_swap_outreach_log_{staff_name}_{chosen_label}",
+                     use_container_width=True):
+            upsert_needs_swap_outreach(track_name, staff_name, need['day_label'], need['period'],
+                                       emailed=True, emailed_by=reviewer)
+            st.rerun()
+
+
+def _render_needs_swap_outreach_log(track_name, reviewer):
+    """
+    Every (staff, need) pair logged from the composer above: whether it's been
+    marked emailed, who sent it, and any reply noted back — so an admin working
+    through several open needs can see at a glance who they've already reached
+    out to instead of re-checking each need's composer state one at a time.
+
+    Editable in bulk: tick/untick Emailed, fix who it was logged under, or add
+    a reply, for as many rows as changed, then one Save persists all of them.
+    Rows only exist once "Log as emailed" above has created one — this doesn't
+    let an admin add an arbitrary name here, only track outreach that was
+    actually drafted through the composer.
+    """
+    st.markdown("#### 📋 Outreach log")
+    rows = get_needs_swap_outreach(track_name)
+    if not rows:
+        st.caption("Nothing logged yet — draft an ask above and click \"Log as emailed\" once it's sent.")
+        return
+
+    st.caption(
+        "Tracks what the composer above can't see on its own: whether an ask actually got emailed. "
+        "Streamlit has no way to detect the clipboard copy itself, so this is logged by hand — tick "
+        "Emailed, fix who sent it, or add a reply below, then save."
+    )
+
+    table = pd.DataFrame([{
+        'Need': _shift_label(r['need_day'], r['need_period']),
+        'Staff': r['staff_name'],
+        'Emailed': bool(r['emailed']),
+        'Emailed by': r['emailed_by'] or '',
+        'Emailed date': r['emailed_date'] or '',
+        'Reply note': r['reply_note'] or '',
+    } for r in rows])
+
+    edited = st.data_editor(
+        table, hide_index=True, use_container_width=True, key="needs_swap_outreach_editor",
+        column_config={
+            'Need': st.column_config.TextColumn(disabled=True),
+            'Staff': st.column_config.TextColumn(disabled=True),
+            'Emailed': st.column_config.CheckboxColumn(help="Check when it's actually been sent; uncheck to retract."),
+            'Emailed by': st.column_config.TextColumn(help="Who sent it — editable if it needs correcting."),
+            'Emailed date': st.column_config.TextColumn(disabled=True, help="Stamped automatically when Emailed is first checked."),
+            'Reply note': st.column_config.TextColumn(width="large", help="What they said back, if anything."),
+        },
+    )
+
+    # Keyed by (Need label, Staff) rather than position — offers_from_editor()
+    # does the same for the same reason: a data_editor's returned rows should
+    # be correlated back to source data by something stable, not row order,
+    # in case the admin has sorted the grid by clicking a column header.
+    row_by_key = {(_shift_label(r['need_day'], r['need_period']), r['staff_name']): r for r in rows}
+
+    if st.button("💾 Save outreach log", key="needs_swap_outreach_save"):
+        for _, row in edited.iterrows():
+            r = row_by_key.get((row['Need'], row['Staff']))
+            if r is None:
+                continue
+            upsert_needs_swap_outreach(
+                track_name, r['staff_name'], r['need_day'], r['need_period'],
+                emailed=bool(row['Emailed']),
+                emailed_by=(row['Emailed by'].strip() or reviewer) if row['Emailed'] else None,
+                reply_note=row['Reply note'].strip() or None,
+            )
+        st.success("Outreach log saved.")
+        st.rerun()
 
 
 def _render_needs_swap_admin_tab(config_names, default_track_index):
@@ -2878,7 +2986,14 @@ def _render_needs_swap_admin_tab(config_names, default_track_index):
         } for n in uncovered]), use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    _render_needs_swap_compose_section(report_ctx, track_name, uncovered)
+    _render_needs_swap_compose_section(report_ctx, track_name, uncovered, reviewer)
+
+    st.markdown("---")
+    # Independent of the composer above — that can return early with nothing to
+    # show (no candidates eligible for whichever need happens to be selected),
+    # but the log itself is scoped to the whole cycle and should stay visible
+    # regardless of what the composer's currently drafting.
+    _render_needs_swap_outreach_log(track_name, reviewer)
 
     st.markdown("---")
     st.markdown("#### All responses")
