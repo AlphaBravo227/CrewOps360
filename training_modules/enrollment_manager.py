@@ -349,12 +349,17 @@ class EnrollmentManager:
                 existing_enrollments = self.check_existing_enrollment(staff_name, class_name)
                 if existing_enrollments:
                     return "duplicate_found", existing_enrollments
-            # Name the closed year rather than reporting a mystery: a year that has
-            # gone read-only is the one predictable reason the write is refused.
+            # Name the reason rather than reporting a mystery. A closed year and an
+            # existing signup are the two predictable ways the write is refused; the
+            # generic message sent people hunting for a fault that wasn't there.
             if not self.db.is_training_year_writable(self.training_year):
                 year = self.training_year or "This training year"
                 return False, (f"{year} is closed - enrollments can no longer be added "
                                f"or changed for that year.")
+            for date in enrollment_dates:
+                if self.is_enrolled_in_date_and_type(
+                        staff_name, class_name, date, meeting_type, session_time):
+                    return False, f"Already enrolled in {class_name} on {date}."
             return False, "Enrollment failed - unknown error"
 
     def cancel_enrollment(self, enrollment_id):

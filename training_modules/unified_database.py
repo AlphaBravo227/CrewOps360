@@ -120,7 +120,9 @@ class UnifiedDatabase:
                 override_acknowledged TEXT DEFAULT NULL,
                 enrollment_date TEXT DEFAULT NULL,
                 status TEXT DEFAULT 'active',
-                UNIQUE(staff_name, class_name, class_date, meeting_type, session_time)
+                training_year TEXT,
+                UNIQUE(staff_name, class_name, class_date, meeting_type, session_time,
+                       training_year)
             )
         ''')
         
@@ -136,7 +138,8 @@ class UnifiedDatabase:
                 override_acknowledged TEXT DEFAULT NULL,
                 signup_date TEXT DEFAULT NULL,
                 status TEXT DEFAULT 'active',
-                UNIQUE(staff_name, class_name, class_date)
+                training_year TEXT,
+                UNIQUE(staff_name, class_name, class_date, training_year)
             )
         ''')
         
@@ -229,6 +232,8 @@ class UnifiedDatabase:
                     f"ALTER TABLE {table_name} ADD COLUMN training_year TEXT "
                     f"DEFAULT '{LEGACY_TRAINING_YEAR}'"
                 )
+
+        self._add_training_year_to_unique_constraints()
 
         # Seed the default FY26 training year if it doesn't exist yet
         self.cursor.execute("SELECT id FROM training_years WHERE year_label = 'FY26'")
@@ -336,6 +341,66 @@ class UnifiedDatabase:
             return [self._training_year_row_to_dict(row) for row in rows]
         finally:
             self.disconnect()
+
+    # Tables whose uniqueness has to include the training year, with the columns that
+    # identify one signup within a year. Two years can legitimately hold a class on the
+    # same date - an outgoing year's classes run months into the incoming one - so a
+    # constraint that ignores the year makes the second year's signup collide with the
+    # first year's, or silently look like a duplicate of it.
+    _YEAR_UNIQUE_TABLES = {
+        'training_enrollments': ('staff_name', 'class_name', 'class_date',
+                                 'meeting_type', 'session_time', 'training_year'),
+        'training_educator_signups': ('staff_name', 'class_name', 'class_date',
+                                      'training_year'),
+    }
+
+    def _add_training_year_to_unique_constraints(self):
+        """Rebuild the signup tables when their UNIQUE constraint predates training_year.
+
+        SQLite can't alter a constraint in place, so the table is copied. Only runs
+        when the existing constraint is missing the year. Requires an open connection;
+        the caller commits.
+        """
+        for table_name, unique_cols in self._YEAR_UNIQUE_TABLES.items():
+            self.cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table_name,))
+            row = self.cursor.fetchone()
+            if not row or not row['sql']:
+                continue
+            create_sql = row['sql']
+            if 'UNIQUE' not in create_sql.upper():
+                continue
+            # Already carries the year in its uniqueness - nothing to do.
+            unique_clause = create_sql.upper().split('UNIQUE', 1)[1]
+            if 'TRAINING_YEAR' in unique_clause.split(')', 1)[0]:
+                continue
+
+            self.cursor.execute(f"PRAGMA table_info({table_name})")
+            columns = [c[1] for c in self.cursor.fetchall()]
+            if 'training_year' not in columns:
+                continue
+            column_list = ', '.join(columns)
+
+            print(f"Rebuilding {table_name} to include training_year in its UNIQUE constraint")
+            rebuilt = create_sql.replace(table_name, f"{table_name}__rebuild", 1)
+            # Replace the old UNIQUE(...) with one that includes the year.
+            import re as _re
+            rebuilt = _re.sub(
+                r'UNIQUE\s*\([^)]*\)',
+                'UNIQUE(' + ', '.join(unique_cols) + ')',
+                rebuilt, count=1, flags=_re.I)
+
+            self.cursor.execute(rebuilt)
+            # INSERT OR IGNORE: if the pre-year data already holds rows that collide
+            # under the new constraint they are duplicates either way, and dropping the
+            # extras is better than failing the migration and leaving the app unusable.
+            self.cursor.execute(
+                f"INSERT OR IGNORE INTO {table_name}__rebuild ({column_list}) "
+                f"SELECT {column_list} FROM {table_name}")
+            self.cursor.execute(f"DROP TABLE {table_name}")
+            self.cursor.execute(
+                f"ALTER TABLE {table_name}__rebuild RENAME TO {table_name}")
 
     def _auto_close_expired_years(self):
         """Move any non-active year past its end date to read-only.
@@ -637,14 +702,18 @@ class UnifiedDatabase:
                 print(f"DEBUG: {target_year} is not open for signups; enrollment refused")
                 return False
 
-            # First, check if this exact enrollment already exists
-            self.cursor.execute('''
+            # Check whether this exact enrollment already exists *in this year*. Left
+            # unscoped, a row belonging to another year blocks the insert while the
+            # year-filtered screen shows the session empty: the staff member sees an
+            # open slot and is told the enrollment failed.
+            self.cursor.execute(f'''
                 SELECT id, status FROM training_enrollments 
                 WHERE staff_name = ? AND class_name = ? AND class_date = ? 
                 AND (meeting_type = ? OR (meeting_type IS NULL AND ? IS NULL))
                 AND (session_time = ? OR (session_time IS NULL AND ? IS NULL))
+                AND {_YEAR_MATCH}
             ''', (staff_name, class_name, class_date, meeting_type, meeting_type, 
-                session_time, session_time))
+                session_time, session_time, target_year))
             
             existing = self.cursor.fetchone()
             
@@ -812,11 +881,13 @@ class UnifiedDatabase:
             signup_timestamp = self._format_eastern_timestamp(current_time)
             override_timestamp = self._format_eastern_timestamp(current_time) if conflict_override else None
             
-            # Check if a cancelled record already exists (UNIQUE constraint blocks re-insert)
-            self.cursor.execute('''
+            # Check if a cancelled record already exists (UNIQUE constraint blocks
+            # re-insert). Scoped to this year for the same reason as add_enrollment.
+            self.cursor.execute(f'''
                 SELECT id FROM training_educator_signups
                 WHERE staff_name = ? AND class_name = ? AND class_date = ?
-            ''', (staff_name, class_name, class_date))
+                AND {_YEAR_MATCH}
+            ''', (staff_name, class_name, class_date, target_year))
             existing = self.cursor.fetchone()
 
             if existing:
