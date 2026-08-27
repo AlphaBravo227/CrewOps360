@@ -1992,6 +1992,37 @@ def get_all_track_configs():
         return []
 
 
+def count_tracks_for_cohort(track_name):
+    """
+    Count the staff tracks stored under a track cohort.
+
+    A training year can be linked to a cohort that nobody has bid into yet, in which
+    case conflict checking silently falls back to the active cohort. Counting lets the
+    admin screen say so before anyone relies on the availability it shows.
+
+    Args:
+        track_name (str): The track_configs.track_name to count.
+
+    Returns:
+        int: Number of distinct staff members with a track in that cohort.
+    """
+    if not track_name:
+        return 0
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(DISTINCT staff_name) FROM tracks WHERE track_name = ?",
+            (track_name,)
+        )
+        row = cursor.fetchone()
+        return row[0] if row else 0
+    except Exception as e:
+        print(f"Error counting tracks for cohort {track_name}: {e}")
+        return 0
+
+
 def create_track_config(track_name, max_day_nurses=11, max_day_medics=11,
                         max_night_nurses=5, max_night_medics=5,
                         day_vehicles=9, night_vehicles=4,

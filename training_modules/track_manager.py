@@ -19,6 +19,11 @@ class TrainingTrackManager:
         """
         self.tracks_db_path = tracks_db_path
         self.track_cohort = track_cohort
+        # The cohort the cache actually came from. It differs from track_cohort when a
+        # named cohort had no tracks and the load fell back to the active one, which is
+        # the difference between "checked against FY27" and "silently checked against
+        # FY26", so the UI can show which one is in force.
+        self.loaded_cohort = None
         self.tracks_cache = {}
         self.ccemt_schedule_cache = {}
         self.ccemt_raw_cache = {}  # Raw CCEMT shift codes (e.g., 'PG', 'NP') for display purposes
@@ -228,14 +233,20 @@ class TrainingTrackManager:
             conn = sqlite3.connect(self.tracks_db_path)
             cursor = conn.cursor()
             
+            # A staff member can hold more than one row for a cohort - a promoted
+            # track and a later re-bid both live in tracks - so read them oldest
+            # version first and let the newest win as the cache is built.
+            loaded_cohort = None
             if self.track_cohort:
                 cursor.execute("""
                     SELECT staff_name, track_data
                     FROM tracks
                     WHERE track_name = ?
+                    ORDER BY version ASC, id ASC
                 """, (self.track_cohort,))
                 results = cursor.fetchall()
                 source = f"cohort '{self.track_cohort}'"
+                loaded_cohort = self.track_cohort
                 if not results:
                     # A cohort that was named but never populated would silently
                     # disable conflict checking; fall back to the active tracks.
@@ -244,15 +255,18 @@ class TrainingTrackManager:
                         SELECT staff_name, track_data
                         FROM tracks
                         WHERE is_active = 1
+                        ORDER BY version ASC, id ASC
                     """)
                     results = cursor.fetchall()
                     source = "the active cohort"
+                    loaded_cohort = None
             else:
                 # Get active tracks
                 cursor.execute("""
-                    SELECT staff_name, track_data 
-                    FROM tracks 
+                    SELECT staff_name, track_data
+                    FROM tracks
                     WHERE is_active = 1
+                    ORDER BY version ASC, id ASC
                 """)
                 results = cursor.fetchall()
                 source = "the active cohort"
@@ -268,7 +282,9 @@ class TrainingTrackManager:
                         continue
             
             conn.close()
-            print(f"Loaded {len(self.tracks_cache)} tracks from {source}")
+            self.loaded_cohort = loaded_cohort
+            print(f"Loaded {len(self.tracks_cache)} tracks from {source} "
+                  f"(pattern 'Sun A 1' = {self.pattern_start.strftime('%Y-%m-%d')})")
             
         except Exception as e:
             print(f"Error loading tracks: {e}")
@@ -569,3 +585,54 @@ def integrate_ccemt_schedules(track_manager, tracks_excel_handler=None,
         enrollment_excel_handler: Optional ExcelHandler for enrollment data (staff roles)
     """
     track_manager.set_excel_handler(tracks_excel_handler, enrollment_excel_handler)
+
+
+def resolve_track_context(training_year):
+    """
+    Resolve which track cohort and pattern anchor a training year's conflict checks run on.
+
+    Both settings live on the training_years row and are easy to get wrong in ways that
+    produce no error at all: an unlinked year silently checks against whichever cohort is
+    active today, and an anchor that isn't the cohort's real "Sun A 1" shifts every lookup
+    by days. Resolving them in one place lets the admin editor warn about exactly what the
+    enrollment screen is about to do.
+
+    Args:
+        training_year: A training_years row (dict), or None.
+
+    Returns:
+        tuple: (cohort or None, pattern_start datetime or None, list of warning strings)
+    """
+    year = training_year or {}
+    label = year.get('year_label') or 'This year'
+    cohort = (year.get('linked_track_name') or '').strip() or None
+    pattern_start_raw = (year.get('pattern_start_date') or '').strip()
+    pattern_start = None
+    warnings = []
+
+    if not cohort:
+        warnings.append(
+            f"{label} isn't linked to a track cohort, so schedule conflicts are checked "
+            f"against whichever cohort is active today. Set 'Linked track cohort' in "
+            f"Training Admin > Training Years."
+        )
+
+    if pattern_start_raw:
+        try:
+            pattern_start = datetime.strptime(pattern_start_raw, '%Y-%m-%d')
+        except ValueError:
+            warnings.append(
+                f"{label}'s pattern start date '{pattern_start_raw}' isn't a valid "
+                f"YYYY-MM-DD date, so the default anchor is being used instead."
+            )
+        else:
+            # "Sun A 1" is a Sunday by definition. A date that isn't one is always a
+            # typo, and it moves every conflict check by however far off it is.
+            if pattern_start.weekday() != 6:
+                warnings.append(
+                    f"{label}'s pattern start {pattern_start_raw} is a "
+                    f"{pattern_start.strftime('%A')}, but 'Sun A 1' is a Sunday by "
+                    f"definition. Every conflict check is shifted until this is fixed."
+                )
+
+    return cohort, pattern_start, warnings

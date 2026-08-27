@@ -1473,6 +1473,38 @@ class AdminAccess:
                          "grid, because a wrong anchor shifts every conflict check by "
                          "days without reporting anything."
                 )
+                # Both of these fail silently when they are wrong - an unlinked year
+                # checks against whatever cohort is active today, and an anchor that
+                # isn't the cohort's real "Sun A 1" shifts every conflict check by days -
+                # so validate what is in the boxes right now, not what was last saved.
+                from .track_manager import resolve_track_context
+                from modules.db_utils import count_tracks_for_cohort
+
+                _, _, track_warnings = resolve_track_context({
+                    'year_label': label,
+                    'linked_track_name': u_track,
+                    'pattern_start_date': u_pattern,
+                })
+                for warning in track_warnings:
+                    st.warning(f"⚠️ {warning}")
+
+                if u_track:
+                    try:
+                        cohort_tracks = count_tracks_for_cohort(u_track)
+                    except Exception:
+                        cohort_tracks = None
+                    if cohort_tracks == 0:
+                        st.warning(
+                            f"⚠️ No staff tracks are stored under the **{u_track}** "
+                            f"cohort yet, so conflict checking falls back to the active "
+                            f"cohort until bids are submitted."
+                        )
+                    elif cohort_tracks:
+                        st.caption(
+                            f"{cohort_tracks} staff track(s) stored under **{u_track}** — "
+                            f"{label}'s class conflicts are checked against these."
+                        )
+
                 st.markdown("**Training year span** (10/1 – 9/30)")
                 col1, col2 = st.columns(2)
                 with col1:
