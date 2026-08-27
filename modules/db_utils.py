@@ -1992,6 +1992,48 @@ def get_all_track_configs():
         return []
 
 
+def get_cohort_track_coverage(track_name):
+    """How much track data a cohort actually holds, for the training year linked to it.
+
+    Conflict checking for a training year reads `tracks` rows carrying that cohort's
+    track_name. A bid only lands there when the staff member submits it — a bid still
+    being built lives in bid_drafts — so a cohort mid-bid can be linked and still have
+    little or nothing to check against.
+
+    Returns:
+        dict: {'submitted': staff with a track in this cohort,
+               'drafts': staff with a draft bid in this cohort and no submitted track,
+               'active': staff in the currently active cohort, for comparison}
+    """
+    coverage = {'submitted': 0, 'drafts': 0, 'active': 0}
+    if not track_name:
+        return coverage
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(DISTINCT staff_name) FROM tracks WHERE track_name = ?",
+            (track_name,))
+        coverage['submitted'] = cursor.fetchone()[0] or 0
+        # Anyone who has since submitted is already counted above; counting their
+        # leftover draft again would overstate how much is still outstanding.
+        cursor.execute(
+            """SELECT COUNT(DISTINCT d.staff_name) FROM bid_drafts d
+               WHERE d.track_name = ?
+                 AND NOT EXISTS (SELECT 1 FROM tracks t
+                                 WHERE t.staff_name = d.staff_name
+                                   AND t.track_name = d.track_name)""",
+            (track_name,))
+        coverage['drafts'] = cursor.fetchone()[0] or 0
+        cursor.execute(
+            "SELECT COUNT(DISTINCT staff_name) FROM tracks WHERE is_active = 1")
+        coverage['active'] = cursor.fetchone()[0] or 0
+    except Exception as e:
+        print(f"Error reading track coverage for '{track_name}': {e}")
+    return coverage
+
+
 def create_track_config(track_name, max_day_nurses=11, max_day_medics=11,
                         max_night_nurses=5, max_night_medics=5,
                         day_vehicles=9, night_vehicles=4,

@@ -495,12 +495,22 @@ def display_training_events_app():
             st.session_state.unified_db.is_training_year_writable(selected_year_label))
 
         # Switching years means a different roster workbook, so the cached handlers
-        # built against the old one have to go.
-        if st.session_state.get('training_loaded_year') != selected_year_label:
+        # built against the old one have to go. Editing the year's own settings does
+        # too: the linked cohort and the pattern start are read once, when the track
+        # manager is built, so linking a cohort to the year an admin is already
+        # looking at used to change nothing until the session was restarted.
+        year_signature = (
+            selected_year_label,
+            (selected_year or {}).get('roster_filename'),
+            (selected_year or {}).get('linked_track_name'),
+            (selected_year or {}).get('pattern_start_date'),
+        )
+        if st.session_state.get('training_loaded_year_signature') != year_signature:
             for key in ('training_excel_handler', 'training_track_manager',
                         'training_enrollment_manager', 'training_educator_manager',
                         'training_excel_admin_functions'):
                 st.session_state.pop(key, None)
+            st.session_state.training_loaded_year_signature = year_signature
             st.session_state.training_loaded_year = selected_year_label
 
         # Initialize Excel handler
@@ -553,6 +563,21 @@ def display_training_events_app():
                 enrollment_excel_handler=st.session_state.training_excel_handler
             )
             print("✓ CCEMT schedules loaded")
+
+        # A linked cohort with no tracks in it falls back to the active cohort, which
+        # means conflict checking silently runs against another year's schedules. Say
+        # so where an admin can act on it rather than only on the console.
+        _tm = st.session_state.get('training_track_manager')
+        if (getattr(_tm, 'tracks_fell_back', False)
+                and st.session_state.get('training_admin_authenticated')):
+            st.warning(
+                f"⚠️ {selected_year_label} is linked to track cohort "
+                f"**{_tm.track_cohort}**, but no tracks are stored under that cohort "
+                f"yet, so conflict checking is falling back to the currently active "
+                f"cohort. Bids that are still drafts aren't stored as tracks — they "
+                f"only count once they're submitted. Check Training Admin > "
+                f"Training Years."
+            )
 
         # Initialize enrollment manager, pinned to the year being viewed so a closed
         # year reports its own enrollments rather than the active year's.
@@ -2003,31 +2028,35 @@ elif st.session_state.selected_module == "shift_location_preferences":
 elif st.session_state.selected_module == "summer_leave":
     # Show Summer Leave Requests application
     # Initialize Excel handler and track manager if not already done
-    if 'training_excel_handler' not in st.session_state or st.session_state.training_excel_handler is None:
+    # Kept under its own session keys rather than the training app's: those are scoped
+    # to whichever training year is being viewed, and a year linked to a not-yet-active
+    # track cohort would hand summer leave that cohort's tracks instead of the active
+    # ones it needs.
+    if 'summer_leave_excel_handler' not in st.session_state or st.session_state.summer_leave_excel_handler is None:
         from training_modules.excel_handler import ExcelHandler
         from training_modules.unified_database import get_active_roster_path
         excel_path = get_active_roster_path()
         if os.path.exists(excel_path):
-            st.session_state.training_excel_handler = ExcelHandler(excel_path)
+            st.session_state.summer_leave_excel_handler = ExcelHandler(excel_path)
         else:
             st.error(f"Excel file not found: {excel_path}")
             st.stop()
 
-    if 'training_track_manager' not in st.session_state or st.session_state.training_track_manager is None:
+    if 'summer_leave_track_manager' not in st.session_state or st.session_state.summer_leave_track_manager is None:
         from training_modules.track_manager import TrainingTrackManager
-        st.session_state.training_track_manager = TrainingTrackManager('data/medflight_tracks.db')
+        st.session_state.summer_leave_track_manager = TrainingTrackManager('data/medflight_tracks.db')
 
         # Load tracks from database
-        st.session_state.training_track_manager.reload_tracks()
+        st.session_state.summer_leave_track_manager.reload_tracks()
 
         # CCEMT schedules come from the database; the enrollment workbook stays connected
         # as the fallback source of staff roles.
-        st.session_state.training_track_manager.set_excel_handler(
-            enrollment_excel_handler=st.session_state.training_excel_handler
+        st.session_state.summer_leave_track_manager.set_excel_handler(
+            enrollment_excel_handler=st.session_state.summer_leave_excel_handler
         )
 
     display_summer_leave_app(
-        st.session_state.training_excel_handler,
-        st.session_state.training_track_manager
+        st.session_state.summer_leave_excel_handler,
+        st.session_state.summer_leave_track_manager
     )
 

@@ -1463,6 +1463,38 @@ class AdminAccess:
                          "checking uses whichever cohort is active today, which is the "
                          "wrong one for a year that has closed."
                 )
+                # Linking a cohort only changes conflict checking if that cohort has
+                # tracks in it. A bid still in progress mostly lives in bid_drafts,
+                # which conflict checking can't see, so say what the link will
+                # actually find rather than letting it look connected and do nothing.
+                if u_track:
+                    try:
+                        from modules.db_utils import get_cohort_track_coverage
+                        coverage = get_cohort_track_coverage(u_track)
+                    except Exception as cov_err:
+                        coverage = None
+                        st.caption(f"Could not read {u_track}'s track counts: {cov_err}")
+                    if coverage is not None:
+                        if coverage['submitted'] == 0:
+                            st.warning(
+                                f"⚠️ No tracks are stored under **{u_track}** yet"
+                                + (f" ({coverage['drafts']} staff have an unsubmitted "
+                                   f"draft bid)" if coverage['drafts'] else "")
+                                + f". Conflict checking for {label} will fall back to "
+                                  f"the currently active cohort until bids are "
+                                  f"submitted."
+                            )
+                        else:
+                            note = (f"**{u_track}** holds tracks for "
+                                    f"{coverage['submitted']} staff")
+                            if coverage['active']:
+                                note += f" (active cohort: {coverage['active']})"
+                            if coverage['drafts']:
+                                note += (f"; {coverage['drafts']} more have an "
+                                         f"unsubmitted draft bid")
+                            note += (". Staff with no track in this cohort get no "
+                                     "conflict checking in this year.")
+                            st.caption(note)
                 u_pattern = st.text_input(
                     "Track pattern start — 'Sun A 1' (YYYY-MM-DD)",
                     value=ty.get('pattern_start_date') or "",

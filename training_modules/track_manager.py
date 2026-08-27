@@ -20,6 +20,13 @@ class TrainingTrackManager:
         self.tracks_db_path = tracks_db_path
         self.track_cohort = track_cohort
         self.tracks_cache = {}
+        # What reload_tracks() actually loaded. A named cohort with no tracks in it
+        # falls back to the active cohort, which silently checks classes against the
+        # wrong year's schedules; these let the caller say so instead of only
+        # printing it to a console nobody is watching.
+        self.tracks_source = None       # 'cohort' or 'active'
+        self.tracks_source_label = None  # human-readable, e.g. "cohort 'FY27'"
+        self.tracks_fell_back = False    # a cohort was asked for and wasn't there
         self.ccemt_schedule_cache = {}
         self.ccemt_raw_cache = {}  # Raw CCEMT shift codes (e.g., 'PG', 'NP') for display purposes
         self.tracks_excel_handler = None  # Fallback CCEMT source when the database has none
@@ -228,14 +235,22 @@ class TrainingTrackManager:
             conn = sqlite3.connect(self.tracks_db_path)
             cursor = conn.cursor()
             
+            self.tracks_fell_back = False
+
             if self.track_cohort:
+                # Ordered oldest version first so a staff member who has more than one
+                # row in the cohort (a resubmission left behind by the older save path)
+                # ends up cached at their newest one rather than at whichever row the
+                # database happened to return last.
                 cursor.execute("""
                     SELECT staff_name, track_data
                     FROM tracks
                     WHERE track_name = ?
+                    ORDER BY version ASC, id ASC
                 """, (self.track_cohort,))
                 results = cursor.fetchall()
                 source = f"cohort '{self.track_cohort}'"
+                self.tracks_source = 'cohort'
                 if not results:
                     # A cohort that was named but never populated would silently
                     # disable conflict checking; fall back to the active tracks.
@@ -244,18 +259,23 @@ class TrainingTrackManager:
                         SELECT staff_name, track_data
                         FROM tracks
                         WHERE is_active = 1
+                        ORDER BY version ASC, id ASC
                     """)
                     results = cursor.fetchall()
                     source = "the active cohort"
+                    self.tracks_source = 'active'
+                    self.tracks_fell_back = True
             else:
                 # Get active tracks
                 cursor.execute("""
-                    SELECT staff_name, track_data 
-                    FROM tracks 
+                    SELECT staff_name, track_data
+                    FROM tracks
                     WHERE is_active = 1
+                    ORDER BY version ASC, id ASC
                 """)
                 results = cursor.fetchall()
                 source = "the active cohort"
+                self.tracks_source = 'active'
             
             self.tracks_cache = {}
             
@@ -268,6 +288,7 @@ class TrainingTrackManager:
                         continue
             
             conn.close()
+            self.tracks_source_label = source
             print(f"Loaded {len(self.tracks_cache)} tracks from {source}")
             
         except Exception as e:
