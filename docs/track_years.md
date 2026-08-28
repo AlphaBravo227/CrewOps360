@@ -42,17 +42,30 @@ anything older is archived rather than filling the picker with finished years. F
 span and anchor are backfilled with the dates the code used to carry hardcoded, and any
 cohort already past its end date is retired on the spot.
 
-## What follows the choice, and what doesn't
+## What follows the choice
 
 Picking a year scopes every read: the track grid, the Preferred Track Display, the
-fiscal-year monthly display and its Excel export, the calendar export (Google/iCal), the
-preassignments the grid is drawn with, and the admin export in the sidebar.
+fiscal-year monthly display, the calendar export (Google/iCal), and the preassignments
+the grid is drawn with.
 
-Writes don't move. Track modifications, swap requests and the approval queue all read and
-write `tracks` rows with `is_active = 1`, so they belong to the live cohort. On a closed
-year the hub drops those controls and says why, rather than offering buttons that would
-land on the wrong fiscal year — and a session that switches years mid-edit is dropped
-back to the landing page instead of editing one year's grid into another year's rows.
+Reads for the live year stay unscoped, exactly as they were before any of this: a track
+row still carrying an older cycle's name is `is_active` and belongs in the live grid, and
+scoping it away would quietly drop staff from the hub. Only a closed year is fetched by
+name, since promotion is what cleared `is_active` on its rows.
+
+Nothing in the hub writes to a track any more — Track Swap and Track Management have been
+taken out pending a rebuild — so `is_track_year_writable()` no longer gates any control.
+It still decides whether reads are scoped by name, and it is what those rebuilt sections
+should ask before offering to write to a year.
+
+## The admin export
+
+Admin Area → **Fiscal Year Export** opens on the year the hub is showing and offers every
+cohort in a dropdown, labelled with its state and how many tracks it holds. That list is
+deliberately wider than the staff picker: exporting a cohort still out to bid, or one
+archived years ago, is a normal admin thing to do. Each export is built over its own
+cohort's span — FY26's workbook runs September 2025 to September 2026, FY27's runs
+September 2026 to September 2027 — and is named for the year it covers.
 
 ## The span, and why it matters
 
@@ -85,8 +98,9 @@ python scripts/check_track_years.py
 
 Verifies against a throwaway database that a cohort out to bid stays out of the picker,
 that promotion leaves the outgoing year visible and read-only while only the live year
-accepts changes, that reading a year by name gets that year's tracks rather than the live
-one's, that FY26 keeps the exact span, pattern offset and holiday list the code used to
-carry hardcoded while another year gets its own, that a year past its last day retires
-itself while the live year never does, and that upgrading a pre-feature database leaves
-the outgoing year visible rather than archiving it.
+is treated as writable, that reading a year by name gets that year's tracks rather than
+the live one's, that FY26 keeps the exact span, pattern offset and holiday list the code
+used to carry hardcoded while another year gets its own, that the admin export offers
+every cohort with its track count, that a year past its last day retires itself while the
+live year never does, and that upgrading a pre-feature database leaves the outgoing year
+visible rather than archiving it.

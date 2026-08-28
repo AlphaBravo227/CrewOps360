@@ -47,7 +47,6 @@ from modules.shift_utils import get_shift_end_time, calculate_rest_conflict
 from modules.staff_utils import is_special_conflict
 from modules.ui_components import display_roster_results
 from modules.column_mapper import auto_detect_columns
-from modules.track_management import display_staff_track_interface
 from modules.pdf_generator import generate_schedule_pdf
 from modules.export_utils import export_tracks_to_excel, export_track_history_to_excel
 from modules.enhanced_track_validator import validate_track_comprehensive
@@ -58,7 +57,6 @@ from modules.track_source_consistency import ensure_track_source_consistency
 from modules.app_helper import validate_uploaded_database, restore_database_from_backup, restore_database_from_upload, cleanup_old_backups
 from modules.track_display import display_track_viewer
 from modules.enhanced_landing import inject_custom_css
-from modules.track_swap import display_track_swap_section, handle_track_swap_navigation
 from modules.track_bidding import display_track_bidding
 from modules.db_utils import get_active_track_config, get_track_capacity
 from modules.track_year import (
@@ -998,13 +996,12 @@ def display_track_year_selector():
 
     if not year_is_writable:
         span = get_track_year_dates(selected_year)
-        st.warning(
-            f"**{selected_year} is closed to changes.** It runs "
-            f"{span['start'].strftime('%b %d, %Y')} – {span['end'].strftime('%b %d, %Y')}. "
-            f"You can view, export and print these tracks, but modifications and swap "
-            f"requests are made against the active track"
-            + (f" — switch to **{active_label}** above." if active_label != selected_year
-               else ".")
+        st.info(
+            f"**Viewing {selected_year}**, which ran "
+            f"{span['start'].strftime('%b %d, %Y')} – {span['end'].strftime('%b %d, %Y')} "
+            f"and is no longer the active track. These tracks can be viewed and exported"
+            + (f"; switch to **{active_label}** above for the current year."
+               if active_label != selected_year else ".")
         )
 
     return selected_year, year_is_writable
@@ -1401,9 +1398,6 @@ def run_clinical_track_hub(selected_year=None, year_is_writable=True):
 
     if 'selected_staff' not in st.session_state:
         st.session_state.selected_staff = None
-
-    if 'staff_track_active' not in st.session_state:
-        st.session_state.staff_track_active = False
 
     # Preassignments for the cycle being viewed, from the database (authored per bid
     # cycle in the Track Bidding admin). They are per-cycle, so a fiscal year's grid has
@@ -2042,100 +2036,21 @@ def run_clinical_track_hub(selected_year=None, year_is_writable=True):
             add_fiscal_year_display_to_app(read_year)
             st.stop()  # Prevent other content from rendering
             
-        # Switching to a closed fiscal year while inside the editor would show that
-        # year's grid while every save landed on the active cohort. Drop back to the
-        # landing page instead.
-        elif (st.session_state.get('staff_track_active', False)
-              and st.session_state.selected_staff and not year_is_writable):
-            st.session_state.staff_track_active = False
-            st.session_state.selected_staff = None
-            st.rerun()
-
-        # Skip staff selection if already in track management
-        elif st.session_state.get('staff_track_active', False) and st.session_state.selected_staff:
-            selected_staff = st.session_state.selected_staff
-            
-            st.success(f"Staff member {selected_staff} selected. View and modify their track below.")
-                    
-            # Display Staff Track Management with enhanced validation
-            if (st.session_state.preferences_df is not None and 
-                st.session_state.current_tracks_df is not None and 
-                st.session_state.days is not None):
-                
-                try:
-                    display_staff_track_interface(
-                        selected_staff,
-                        st.session_state.preferences_df,
-                        st.session_state.current_tracks_df,
-                        st.session_state.requirements_df,
-                        st.session_state.days,
-                        st.session_state.staff_col_prefs,
-                        st.session_state.staff_col_tracks,
-                        st.session_state.role_col,
-                        st.session_state.no_matrix_col,
-                        st.session_state.reduced_rest_col,
-                        st.session_state.seniority_col,
-                        preassignment_df=st.session_state.preassignment_df
-                    )
-                except Exception as e:
-                    st.error(f"Error displaying staff interface: {str(e)}")
-                    
-                    if st.button("Reset and return to staff selection"):
-                        st.session_state.staff_track_active = False
-                        st.session_state.selected_staff = None
-                        st.rerun()
-            else:
-                st.warning("Missing data. Please ensure all files are loaded.")
+        # Track Swap and Track Management used to live here. Both are being rebuilt
+        # with different functionality, so the hub is read-only for now: the track
+        # viewer, the calendar export and the fiscal-year display.
         else:
-            # Split layout: Left = Staff Management, Right = Calendar Export + Track Display
+            # Split layout: Left = Track Display, Right = Calendar Export + Fiscal Year
             left_col, right_col = st.columns(2, gap="large")
             
             # LEFT SIDE section
             with left_col:
-                # A swap form left open from the active year has to close when the
-                # session switches to a closed one — the offer it would submit is
-                # against days that year no longer owns.
-                if not year_is_writable:
-                    st.session_state.pop('show_swap_form', None)
+                st.markdown("### Preferred Track Display")
+                st.caption(f"View {selected_year or 'active'} tracks by role - "
+                           f"informational purposes only")
 
-                # Check if we should show the swap form (takes priority)
-                if handle_track_swap_navigation():
-                    # Track swap form is being displayed, don't show other sections
-                    pass
-                else:
-                    # Normal landing page layout
-                    st.markdown("### Preferred Track Display")
-                    st.caption(f"View {selected_year or 'active'} tracks by role - "
-                               f"informational purposes only")
-                
-                    # Enhanced Track viewer component with fullscreen option
-                    display_track_viewer(read_year)
-                    
-                    # Swaps and modifications are written against the live cohort's
-                    # rows, so a closed year gets the explanation rather than buttons
-                    # that would land on the wrong fiscal year.
-                    if year_is_writable:
-                        # Track Swap Section
-                        display_track_swap_section()
-                        
-                        #Track Management Section
-                        st.markdown("### Track Management")
-
-                        staff_names = st.session_state.master_df.index.tolist()
-                        selected_staff = st.selectbox("Select Staff Member", staff_names, key="main_staff_select")
-
-                        # Store selected staff and proceed to Track Management
-                        if selected_staff:
-                            if st.button("🔧 Manage Staff Track with Validation", use_container_width=True, type="primary"):
-                                st.session_state.selected_staff = selected_staff
-                                st.session_state.staff_track_active = True
-                                st.rerun()
-                    else:
-                        st.markdown("### Track Management")
-                        st.info(
-                            f"🔒 {selected_year} is closed. Track modifications and swap "
-                            f"requests are made against the active track — switch "
-                            f"fiscal year at the top of the page to submit one.")
+                # Enhanced Track viewer component with fullscreen option
+                display_track_viewer(read_year)
 
             # RIGHT SIDE: Calendar Export + Fiscal Year Track Display
             with right_col:

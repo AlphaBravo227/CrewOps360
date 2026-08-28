@@ -22,7 +22,12 @@ import base64
 import json
 import pytz
 
-from .track_year import PATTERN_LENGTH, get_track_year_dates, us_holidays_between
+from .track_year import (
+    PATTERN_LENGTH,
+    get_exportable_track_years,
+    get_track_year_dates,
+    us_holidays_between,
+)
 
 _eastern_tz = pytz.timezone('America/New_York')
 
@@ -117,7 +122,7 @@ class FiscalYearDisplay:
             conn.close()
             
             if not tracks_data:
-                st.info("No active track data found in database.")
+                st.info(f"No tracks stored under {self.year_label} in the database.")
                 
         except sqlite3.Error as e:
             st.error(f"Database error loading tracks: {str(e)}")
@@ -923,11 +928,37 @@ def add_fiscal_year_display_to_app(track_name=None):
 def add_fiscal_year_export_to_admin(admin_authenticated=False, track_name=None):
     """
     ENHANCED: Add this to your admin section in app.py with filtering support
+
+    Args:
+        track_name (str, optional): the fiscal year to open on. The admin can pick a
+            different one — every cohort is exportable here, including ones out to bid
+            and ones archived years ago, which is wider than the hub's own picker.
     """
     if admin_authenticated:
-        fy_display = FiscalYearDisplay(track_name=track_name)
-        st.markdown(f"### 📊 {fy_display.year_label} Export")
-        
+        st.markdown("### 📊 Fiscal Year Export")
+
+        # Which fiscal year to export. This was whichever cohort happened to be live,
+        # so a promoted FY27 left FY26's tracks with no way out of the app at all.
+        export_years = get_exportable_track_years()
+        year_names = [y['track_name'] for y in export_years]
+        if year_names:
+            label_by_name = {y['track_name']: y['label'] for y in export_years}
+            default_name = track_name if track_name in year_names else year_names[0]
+            export_year = st.selectbox(
+                "Fiscal year to export:",
+                options=year_names,
+                index=year_names.index(default_name),
+                format_func=lambda name: label_by_name.get(name, name),
+                key="admin_export_track_year",
+            )
+        else:
+            export_year = track_name
+
+        fy_display = FiscalYearDisplay(track_name=export_year)
+        span_start = fy_display.fiscal_year_start.strftime('%b %d, %Y')
+        span_end = fy_display.fiscal_year_end.strftime('%b %d, %Y')
+        st.caption(f"{fy_display.year_label}: {span_start} – {span_end}")
+
         # Load current data for export options
         tracks_data, staff_roles = fy_display.load_tracks_from_db()
         
@@ -970,7 +1001,8 @@ def add_fiscal_year_export_to_admin(admin_authenticated=False, track_name=None):
                 role_stats = fy_display.get_role_statistics(staff_roles)
                 total_staff = sum(stats['count'] for stats in role_stats.values())
                 
-                st.info(f"📊 **Total Staff:** {total_staff} members with active tracks")
+                st.info(f"📊 **Total Staff:** {total_staff} members with a track in "
+                        f"{fy_display.year_label}")
                 
                 for role, stats in role_stats.items():
                     st.caption(f"• {role}: {stats['count']} ({stats['percentage']}%)")
@@ -985,7 +1017,7 @@ def add_fiscal_year_export_to_admin(admin_authenticated=False, track_name=None):
                     )
                     st.success(f"🎯 **Filtered Result:** {len(filtered_staff)} staff member(s) will be exported")
         else:
-            st.warning("No track data available for export")
+            st.caption("Pick a fiscal year that has tracks in it to export.")
 
 
 # Additional utility functions for enhanced functionality

@@ -199,6 +199,26 @@ def check_spans():
           .get(datetime(2026, 11, 26)) == "Thanksgiving")
 
 
+def check_admin_export_years():
+    print("\nWhat an admin can export")
+    from modules.track_year import get_exportable_track_years
+
+    years = get_exportable_track_years()
+    names = [y['track_name'] for y in years]
+    check("every cohort is exportable, live year first",
+          names == ['FY27', 'FY26'], str(names))
+    check("a closed year is offered even though staff can't write to it",
+          'FY26' in names)
+    counts = {y['track_name']: y['track_count'] for y in years}
+    check("each year reports how many tracks it holds",
+          counts == {'FY26': 2, 'FY27': 2}, str(counts))
+    labels = {y['track_name']: y['label'] for y in years}
+    check("the live year is labelled as the active one",
+          labels.get('FY27') == 'FY27 (active) — 2 tracks', labels.get('FY27'))
+    check("a retired year is labelled with its status, not left bare",
+          labels.get('FY26') == 'FY26 (readonly) — 2 tracks', labels.get('FY26'))
+
+
 def check_calendar_export():
     print("\nCalendar export")
     from modules.calendar_export import generate_google_calendar
@@ -354,6 +374,7 @@ def main():
             check_reads_follow_the_year()
             check_spans()
             check_calendar_export()
+            check_admin_export_years()
             check_auto_retire()
 
             # A second throwaway database, shaped the way an install looked before

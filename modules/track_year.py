@@ -160,6 +160,44 @@ def get_hub_track_years():
     return years
 
 
+def get_exportable_track_years():
+    """Every track cohort an admin can export, live cohort first.
+
+    Deliberately not the hub's picker list: exporting a cohort that is still out to
+    bid, or one archived years ago, is a normal admin thing to do. The picker is what
+    staff see; this is what an admin can pull a spreadsheet from.
+
+    Each entry carries `track_count` — how many `tracks` rows the cohort holds — so a
+    cohort with nothing in it is visibly a dead end rather than an empty export.
+    """
+    from .db_utils import count_bids_by_track, get_all_track_configs
+
+    # count_bids_by_track counts every tracks row per cohort, bid or promoted, which
+    # is what "how much is there to export" means here.
+    counts = count_bids_by_track()
+    years = []
+    for cfg in get_all_track_configs():
+        name = cfg.get('track_name')
+        count = counts.get(name, 0)
+        if cfg.get('is_active'):
+            state = 'active'
+        elif cfg.get('is_bidding_open'):
+            state = 'bidding'
+        else:
+            state = cfg.get('status') or ''
+        plural = '' if count == 1 else 's'
+        years.append({
+            **cfg,
+            'track_count': count,
+            'label': (f"{name}{f' ({state})' if state else ''} — "
+                      f"{count} track{plural}"),
+        })
+    # get_all_track_configs is already newest-first; a stable sort just floats the
+    # live cohort to the top without disturbing that.
+    years.sort(key=lambda y: not y.get('is_active'))
+    return years
+
+
 def resolve_selected_year(visible_years, active_name, remembered=None):
     """Which fiscal year a hub session is looking at.
 
