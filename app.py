@@ -971,7 +971,7 @@ def display_track_year_selector():
     is_live = selected_year == active_label
 
     heading_note = (f"Active Track: {selected_year}" if is_live
-                    else f"Viewing: {selected_year} (closed) — Active Track: {active_label}")
+                    else f"Viewing: {selected_year} — Active Track: {active_label}")
     heading_colour = '#4CAF50' if is_live else '#F57C00'
     st.markdown(f"""
     # <span style='color:#1E88E5'>Clinical Track Hub</span> <span style='color:{heading_colour}; font-size:1.2rem;'>— {heading_note}</span>
@@ -997,10 +997,10 @@ def display_track_year_selector():
     if not year_is_writable:
         span = get_track_year_dates(selected_year)
         st.info(
-            f"**Viewing {selected_year}**, which ran "
+            f"**Viewing {selected_year}**, which runs "
             f"{span['start'].strftime('%b %d, %Y')} – {span['end'].strftime('%b %d, %Y')} "
-            f"and is no longer the active track. These tracks can be viewed and exported"
-            + (f"; switch to **{active_label}** above for the current year."
+            f"and is not the active track. These tracks can be viewed and exported"
+            + (f"; switch to **{active_label}** above for the active year."
                if active_label != selected_year else ".")
         )
 

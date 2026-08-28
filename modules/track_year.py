@@ -147,7 +147,10 @@ def get_hub_track_years():
         years.append({
             **cfg,
             'is_writable': is_live and (cfg.get('status') or '') == TRACK_YEAR_OPEN,
-            'label': f"{name} (current)" if is_live else f"{name} (closed)",
+            # Only the active track is called out. A year that isn't active isn't
+            # necessarily finished — it may not have started yet — so labelling it
+            # "closed" was wrong as often as it was right.
+            'label': f"{name} (active)" if is_live else name,
         })
     # A hub with no cohort marked visible would have no year to show at all; the live
     # cohort belongs in the picker whatever its status says.
@@ -155,7 +158,7 @@ def get_hub_track_years():
         years.insert(0, {
             **active,
             'is_writable': is_track_year_writable(active_name),
-            'label': f"{active_name} (current)",
+            'label': f"{active_name} (active)",
         })
     return years
 

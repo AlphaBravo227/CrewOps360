@@ -104,6 +104,10 @@ def check_after_promotion():
     check("both fiscal years are offered in the hub, live year first",
           names == ['FY27', 'FY26'], str(names))
 
+    labels = {y['track_name']: y['label'] for y in get_hub_track_years()}
+    check("the picker names the active track and leaves the other year bare",
+          labels == {'FY27': 'FY27 (active)', 'FY26': 'FY26'}, str(labels))
+
     writable = {y['track_name']: y['is_writable'] for y in get_hub_track_years()}
     check("only the live year accepts track changes",
           writable == {'FY27': True, 'FY26': False}, str(writable))
