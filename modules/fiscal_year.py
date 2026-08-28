@@ -1,6 +1,8 @@
 # fiscal_year_module.py - ENHANCED WITH STAFF MEMBER FILTERING
 """
-Fiscal Year 2026 Track Display Module - ENHANCED WITH STAFF FILTERING
+Fiscal Year Track Display Module - ENHANCED WITH STAFF FILTERING
+Scoped to a track cohort, so a fiscal year still being worked stays viewable
+after the next one has been promoted.
 To be integrated with existing app.py
 Place this file in your project root or modules/ directory
 UPDATED: Added staff member filtering functionality alongside role filtering
@@ -20,31 +22,33 @@ import base64
 import json
 import pytz
 
+from .track_year import PATTERN_LENGTH, get_track_year_dates, us_holidays_between
+
 _eastern_tz = pytz.timezone('America/New_York')
 
 class FiscalYearDisplay:
     """Fiscal Year display component for integration with existing app"""
     
-    def __init__(self, tracks_db_path='data/medflight_tracks.db'):
+    def __init__(self, tracks_db_path='data/medflight_tracks.db', track_name=None):
+        """
+        Args:
+            track_name (str, optional): the track cohort — the fiscal year — to
+                display. Defaults to whichever cohort is live. A cutover promotes the
+                next year months before the outgoing one is finished, and promotion
+                clears is_active on the outgoing cohort's rows, so naming the cohort
+                is the only way to keep showing a year that is still being worked.
+        """
         self.db_path = tracks_db_path
-        self.fiscal_year_start = datetime(2025, 9, 28)
-        self.fiscal_year_end = datetime(2026, 9, 26)
-        self.pattern_start = datetime(2025, 9, 14)  # Sun A 1
-        self.pattern_length = 42  # 6 weeks
-        
-        # US Holidays
-        self.holidays = {
-            datetime(2025, 11, 27): "Thanksgiving",
-            datetime(2025, 12, 24): "Christmas Eve",
-            datetime(2025, 12, 25): "Christmas",
-            datetime(2026, 1, 1): "New Year's Day",
-            datetime(2026, 1, 19): "MLK Jr. Day",
-            datetime(2026, 2, 16): "Presidents' Day",
-            datetime(2026, 5, 25): "Memorial Day",
-            datetime(2026, 6, 19): "Juneteenth",
-            datetime(2026, 7, 4): "Independence Day",
-            datetime(2026, 9, 7): "Labor Day"
-        }
+        span = get_track_year_dates(track_name)
+        self.track_name = track_name or span.get('track_name')
+        self.fiscal_year_start = span['start']
+        self.fiscal_year_end = span['end']
+        self.pattern_start = span['pattern_start']  # Sun A 1
+        self.pattern_length = PATTERN_LENGTH  # 6 weeks
+
+        # US Holidays across this cohort's span. These were FY26's ten dates as a
+        # literal until a second cohort existed and made them wrong.
+        self.holidays = us_holidays_between(self.fiscal_year_start, self.fiscal_year_end)
         
         self.shift_descriptions = {
             'D': 'Day Shift',
@@ -70,13 +74,24 @@ class FiscalYearDisplay:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            # Get the latest active tracks for each staff member with role information
-            cursor.execute("""
-                SELECT staff_name, track_data, effective_role, submission_date
-                FROM tracks
-                WHERE is_active = 1
-                ORDER BY staff_name, submission_date DESC
-            """)
+            # Get the latest tracks for each staff member with role information.
+            # Scoped to this cohort when one is named: after a cutover the outgoing
+            # year's rows are no longer is_active, and they are exactly the ones a
+            # staff member still needs to see.
+            if self.track_name:
+                cursor.execute("""
+                    SELECT staff_name, track_data, effective_role, submission_date
+                    FROM tracks
+                    WHERE track_name = ?
+                    ORDER BY staff_name, submission_date DESC
+                """, (self.track_name,))
+            else:
+                cursor.execute("""
+                    SELECT staff_name, track_data, effective_role, submission_date
+                    FROM tracks
+                    WHERE is_active = 1
+                    ORDER BY staff_name, submission_date DESC
+                """)
             
             results = cursor.fetchall()
             processed_staff = set()
@@ -111,6 +126,21 @@ class FiscalYearDisplay:
         
         return tracks_data, staff_roles
     
+    @property
+    def year_label(self):
+        """The fiscal year's name for headings and filenames."""
+        return self.track_name or 'Fiscal Year'
+
+    @property
+    def span_caption(self):
+        """The span this display covers, spelled out."""
+        # %-d isn't portable (it's a glibc extension), and this app also runs on
+        # Windows, so strip the leading zero rather than asking strftime to.
+        def spell(date):
+            return f"{date.strftime('%B')} {date.day}, {date.year}"
+
+        return f"View tracks from {spell(self.fiscal_year_start)} through {spell(self.fiscal_year_end)}"
+
     def normalize_role(self, role):
         """Normalize role names for consistent display"""
         if not role:
@@ -308,8 +338,11 @@ class FiscalYearDisplay:
     
     def show_normal_view(self):
         """Show normal (non-fullscreen) view"""
-        st.markdown('<h2 style="color: #1f2937; border-bottom: 3px solid #e5e7eb; padding-bottom: 0.5rem;">📊 Fiscal Year 2026 Track Display</h2>', unsafe_allow_html=True)
-        st.caption("View tracks from September 28, 2025 through September 26, 2026")
+        st.markdown(
+            f'<h2 style="color: #1f2937; border-bottom: 3px solid #e5e7eb; '
+            f'padding-bottom: 0.5rem;">📊 {self.year_label} Track Display</h2>',
+            unsafe_allow_html=True)
+        st.caption(self.span_caption)
         
         # Load tracks from database
         tracks_data, staff_roles = self.load_tracks_from_db()
@@ -400,7 +433,7 @@ class FiscalYearDisplay:
     
     def show_fullscreen_view(self):
         """Show fullscreen view - ENHANCED VERSION"""
-        st.markdown("### 📊 Fiscal Year 2026 - Fullscreen View")
+        st.markdown(f"### 📊 {self.year_label} - Fullscreen View")
         
         # Back button
         back_col, spacer_col = st.columns([1, 4])
@@ -609,7 +642,10 @@ class FiscalYearDisplay:
                     excel_data = f.read()
                 
                 b64 = base64.b64encode(excel_data).decode()
-                href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="FY2026_Tracks_Filtered.xlsx">Click here to download Excel file</a>'
+                download_name = f"{self.year_label}_Tracks_Filtered.xlsx"
+                href = (f'<a href="data:application/vnd.openxmlformats-officedocument.'
+                        f'spreadsheetml.sheet;base64,{b64}" download="{download_name}">'
+                        f'Click here to download Excel file</a>')
                 
                 st.success(f"✅ {message}")
                 st.markdown(href, unsafe_allow_html=True)
@@ -852,7 +888,8 @@ class FiscalYearDisplay:
             
             temp_file = os.path.join(
                 export_dir, 
-                f'FY2026_Tracks_Export{filename_suffix}_{datetime.now(_eastern_tz).strftime("%Y%m%d_%H%M%S")}.xlsx'
+                f'{self.year_label}_Tracks_Export{filename_suffix}'
+                f'_{datetime.now(_eastern_tz).strftime("%Y%m%d_%H%M%S")}.xlsx'
             )
             wb.save(temp_file)
             
@@ -863,14 +900,18 @@ class FiscalYearDisplay:
 
 
 # Integration function to add to your app.py - ENHANCED VERSION
-def add_fiscal_year_display_to_app():
+def add_fiscal_year_display_to_app(track_name=None):
     """
     ENHANCED: Add this function call to your app.py where you want the fiscal year display.
     This version includes both role and staff member filtering.
+
+    Args:
+        track_name (str, optional): the fiscal year to display. Defaults to the live
+            cohort; the Clinical Track Hub passes whichever year its picker is on.
     """
     
     # Initialize the fiscal year display
-    fy_display = FiscalYearDisplay()
+    fy_display = FiscalYearDisplay(track_name=track_name)
     
     # Display the fiscal year section
     fy_display.display_fiscal_year_section()
@@ -879,14 +920,13 @@ def add_fiscal_year_display_to_app():
 
 
 # Enhanced admin integration function
-def add_fiscal_year_export_to_admin(admin_authenticated=False):
+def add_fiscal_year_export_to_admin(admin_authenticated=False, track_name=None):
     """
     ENHANCED: Add this to your admin section in app.py with filtering support
     """
     if admin_authenticated:
-        st.markdown("### 📊 Fiscal Year 2026 Export")
-        
-        fy_display = FiscalYearDisplay()
+        fy_display = FiscalYearDisplay(track_name=track_name)
+        st.markdown(f"### 📊 {fy_display.year_label} Export")
         
         # Load current data for export options
         tracks_data, staff_roles = fy_display.load_tracks_from_db()
@@ -1094,7 +1134,7 @@ def display_integration_guide():
     ### Excel Export Tab Order:
     1. Master Tracks (42-day pattern)
     2. Overview
-    3. Monthly sheets (September 2025 - September 2026)
+    3. Monthly sheets (one per month of the cohort's fiscal year)
     4. Version (creation timestamp in EST)
     
     All existing functionality is preserved while adding these new filtering capabilities!
@@ -1141,7 +1181,7 @@ if __name__ == "__main__":
         layout="wide"
     )
     
-    st.title("📊 Enhanced Fiscal Year 2026 Track Display")
+    st.title("📊 Enhanced Fiscal Year Track Display")
     st.caption("With Role and Staff Member Filtering")
     
     # Display integration guide

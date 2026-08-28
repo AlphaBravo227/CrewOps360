@@ -37,7 +37,7 @@ def _tracks_table_exists(conn):
     return cursor.fetchone() is not None
 
 
-def get_active_track_rows(track_name=None):
+def get_active_track_rows(track_name=None, include_retired=False):
     """
     Active tracks as {staff_name: {day: assignment}}.
 
@@ -45,6 +45,11 @@ def get_active_track_rows(track_name=None):
         track_name (str, optional): restrict to one track cycle. Defaults to every
             active track regardless of cycle, which is what the app's "current tracks"
             view has always meant.
+        include_retired (bool): with a track_name, read that cohort whether or not it
+            is the live one. Promotion clears is_active on the outgoing cohort's rows,
+            so a fiscal year still being worked after a cutover is only readable this
+            way. Ignored without a track_name — "every cohort at once" would merge
+            two fiscal years into one grid.
 
     Returns:
         dict: staff name -> day -> assignment code.
@@ -55,7 +60,13 @@ def get_active_track_rows(track_name=None):
         if not _tracks_table_exists(conn):
             return tracks
         cursor = conn.cursor()
-        if track_name:
+        if track_name and include_retired:
+            cursor.execute("""
+                SELECT staff_name, track_data FROM tracks
+                WHERE track_name = ?
+                ORDER BY staff_name
+            """, (track_name,))
+        elif track_name:
             cursor.execute("""
                 SELECT staff_name, track_data FROM tracks
                 WHERE is_active = 1 AND track_name = ?
@@ -159,12 +170,14 @@ def build_tracks_df(tracks, staff_names=None, days=None):
 
 
 def build_current_tracks_df(track_name=None, staff_names=None, days=None,
-                            include_staff_without_tracks=True):
+                            include_staff_without_tracks=True, include_retired=False):
     """
     The active track roster in Tracks.xlsx's shape, from the database.
 
     Args:
         track_name (str, optional): restrict to one track cycle.
+        include_retired (bool): with a track_name, build the grid for that cohort even
+            after it has stopped being the live one — see get_active_track_rows.
         staff_names (list, optional): rows to include, in order. Defaults to the active
             clinical staff on the roster when include_staff_without_tracks is set, so
             every nurse and medic appears whether or not they have submitted a track.
@@ -175,7 +188,7 @@ def build_current_tracks_df(track_name=None, staff_names=None, days=None,
     Returns:
         DataFrame: STAFF NAME plus 42 day columns.
     """
-    tracks = get_active_track_rows(track_name)
+    tracks = get_active_track_rows(track_name, include_retired=include_retired)
 
     if staff_names is None and include_staff_without_tracks:
         try:
@@ -192,7 +205,7 @@ def build_current_tracks_df(track_name=None, staff_names=None, days=None,
     return build_tracks_df(tracks, staff_names=staff_names, days=days)
 
 
-def get_staff_on_shift(day, shift_code, track_name=None):
+def get_staff_on_shift(day, shift_code, track_name=None, include_retired=False):
     """
     Names assigned to one day/shift across active tracks.
 
@@ -200,10 +213,11 @@ def get_staff_on_shift(day, shift_code, track_name=None):
         shift_code (str): 'D', 'N' or 'AT'.
     """
     wanted = str(shift_code).strip().upper()
-    return sorted(name for name, track in get_active_track_rows(track_name).items()
+    rows = get_active_track_rows(track_name, include_retired=include_retired)
+    return sorted(name for name, track in rows.items()
                   if str(track.get(day, '')).strip().upper() == wanted)
 
 
-def active_track_count(track_name=None):
+def active_track_count(track_name=None, include_retired=False):
     """How many staff have an active track."""
-    return len(get_active_track_rows(track_name))
+    return len(get_active_track_rows(track_name, include_retired=include_retired))

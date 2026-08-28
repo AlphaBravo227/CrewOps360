@@ -2,7 +2,9 @@
 
 The three schedule datasets that used to be Excel uploads — the 42-day track grid,
 per-cycle preassignments, and the CCEMT group's repeating pattern — now live in the
-database. See [staff_database.md](staff_database.md) for staff identity and attributes.
+database. See [staff_database.md](staff_database.md) for staff identity and attributes,
+and [track_years.md](track_years.md) for how a track cycle becomes a fiscal year the
+Clinical Track Hub can show alongside the live one.
 
 | Was | Now |
 | --- | --- |

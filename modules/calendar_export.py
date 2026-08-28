@@ -2,6 +2,11 @@
 Module for generating Google Calendar and iCal files from staffing schedules.
 Handles 6-week repeating schedule patterns with fiscal year calendar generation.
 Reads from the medflight_tracks.db database in the data folder.
+
+Every entry point takes an optional track cohort — a fiscal year. Without one it reads
+whichever cohort is live, which is what it always did. With one it reads that cohort's
+tracks and projects them over that cohort's own span, so a staff member can still
+export the year they are working after the next year has been promoted.
 """
 import csv
 import io
@@ -12,6 +17,8 @@ import json
 import pandas as pd
 from icalendar import Calendar, Event
 import pytz
+
+from .track_year import PATTERN_LENGTH, get_track_year_dates
 
 
 def get_database_path():
@@ -24,10 +31,13 @@ def get_database_path():
     return 'data/medflight_tracks.db'
 
 
-def extract_staff_names_from_db():
+def extract_staff_names_from_db(track_name=None):
     """
     Extract staff names from the tracks table.
-    
+
+    Args:
+        track_name (str, optional): read one named cohort rather than the live one.
+
     Returns:
         list: List of staff names sorted alphabetically
     """
@@ -35,7 +45,12 @@ def extract_staff_names_from_db():
     
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT staff_name FROM tracks WHERE is_active = 1 ORDER BY staff_name")
+        if track_name:
+            cursor.execute(
+                "SELECT DISTINCT staff_name FROM tracks WHERE track_name = ? ORDER BY staff_name",
+                (track_name,))
+        else:
+            cursor.execute("SELECT DISTINCT staff_name FROM tracks WHERE is_active = 1 ORDER BY staff_name")
         staff_names = [row[0] for row in cursor.fetchall()]
         return staff_names
         
@@ -46,35 +61,32 @@ def extract_staff_names_from_db():
         conn.close()
 
 
-def extract_dates_from_db():
+def extract_dates_from_db(track_name=None):
     """
     Generate dates for the fiscal year schedule.
-    Pattern mapping: Sept 28, 2025 = Sun B 3 (day 15 of 42-day pattern)
-    Full 6-week pattern: A1-A2-B3-B4-C5-C6, then repeats
-    Fiscal year runs: Sept 28, 2025 to Sept 26, 2026
-    
+    Full 6-week pattern: A1-A2-B3-B4-C5-C6, then repeats.
+
+    FY26 starts on Sept 28, 2025, which is Sun B 3 — day 15 of the 42-day pattern —
+    so its Sun A 1 falls 14 days earlier. That anchor is per-cohort now (a cohort with
+    none set keeps FY26's), which is what lets a second fiscal year sit on its own grid.
+
+    Args:
+        track_name (str, optional): the cohort whose span and anchor to use.
+
     Returns:
         tuple: (pattern_start_date, list of dates for 6-week pattern)
     """
-    # Sept 28, 2025 corresponds to Sun B 3, which is day 15 of the 42-day pattern
-    # (A1=days 1-7, A2=days 8-14, B3=days 15-21, B4=days 22-28, C5=days 29-35, C6=days 36-42)
-    
-    # To create the full pattern starting from Sun A 1, we need to calculate backwards
-    fiscal_start = datetime(2025, 9, 28)  # This is Sun B 3 (pattern day 15)
-    
-    # Sun B 3 is the 15th day of the pattern (index 14, since we start counting from 0)
-    # So Sun A 1 (pattern day 1) would be 14 days before Sept 28
-    pattern_start = fiscal_start - timedelta(days=14)  # This gives us Sun A 1
-    
+    pattern_start = get_track_year_dates(track_name)['pattern_start']
+
     # Generate 42 days (6 weeks) for the complete pattern starting from Sun A 1
     dates = []
-    for i in range(42):
+    for i in range(PATTERN_LENGTH):
         dates.append(pattern_start + timedelta(days=i))
     
     return pattern_start, dates
 
 
-def extract_schedule_from_db(staff_names, dates):
+def extract_schedule_from_db(staff_names, dates, track_name=None):
     """
     Extract the schedule data for each staff member from the tracks table.
     The database contains schedule data as JSON where keys are pattern day names
@@ -108,12 +120,20 @@ def extract_schedule_from_db(staff_names, dates):
         
         for staff in staff_names:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT track_data FROM tracks 
-                WHERE staff_name = ? AND is_active = 1 
-                ORDER BY submission_date DESC 
-                LIMIT 1
-            """, (staff,))
+            if track_name:
+                cursor.execute("""
+                    SELECT track_data FROM tracks
+                    WHERE staff_name = ? AND track_name = ?
+                    ORDER BY submission_date DESC
+                    LIMIT 1
+                """, (staff, track_name))
+            else:
+                cursor.execute("""
+                    SELECT track_data FROM tracks 
+                    WHERE staff_name = ? AND is_active = 1 
+                    ORDER BY submission_date DESC 
+                    LIMIT 1
+                """, (staff,))
             
             result = cursor.fetchone()
             
@@ -155,7 +175,19 @@ def extract_schedule_from_db(staff_names, dates):
         conn.close()
 
 
-def generate_google_calendar(staff_name, schedule, start_date, end_date):
+def _fiscal_offset(fiscal_year_start, pattern_start, schedule_length):
+    """How far into the 42-day pattern a fiscal year's first day is.
+
+    With no anchor given, fall back to FY26's answer of 14 (Sun B 3) rather than
+    silently starting the year on Sun A 1 and shifting every shift by two weeks.
+    """
+    if not pattern_start:
+        return 14 % schedule_length
+    return (fiscal_year_start - pattern_start).days % schedule_length
+
+
+def generate_google_calendar(staff_name, schedule, start_date, end_date,
+                             fiscal_year_start=None, pattern_start=None):
     """
     Generate a Google Calendar CSV file for a staff member.
     
@@ -163,7 +195,11 @@ def generate_google_calendar(staff_name, schedule, start_date, end_date):
         staff_name: Name of the staff member
         schedule: List of (date, shift) tuples for the staff member (6-week pattern starting Sun A 1)
         start_date: Start date of the 6-week pattern (calculated Sun A 1)
-        end_date: End date for the repeated schedule (Sept 26, 2026)
+        end_date: Last day of the fiscal year to write events for
+        fiscal_year_start: First day of the fiscal year. Defaults to start_date, which
+            is what the caller passes for the cohort being exported.
+        pattern_start: The date that cohort counts as Sun A 1, used to work out where
+            in the 42-day pattern the fiscal year begins.
     
     Returns:
         tuple: (CSV file as string, filename)
@@ -178,15 +214,13 @@ def generate_google_calendar(staff_name, schedule, start_date, end_date):
         "All Day Event", "Description", "Location", "Private"
     ])
     
-    # Fiscal year starts Sept 28, 2025 (Sun B 3, which is day 15 of the pattern)
-    fiscal_year_start = datetime(2025, 9, 28)
-    
-    # Calculate offset: Sept 28 is Sun B 3 = day 15 (index 14) of the 42-day pattern
-    fiscal_offset = 14  # Sun B 3 is the 15th day (index 14) of the pattern
-    
-    # 6-week pattern length
+    fiscal_year_start = fiscal_year_start or start_date
+
+    # Where in the 42-day pattern the fiscal year's first day falls. FY26 begins on
+    # Sun B 3 — index 14 — which is where this used to be hardcoded.
     schedule_length = len(schedule)  # Should be 42 days
-    
+    fiscal_offset = _fiscal_offset(fiscal_year_start, pattern_start, schedule_length)
+
     current_date = fiscal_year_start
     
     while current_date <= end_date:
@@ -225,7 +259,8 @@ def generate_google_calendar(staff_name, schedule, start_date, end_date):
     return csv_content, filename
 
 
-def generate_ical_calendar(staff_name, schedule, start_date, end_date):
+def generate_ical_calendar(staff_name, schedule, start_date, end_date,
+                           fiscal_year_start=None, pattern_start=None):
     """
     Generate an iCal (.ics) file for a staff member.
     
@@ -233,7 +268,9 @@ def generate_ical_calendar(staff_name, schedule, start_date, end_date):
         staff_name: Name of the staff member
         schedule: List of (date, shift) tuples for the staff member (6-week pattern starting Sun A 1)
         start_date: Start date of the 6-week pattern (calculated Sun A 1)
-        end_date: End date for the repeated schedule (Sept 26, 2026)
+        end_date: Last day of the fiscal year to write events for
+        fiscal_year_start: First day of the fiscal year. Defaults to start_date.
+        pattern_start: The date that cohort counts as Sun A 1.
     
     Returns:
         tuple: (iCal file as string, filename)
@@ -243,15 +280,11 @@ def generate_ical_calendar(staff_name, schedule, start_date, end_date):
     cal.add('prodid', '-//Clinical Track Hub Calendar Converter//EN')
     cal.add('version', '2.0')
     
-    # Fiscal year starts Sept 28, 2025 (Sun B 3, which is day 15 of the pattern)
-    fiscal_year_start = datetime(2025, 9, 28)
-    
-    # Calculate offset: Sept 28 is Sun B 3 = day 15 (index 14) of the 42-day pattern
-    fiscal_offset = 14  # Sun B 3 is the 15th day (index 14) of the pattern
-    
-    # 6-week pattern length
+    fiscal_year_start = fiscal_year_start or start_date
+
     schedule_length = len(schedule)  # Should be 42 days
-    
+    fiscal_offset = _fiscal_offset(fiscal_year_start, pattern_start, schedule_length)
+
     current_date = fiscal_year_start
     
     while current_date <= end_date:
@@ -345,45 +378,51 @@ def get_pattern_day_name(day_index):
         return f"Day {day_index + 1}"
 
 
-def get_fiscal_year_info():
+def get_fiscal_year_info(track_name=None):
     """
-    Get information about the fiscal year and pattern mapping.
-    Sept 28, 2025 = Sun B 3 (day 15 of pattern)
-    Oct 26, 2025 = Sun A 1 (restart of pattern) 
-    
+    Get information about a fiscal year and its pattern mapping.
+
+    For FY26: Sept 28, 2025 = Sun B 3 (day 15 of pattern), Oct 26, 2025 = Sun A 1.
+    Other cohorts get their own span and anchor from their track config.
+
+    Args:
+        track_name (str, optional): the cohort to describe; defaults to the live one.
+
     Returns:
         dict: Information about the fiscal year and pattern
     """
-    # Calculate the true pattern start (Sun A 1)
-    fiscal_start = datetime(2025, 9, 28)  # Sun B 3
-    pattern_start = fiscal_start - timedelta(days=14)  # Sun A 1 (14 days earlier)
-    fiscal_year_end = datetime(2026, 9, 26)
-    
+    span = get_track_year_dates(track_name)
+    fiscal_start = span['start']
+    pattern_start = span['pattern_start']
+    offset = span['offset']
+
     return {
+        "track_name": span['track_name'],
         "pattern_start": pattern_start,
         "pattern_start_name": "Sun A 1",
         "fiscal_year_start": fiscal_start,
-        "fiscal_year_start_name": "Sun B 3",
-        "fiscal_year_end": fiscal_year_end,
-        "fiscal_offset": 14,  # Sept 28 is day 15 (index 14) of the pattern
-        "pattern_length": 42
+        "fiscal_year_start_name": get_pattern_day_name(offset),
+        "fiscal_year_end": span['end'],
+        "fiscal_offset": offset,
+        "pattern_length": PATTERN_LENGTH
     }
 
 
-def preview_schedule(staff_name, schedule, num_days=14):
+def preview_schedule(staff_name, schedule, num_days=14, track_name=None):
     """
     Generate a preview of the schedule for debugging purposes.
-    Shows the schedule starting from Sept 28, 2025 (Sun B 3).
+    Shows the schedule from the cohort's first day (Sept 28, 2025 for FY26).
     
     Args:
         staff_name: Name of the staff member
         schedule: List of (date, shift) tuples for the staff member
         num_days: Number of days to preview (default: 14)
+        track_name: The cohort being previewed; defaults to the live one.
     
     Returns:
         list: List of preview entries with date, pattern day, and shift
     """
-    fiscal_info = get_fiscal_year_info()
+    fiscal_info = get_fiscal_year_info(track_name)
     fiscal_year_start = fiscal_info["fiscal_year_start"]  # Sept 28, 2025
     fiscal_offset = fiscal_info["fiscal_offset"]  # 14 (for Sun B 3)
     schedule_length = len(schedule)
@@ -420,20 +459,23 @@ def check_database_exists():
     return os.path.exists(get_database_path())
 
 
-def get_all_staff_schedules():
+def get_all_staff_schedules(track_name=None):
     """
     Get schedules for all staff members in the database.
+
+    Args:
+        track_name (str, optional): the cohort to read; defaults to the live one.
     
     Returns:
         dict: Dictionary mapping staff names to their schedules
     """
     try:
-        staff_names = extract_staff_names_from_db()
+        staff_names = extract_staff_names_from_db(track_name)
         if not staff_names:
             return {}
         
-        pattern_start, dates = extract_dates_from_db()
-        schedule_data = extract_schedule_from_db(staff_names, dates)
+        pattern_start, dates = extract_dates_from_db(track_name)
+        schedule_data = extract_schedule_from_db(staff_names, dates, track_name)
         
         return schedule_data
     except Exception as e:
@@ -441,33 +483,40 @@ def get_all_staff_schedules():
         return {}
 
 
-def generate_calendar_for_staff(staff_name, calendar_format="google"):
+def generate_calendar_for_staff(staff_name, calendar_format="google", track_name=None):
     """
     Generate a calendar file for a specific staff member.
     
     Args:
         staff_name: Name of the staff member
         calendar_format: Either "google" for CSV or "ical" for ICS
+        track_name: The fiscal year to export; defaults to the live one.
     
     Returns:
         tuple: (file_content, filename) or (None, None) if error
     """
     try:
         # Get schedule data
-        schedule_data = get_all_staff_schedules()
+        schedule_data = get_all_staff_schedules(track_name)
         if staff_name not in schedule_data:
             return None, None
         
         schedule = schedule_data[staff_name]
         
-        # Set date range
-        start_date = datetime(2025, 9, 28)
-        end_date = datetime(2026, 9, 26)
+        # Set date range from the cohort's own fiscal year
+        span = get_track_year_dates(track_name)
+        start_date = span['start']
+        end_date = span['end']
+        pattern_start = span['pattern_start']
         
         if calendar_format.lower() == "google":
-            return generate_google_calendar(staff_name, schedule, start_date, end_date)
+            return generate_google_calendar(staff_name, schedule, start_date, end_date,
+                                            fiscal_year_start=start_date,
+                                            pattern_start=pattern_start)
         elif calendar_format.lower() == "ical":
-            return generate_ical_calendar(staff_name, schedule, start_date, end_date)
+            return generate_ical_calendar(staff_name, schedule, start_date, end_date,
+                                          fiscal_year_start=start_date,
+                                          pattern_start=pattern_start)
         else:
             return None, None
             

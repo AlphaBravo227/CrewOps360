@@ -16,6 +16,29 @@ import pytz
 # Eastern timezone for user-facing timestamps
 _eastern_tz = pytz.timezone('America/New_York')
 
+# Track cohort lifecycle. is_active still marks the one cohort that is being worked
+# and written to; status says whether a cohort is visible in the Clinical Track Hub at
+# all. A fiscal-year cutover is an overlap, not a switch - FY27 is promoted months
+# before FY26's last shift is worked - so the outgoing cohort has to stay readable
+# after it stops being active.
+TRACK_YEAR_DRAFT = 'draft'        # being built or out to bid; admin-only
+TRACK_YEAR_OPEN = 'open'          # the live cohort: visible and accepting changes
+TRACK_YEAR_READONLY = 'readonly'  # visible in the hub, frozen
+TRACK_YEAR_ARCHIVED = 'archived'  # out of the hub's year picker
+
+TRACK_YEAR_STATUSES = (TRACK_YEAR_DRAFT, TRACK_YEAR_OPEN,
+                       TRACK_YEAR_READONLY, TRACK_YEAR_ARCHIVED)
+
+# Statuses the Clinical Track Hub offers in its fiscal-year picker.
+HUB_VISIBLE_TRACK_STATUSES = (TRACK_YEAR_OPEN, TRACK_YEAR_READONLY)
+
+# FY26 was the only cohort before track_configs carried its own dates, and these are
+# the values the fiscal-year display and the calendar export carried hardcoded. They
+# seed FY26's row and stand in for any cohort whose dates an admin has not set yet.
+FY26_TRACK_YEAR_START = '2025-09-28'
+FY26_TRACK_YEAR_END = '2026-09-26'
+FY26_TRACK_PATTERN_START = '2025-09-14'   # the date that counts as "Sun A 1"
+
 # Dictionary to store thread-local connections
 thread_local_connections = {}
 
@@ -271,6 +294,10 @@ def initialize_database():
             needs_swap_surplus_buffer INTEGER DEFAULT 0,
             needs_swap_min_day INTEGER DEFAULT 7,
             needs_swap_min_night INTEGER DEFAULT 5,
+            status TEXT DEFAULT 'draft',
+            start_date TEXT,
+            end_date TEXT,
+            pattern_start_date TEXT,
             created_date TEXT NOT NULL,
             modified_date TEXT NOT NULL
         )
@@ -362,6 +389,41 @@ def initialize_database():
         if 'needs_swap_min_night' not in tc_columns:
             cursor.execute('ALTER TABLE track_configs ADD COLUMN needs_swap_min_night INTEGER DEFAULT 5')
 
+        # Lifecycle and fiscal-year span (migration). A cohort's status decides whether
+        # the Clinical Track Hub will show it; the dates say what calendar span its
+        # 42-day pattern covers, which the fiscal-year display and calendar export used
+        # to carry hardcoded for FY26.
+        if 'status' not in tc_columns:
+            cursor.execute(
+                f"ALTER TABLE track_configs ADD COLUMN status TEXT DEFAULT '{TRACK_YEAR_DRAFT}'")
+            # Existing rows take their status from the flags they already had: the
+            # active cohort is the live one, a cohort out to bid is still a draft, and
+            # anything else is a retired cohort.
+            cursor.execute(
+                """UPDATE track_configs SET status = CASE
+                       WHEN is_active = 1 THEN ?
+                       WHEN is_bidding_open = 1 THEN ?
+                       ELSE ? END""",
+                (TRACK_YEAR_OPEN, TRACK_YEAR_DRAFT, TRACK_YEAR_ARCHIVED))
+            # The most recently created retired cohort is the outgoing year — on an
+            # install that has already been through a cutover it is exactly the year
+            # this feature exists to keep visible, and archiving it here would hide it
+            # on the upgrade meant to bring it back. Older cohorts stay archived rather
+            # than filling the hub's picker with finished years.
+            cursor.execute(
+                """UPDATE track_configs SET status = ?
+                   WHERE track_name = (
+                       SELECT track_name FROM track_configs
+                       WHERE is_active = 0 AND is_bidding_open = 0
+                       ORDER BY created_date DESC, id DESC LIMIT 1)""",
+                (TRACK_YEAR_READONLY,))
+        if 'start_date' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN start_date TEXT')
+        if 'end_date' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN end_date TEXT')
+        if 'pattern_start_date' not in tc_columns:
+            cursor.execute('ALTER TABLE track_configs ADD COLUMN pattern_start_date TEXT')
+
         # Check if we need to add the new columns to existing tracks table
         cursor.execute("PRAGMA table_info(tracks)")
         columns = [column[1] for column in cursor.fetchall()]
@@ -391,9 +453,12 @@ def initialize_database():
                     min_day_staff, min_night_staff,
                     day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
                     night_klwm, night_kbed, night_kpym,
+                    status, start_date, end_date, pattern_start_date,
                     created_date, modified_date)
-                VALUES ('FY26', 1, 0, 11, 11, 5, 5, 9, 4, 2, 1, 7, 4, 1, 2, 2, 2, 2, 1, 2, 2, ?, ?)
-            ''', (now, now))
+                VALUES ('FY26', 1, 0, 11, 11, 5, 5, 9, 4, 2, 1, 7, 4, 1, 2, 2, 2, 2, 1, 2, 2,
+                        ?, ?, ?, ?, ?, ?)
+            ''', (TRACK_YEAR_OPEN, FY26_TRACK_YEAR_START, FY26_TRACK_YEAR_END,
+                  FY26_TRACK_PATTERN_START, now, now))
         else:
             # Fill in any NULL columns on existing FY26 without overwriting user edits
             cursor.execute('''
@@ -418,6 +483,33 @@ def initialize_database():
                     night_kpym = COALESCE(night_kpym, 2)
                 WHERE track_name = 'FY26'
             ''')
+
+        # FY26's span and pattern anchor were hardcoded in the fiscal-year display and
+        # the calendar export before cohorts carried their own dates. Record them so
+        # they are visible and editable rather than implied, without overwriting dates
+        # an admin has already set.
+        cursor.execute('''
+            UPDATE track_configs SET
+                start_date = COALESCE(NULLIF(start_date, ''), ?),
+                end_date = COALESCE(NULLIF(end_date, ''), ?),
+                pattern_start_date = COALESCE(NULLIF(pattern_start_date, ''), ?)
+            WHERE track_name = 'FY26'
+        ''', (FY26_TRACK_YEAR_START, FY26_TRACK_YEAR_END, FY26_TRACK_PATTERN_START))
+
+        # A cohort with no status at all (created before the column existed, or by an
+        # older code path) falls back to what its flags say rather than to NULL, which
+        # would hide the live cohort from the hub's year picker.
+        cursor.execute(
+            """UPDATE track_configs SET status = CASE
+                   WHEN is_active = 1 THEN ?
+                   WHEN is_bidding_open = 1 THEN ?
+                   ELSE ? END
+               WHERE status IS NULL OR status = ''""",
+            (TRACK_YEAR_OPEN, TRACK_YEAR_DRAFT, TRACK_YEAR_ARCHIVED))
+
+        # Retire anything already past its last day, so an upgrade doesn't drop a pile
+        # of finished fiscal years into the hub's picker.
+        _auto_retire_expired_track_years(cursor)
 
         # Backfill track_name on any existing rows that are still NULL
         cursor.execute("UPDATE tracks SET track_name = 'FY26' WHERE track_name IS NULL")
@@ -898,10 +990,15 @@ def _roles_from_staff_database(staff_name):
         return ('nurse', 'nurse')
 
 
-def get_all_active_tracks():
+def get_all_active_tracks(track_name=None):
     """
     Get all active tracks from the database for staffing analysis
     UPDATED: Enhanced to include role metadata for better analytics
+
+    Args:
+        track_name (str, optional): read one named cohort instead of whichever cohort
+            is live. Promotion flips is_active off on the outgoing cohort's rows, so a
+            cohort still being worked after a cutover is only reachable by name.
 
     Returns:
         tuple: (success, tracks_data_with_metadata or error_message)
@@ -915,13 +1012,22 @@ def get_all_active_tracks():
         cursor = conn.cursor()
         
         # Query for all active tracks with metadata
-        cursor.execute("""
-            SELECT staff_name, track_data, submission_date, version,
-                   original_role, effective_role, track_source, has_preassignments, preassignment_count
-            FROM tracks 
-            WHERE is_active = 1 
-            ORDER BY staff_name
-        """)
+        if track_name:
+            cursor.execute("""
+                SELECT staff_name, track_data, submission_date, version,
+                       original_role, effective_role, track_source, has_preassignments, preassignment_count
+                FROM tracks
+                WHERE track_name = ?
+                ORDER BY staff_name
+            """, (track_name,))
+        else:
+            cursor.execute("""
+                SELECT staff_name, track_data, submission_date, version,
+                       original_role, effective_role, track_source, has_preassignments, preassignment_count
+                FROM tracks 
+                WHERE is_active = 1 
+                ORDER BY staff_name
+            """)
         results = cursor.fetchall()
         
         if results:
@@ -2013,6 +2119,146 @@ def get_all_track_configs():
         return []
 
 
+def _auto_retire_expired_track_years(cursor, now=None):
+    """Move a cohort past its end date out of the hub's year picker.
+
+    Once a cohort's last day has been worked there is nothing left to bridge to, and
+    clearing it out is exactly the chore that gets forgotten in the weeks after a
+    cutover. An expired cohort that is still open but no longer active goes read-only
+    first (it should not have stayed writable), then read-only cohorts archive.
+
+    The active cohort is never touched: if its end date has passed and nothing has
+    been promoted yet, staff still need somewhere to look.
+
+    Requires an open cursor; the caller commits.
+    """
+    now = now or datetime.now(_eastern_tz)
+    today = now.strftime('%Y-%m-%d')
+    stamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute("""
+        UPDATE track_configs SET status = ?, modified_date = ?
+        WHERE status = ? AND is_active = 0
+              AND end_date IS NOT NULL AND end_date != '' AND end_date < ?
+    """, (TRACK_YEAR_READONLY, stamp, TRACK_YEAR_OPEN, today))
+    demoted = cursor.rowcount or 0
+    cursor.execute("""
+        UPDATE track_configs SET status = ?, modified_date = ?
+        WHERE status = ? AND is_active = 0
+              AND end_date IS NOT NULL AND end_date != '' AND end_date < ?
+    """, (TRACK_YEAR_ARCHIVED, stamp, TRACK_YEAR_READONLY, today))
+    return demoted + (cursor.rowcount or 0)
+
+
+def get_hub_visible_track_configs():
+    """Track cohorts the Clinical Track Hub may show, active cohort first.
+
+    Expired cohorts are retired first, so the list reflects today rather than
+    whenever an admin last touched the settings.
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        _auto_retire_expired_track_years(cursor)
+        conn.commit()
+        placeholders = ','.join('?' for _ in HUB_VISIBLE_TRACK_STATUSES)
+        cursor.execute(
+            f"""SELECT * FROM track_configs WHERE COALESCE(status, '') IN ({placeholders})
+                ORDER BY is_active DESC, COALESCE(start_date, '') DESC, created_date DESC""",
+            HUB_VISIBLE_TRACK_STATUSES)
+        rows = cursor.fetchall()
+        cols = [d[0] for d in cursor.description]
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception as e:
+        print(f"Error getting hub-visible track configs: {e}")
+        return []
+
+
+def set_track_config_status(track_name, status):
+    """Set a track cohort's lifecycle status."""
+    if status not in TRACK_YEAR_STATUSES:
+        return False, f"Unknown status '{status}'"
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT is_active FROM track_configs WHERE track_name = ?", (track_name,))
+        row = cursor.fetchone()
+        if not row:
+            return False, f"Track cohort '{track_name}' not found"
+        # The live cohort is where every track change is written, so it cannot be
+        # frozen or hidden while it still holds that job.
+        if row[0] and status != TRACK_YEAR_OPEN:
+            return False, (f"'{track_name}' is the active cohort — promote another "
+                           f"cohort first, then set this one to {status}")
+        now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute(
+            "UPDATE track_configs SET status = ?, modified_date = ? WHERE track_name = ?",
+            (status, now, track_name))
+        conn.commit()
+        return True, f"'{track_name}' is now {status}"
+    except Exception as e:
+        return False, f"Error updating track cohort status: {e}"
+
+
+def is_track_year_writable(track_name):
+    """Whether track changes may be made against this cohort.
+
+    Only the live cohort accepts them: modifications, swaps and the approval queue all
+    read and write `tracks` rows with is_active = 1. A cohort that is merely visible in
+    the hub is there to be read.
+    """
+    if not track_name:
+        return False
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT is_active, status FROM track_configs WHERE track_name = ?",
+                       (track_name,))
+        row = cursor.fetchone()
+        if not row:
+            # No config row: the pre-track_configs state, where there was only ever
+            # one cohort and everything was writable.
+            return True
+        return bool(row[0]) and (row[1] or TRACK_YEAR_DRAFT) == TRACK_YEAR_OPEN
+    except Exception as e:
+        print(f"Error checking whether '{track_name}' is writable: {e}")
+        return False
+
+
+def get_track_year_span(track_name=None):
+    """The calendar span a cohort's 42-day pattern covers.
+
+    Returns:
+        dict: {'track_name', 'start_date', 'end_date', 'pattern_start_date'} as
+            date strings. A cohort with no dates of its own falls back to FY26's,
+            which is what the fiscal-year display and calendar export assumed before
+            cohorts carried dates at all.
+    """
+    span = {
+        'track_name': track_name,
+        'start_date': FY26_TRACK_YEAR_START,
+        'end_date': FY26_TRACK_YEAR_END,
+        'pattern_start_date': FY26_TRACK_PATTERN_START,
+    }
+    if not track_name:
+        active = get_active_track_config()
+        if not active:
+            return span
+        cfg = active
+        span['track_name'] = cfg.get('track_name')
+    else:
+        cfg = get_track_config_by_name(track_name)
+        if not cfg:
+            return span
+    for key in ('start_date', 'end_date', 'pattern_start_date'):
+        value = (cfg.get(key) or '').strip()
+        if value:
+            span[key] = value
+    return span
+
+
 def get_cohort_track_coverage(track_name):
     """How much track data a cohort actually holds, for the training year linked to it.
 
@@ -2061,8 +2307,18 @@ def create_track_config(track_name, max_day_nurses=11, max_day_medics=11,
                         day_leave_slots=2, night_leave_slots=1,
                         min_day_staff=7, min_night_staff=4,
                         day_kmht=1, day_klwm=2, day_kbed=2, day_1b9=2, day_kpym=2,
-                        night_klwm=1, night_kbed=2, night_kpym=2):
-    """Create a new track config (not active, bidding closed by default)."""
+                        night_klwm=1, night_kbed=2, night_kpym=2,
+                        start_date=None, end_date=None, pattern_start_date=None,
+                        status=None):
+    """Create a new track config.
+
+    Starts inactive, with bidding closed and status 'draft': a cohort being built or
+    out to bid has no business showing up in the Clinical Track Hub's year picker, and
+    it gets there on its own when it is promoted.
+    """
+    status = status or TRACK_YEAR_DRAFT
+    if status not in TRACK_YEAR_STATUSES:
+        return False, f"Unknown status '{status}'"
     try:
         initialize_database()
         conn = get_db_connection()
@@ -2076,14 +2332,17 @@ def create_track_config(track_name, max_day_nurses=11, max_day_medics=11,
              min_day_staff, min_night_staff,
              day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
              night_klwm, night_kbed, night_kpym,
+             status, start_date, end_date, pattern_start_date,
              created_date, modified_date)
-            VALUES (?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?)
         ''', (track_name, max_day_nurses, max_day_medics,
               max_night_nurses, max_night_medics,
               day_vehicles, night_vehicles, day_leave_slots, night_leave_slots,
               min_day_staff, min_night_staff,
               day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
               night_klwm, night_kbed, night_kpym,
+              status, start_date, end_date, pattern_start_date,
               now, now))
         conn.commit()
         return True, f"Track config '{track_name}' created successfully"
@@ -2106,7 +2365,8 @@ def update_track_config(track_name, **kwargs):
                     'day_kmht', 'day_klwm', 'day_kbed', 'day_1b9', 'day_kpym',
                     'night_klwm', 'night_kbed', 'night_kpym', 'use_weekday_capacity',
                     'auto_bid_progression', 'needs_swap_open',
-                    'needs_swap_min_day', 'needs_swap_min_night'}
+                    'needs_swap_min_day', 'needs_swap_min_night',
+                    'start_date', 'end_date', 'pattern_start_date'}
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return False, "No valid fields to update"
@@ -2272,6 +2532,11 @@ def promote_bid_to_active(bid_track_name):
     2. Set is_active=0 on all tracks belonging to the old active track_name
     3. Set is_active=1, is_bidding_open=0 on the bid track config
     4. Set is_active=1 on all tracks belonging to the bid track_name
+
+    The outgoing cohort keeps months of shifts still to be worked, so it goes
+    read-only rather than out of sight: it stays in the Clinical Track Hub's
+    fiscal-year picker, where it can be viewed and exported, until its end date
+    passes and it archives itself.
     """
     try:
         initialize_database()
@@ -2285,16 +2550,21 @@ def promote_bid_to_active(bid_track_name):
         if active_row:
             old_active = active_row[0]
             # Deactivate old active config
-            cursor.execute("UPDATE track_configs SET is_active = 0, modified_date = ? WHERE track_name = ?",
-                           (now, old_active))
+            cursor.execute(
+                """UPDATE track_configs SET is_active = 0, status = ?, modified_date = ?
+                   WHERE track_name = ?""",
+                (TRACK_YEAR_READONLY, now, old_active))
             # Deactivate all tracks in the old active group
             cursor.execute("UPDATE tracks SET is_active = 0 WHERE track_name = ?", (old_active,))
 
         # Activate the bid track config
-        cursor.execute("""UPDATE track_configs SET is_active = 1, is_bidding_open = 0, modified_date = ?
-                          WHERE track_name = ?""", (now, bid_track_name))
+        cursor.execute("""UPDATE track_configs SET is_active = 1, is_bidding_open = 0,
+                                 status = ?, modified_date = ?
+                          WHERE track_name = ?""", (TRACK_YEAR_OPEN, now, bid_track_name))
         # Activate all tracks in the bid group
         cursor.execute("UPDATE tracks SET is_active = 1 WHERE track_name = ?", (bid_track_name,))
+
+        _auto_retire_expired_track_years(cursor)
 
         conn.commit()
         return True, f"'{bid_track_name}' is now the active track"

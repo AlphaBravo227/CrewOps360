@@ -29,6 +29,12 @@ from modules.db_utils import (
     get_weekday_capacity_overrides,
     set_weekday_capacity_override,
     promote_bid_to_active,
+    set_track_config_status,
+    TRACK_YEAR_ARCHIVED,
+    TRACK_YEAR_DRAFT,
+    TRACK_YEAR_OPEN,
+    TRACK_YEAR_READONLY,
+    TRACK_YEAR_STATUSES,
     save_bid_track_to_db,
     get_bid_track_from_db,
     save_bid_draft,
@@ -57,6 +63,28 @@ from modules.shift_definitions import day_shifts, night_shifts
 # Shared data loading (staff roster, requirements, tracks and preassignments —
 # all from the database)
 # ──────────────────────────────────────────────
+
+_HUB_VISIBILITY_LABELS = {
+    TRACK_YEAR_DRAFT: "hidden (draft / out to bid)",
+    TRACK_YEAR_OPEN: "shown, accepting changes",
+    TRACK_YEAR_READONLY: "shown, read-only",
+    TRACK_YEAR_ARCHIVED: "hidden (archived)",
+}
+
+
+def _is_iso_date(value):
+    """Whether a string is a YYYY-MM-DD date."""
+    try:
+        datetime.strptime(str(value).strip(), '%Y-%m-%d')
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _hub_visibility_label(status):
+    """What a cohort's lifecycle status means in the Clinical Track Hub's year picker."""
+    return _HUB_VISIBILITY_LABELS.get(status, status or 'unset')
+
 
 @st.cache_data(ttl=15, show_spinner=False)
 def _load_bidding_data_files(track_name=None):
@@ -1880,6 +1908,9 @@ def display_bidding_admin_interface():
                 stats_rows.append({
                     'Track': tn,
                     'Status': status,
+                    'Hub': _hub_visibility_label(cfg.get('status')),
+                    'Fiscal Year': (f"{cfg.get('start_date') or '?'} → "
+                                    f"{cfg.get('end_date') or '?'}"),
                     'Bids Submitted': bid_counts.get(tn, 0),
                     'Staff w/ Access Enabled': access_counts.get(tn, 0),
                     'Max Day Nurses': cfg['max_day_nurses'],
@@ -1916,11 +1947,33 @@ def display_bidding_admin_interface():
             dm = st.number_input("Max Day Medics", 1, 50, 11, key="new_dm")
             nm = st.number_input("Max Night Medics", 1, 50, 5, key="new_nm")
 
+        st.markdown("**Fiscal Year Span** *(optional now, needed before the cohort is "
+                    "shown in the Clinical Track Hub)*")
+        fy_new1, fy_new2, fy_new3 = st.columns(3)
+        with fy_new1:
+            new_start = st.text_input("First day (YYYY-MM-DD)", key="new_fy_start")
+        with fy_new2:
+            new_end = st.text_input("Last day (YYYY-MM-DD)", key="new_fy_end")
+        with fy_new3:
+            new_pattern = st.text_input("Pattern 'Sun A 1' (YYYY-MM-DD)",
+                                        key="new_fy_pattern")
+
         if st.button("Create Bid Track", key="create_bid_btn", use_container_width=True):
+            bad_dates = [label for label, value in
+                         (("First day", new_start), ("Last day", new_end),
+                          ("Pattern 'Sun A 1'", new_pattern))
+                         if value.strip() and not _is_iso_date(value)]
             if not new_name.strip():
                 st.error("Please enter a track name.")
+            elif bad_dates:
+                st.error("Enter these as YYYY-MM-DD, or leave them blank: "
+                         + ", ".join(bad_dates))
             else:
-                ok, msg = create_track_config(new_name.strip(), dn, dm, nn, nm)
+                ok, msg = create_track_config(
+                    new_name.strip(), dn, dm, nn, nm,
+                    start_date=new_start.strip() or None,
+                    end_date=new_end.strip() or None,
+                    pattern_start_date=new_pattern.strip() or None)
                 if ok:
                     st.success(msg)
                     st.rerun()
@@ -1939,7 +1992,9 @@ def display_bidding_admin_interface():
             just_saved = st.session_state.get(f'config_saved_{tn}', False)
             with st.expander(f"{'🟢' if cfg['is_active'] else '🔵' if cfg['is_bidding_open'] else '⚪'} {tn}", expanded=just_saved):
                 status_label = 'Active' if cfg['is_active'] else ('Bidding Open' if cfg['is_bidding_open'] else 'Inactive')
-                st.markdown(f"**Status:** {status_label}")
+                lifecycle = cfg.get('status') or TRACK_YEAR_DRAFT
+                st.markdown(f"**Status:** {status_label}  ·  **Clinical Track Hub:** "
+                            f"{_hub_visibility_label(lifecycle)}")
 
                 if not cfg['is_active']:
                     new_bid_state = st.checkbox(
@@ -1948,6 +2003,60 @@ def display_bidding_admin_interface():
                     if new_bid_state != bool(cfg['is_bidding_open']):
                         toggle_bidding(tn, new_bid_state)
                         st.rerun()
+
+                # ── Fiscal year span ──
+                # What calendar span this cohort's 42-day pattern is projected over,
+                # and which date its pattern counts as "Sun A 1". The Clinical Track
+                # Hub reads these to show a fiscal year other than the live one; the
+                # end date is also what retires the cohort from the hub's year picker
+                # once it has passed.
+                st.markdown("**Fiscal Year Span** *(used by the Clinical Track Hub, "
+                            "the fiscal-year display and the calendar export)*")
+                fy1, fy2, fy3 = st.columns(3)
+                with fy1:
+                    u_start = st.text_input(
+                        "First day (YYYY-MM-DD)", value=cfg.get('start_date') or '',
+                        key=f"u_fy_start_{tn}")
+                with fy2:
+                    u_end = st.text_input(
+                        "Last day (YYYY-MM-DD)", value=cfg.get('end_date') or '',
+                        key=f"u_fy_end_{tn}")
+                with fy3:
+                    u_pattern = st.text_input(
+                        "Pattern 'Sun A 1' (YYYY-MM-DD)",
+                        value=cfg.get('pattern_start_date') or '',
+                        key=f"u_fy_pattern_{tn}")
+                st.caption("Leave blank to fall back to FY26's dates. The last day is "
+                           "also when this cohort drops out of the Clinical Track Hub's "
+                           "fiscal-year picker on its own.")
+
+                # ── Hub visibility ──
+                if not cfg['is_active']:
+                    lifecycle_options = [TRACK_YEAR_DRAFT, TRACK_YEAR_READONLY,
+                                         TRACK_YEAR_ARCHIVED]
+                    current_lifecycle = cfg.get('status') or TRACK_YEAR_DRAFT
+                    if current_lifecycle not in lifecycle_options:
+                        lifecycle_options.insert(0, current_lifecycle)
+                    new_lifecycle = st.selectbox(
+                        "Clinical Track Hub visibility",
+                        options=lifecycle_options,
+                        index=lifecycle_options.index(current_lifecycle),
+                        format_func=_hub_visibility_label,
+                        key=f"u_lifecycle_{tn}",
+                        help="A cohort that has stopped being active keeps months of "
+                             "shifts still to be worked. Read-only keeps it in the "
+                             "hub's fiscal-year picker so it can be viewed and "
+                             "exported; archived takes it out.",
+                    )
+                    if new_lifecycle != current_lifecycle:
+                        ok, msg = set_track_config_status(tn, new_lifecycle)
+                        if ok:
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                else:
+                    st.caption("The active cohort is always shown in the Clinical Track "
+                               "Hub and is the only one that accepts track changes.")
 
                 # Editable fields for ALL configs (active and non-active)
                 st.markdown("**Bid Caps**")
@@ -2024,17 +2133,29 @@ def display_bidding_admin_interface():
                     st.caption("KMHT and 1B9 have no night shifts")
 
                 if st.button("Save All Settings", key=f"save_cap_{tn}", use_container_width=True):
-                    ok, msg = update_track_config(tn,
-                                        max_day_nurses=u_dn, max_day_medics=u_dm,
-                                        max_night_nurses=u_nn, max_night_medics=u_nm,
-                                        day_kmht=u_day_kmht, day_klwm=u_day_klwm,
-                                        day_kbed=u_day_kbed, day_1b9=u_day_1b9, day_kpym=u_day_kpym,
-                                        night_klwm=u_night_klwm, night_kbed=u_night_kbed,
-                                        night_kpym=u_night_kpym)
+                    bad_dates = [label for label, value in
+                                 (("First day", u_start), ("Last day", u_end),
+                                  ("Pattern 'Sun A 1'", u_pattern))
+                                 if value.strip() and not _is_iso_date(value)]
+                    if bad_dates:
+                        st.error("Enter these as YYYY-MM-DD, or leave them blank: "
+                                 + ", ".join(bad_dates))
+                        ok, msg = False, "dates not saved"
+                    else:
+                        ok, msg = update_track_config(tn,
+                                            max_day_nurses=u_dn, max_day_medics=u_dm,
+                                            max_night_nurses=u_nn, max_night_medics=u_nm,
+                                            day_kmht=u_day_kmht, day_klwm=u_day_klwm,
+                                            day_kbed=u_day_kbed, day_1b9=u_day_1b9,
+                                            day_kpym=u_day_kpym,
+                                            night_klwm=u_night_klwm, night_kbed=u_night_kbed,
+                                            night_kpym=u_night_kpym,
+                                            start_date=u_start.strip(), end_date=u_end.strip(),
+                                            pattern_start_date=u_pattern.strip())
                     if ok:
                         st.session_state[f'config_saved_{tn}'] = True
                         st.rerun()
-                    else:
+                    elif not bad_dates:
                         st.error(f"Save failed: {msg}")
 
                 if st.session_state.pop(f'config_saved_{tn}', False):
@@ -2078,7 +2199,12 @@ def display_bidding_admin_interface():
                         st.session_state[f'confirm_promote_{tn}'] = True
 
                     if st.session_state.get(f'confirm_promote_{tn}', False):
-                        st.warning(f"This will deactivate the current active track and make **{tn}** active. Are you sure?")
+                        st.warning(
+                            f"This will deactivate the current active track and make "
+                            f"**{tn}** active. The outgoing track stays in the Clinical "
+                            f"Track Hub's fiscal-year picker as read-only until its "
+                            f"last day passes, so the year still being worked can be "
+                            f"viewed and exported. Are you sure?")
                         c1, c2 = st.columns(2)
                         with c1:
                             if st.button("Yes, Promote", key=f"confirm_yes_{tn}"):

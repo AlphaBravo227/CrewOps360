@@ -18,19 +18,25 @@ import streamlit as st
 import pandas as pd
 from .db_utils import get_all_active_tracks
 
-def display_track_viewer():
+def display_track_viewer(track_name=None):
     """
     Enhanced track viewer with fullscreen option for better viewing of active tracks
+
+    Args:
+        track_name (str, optional): the track cohort — the fiscal year — to show.
+            Defaults to whichever cohort is live. After a cutover the outgoing year's
+            rows are no longer is_active, so naming the cohort is what keeps a year
+            that is still being worked visible.
     """
     # Check if we should show fullscreen mode
     if st.session_state.get('track_viewer_fullscreen', False):
-        display_fullscreen_track_viewer()
+        display_fullscreen_track_viewer(track_name)
         return
     
     # Original compact view in right column
-    display_compact_track_viewer()
+    display_compact_track_viewer(track_name)
 
-def display_compact_track_viewer():
+def display_compact_track_viewer(track_name=None):
     """
     Compact track viewer for the split-screen layout
     ENHANCED: Now includes comprehensive staff filtering with multi-select capability
@@ -41,7 +47,7 @@ def display_compact_track_viewer():
     
     # Get all tracks for filter options
     try:
-        success, all_tracks = get_all_active_tracks()
+        success, all_tracks = get_all_active_tracks(track_name)
         if not success or not all_tracks:
             st.warning("No track data available")
             return
@@ -122,7 +128,8 @@ def display_compact_track_viewer():
             display_compact_staff_selection_interface(available_staff, all_tracks)
     
     # Filter summary
-    filtered_staff_count = get_filtered_staff_count(all_tracks, new_role_value, selected_staff_filter)
+    filtered_staff_count = get_filtered_staff_count(all_tracks, new_role_value,
+                                                    selected_staff_filter, track_name)
     if filtered_staff_count > 0:
         filter_summary = f"Showing {filtered_staff_count} staff member(s)"
         if new_role_value != 'All':
@@ -146,9 +153,9 @@ def display_compact_track_viewer():
         st.rerun()
     
     # Display compact track table with enhanced filtering
-    display_role_tracks_compact(new_role_value, selected_staff_filter)
+    display_role_tracks_compact(new_role_value, selected_staff_filter, track_name)
 
-def display_fullscreen_track_viewer():
+def display_fullscreen_track_viewer(track_name=None):
     """
     Fullscreen track viewer with enhanced layout and comprehensive filtering
     ENHANCED: Includes full multi-select staff interface in fullscreen mode
@@ -168,7 +175,7 @@ def display_fullscreen_track_viewer():
     
     # Get all tracks for filter options
     try:
-        success, all_tracks = get_all_active_tracks()
+        success, all_tracks = get_all_active_tracks(track_name)
         if not success or not all_tracks:
             st.warning("No track data available")
             return
@@ -223,10 +230,10 @@ def display_fullscreen_track_viewer():
             display_fullscreen_staff_selection_interface(available_staff, all_tracks, new_role_value)
     
     # Display current filter status
-    display_filter_status(new_role_value, staff_filter, all_tracks)
+    display_filter_status(new_role_value, staff_filter, all_tracks, track_name)
     
     # Display fullscreen track table
-    display_role_tracks_fullscreen(new_role_value, staff_filter)
+    display_role_tracks_fullscreen(new_role_value, staff_filter, track_name)
 
 def display_compact_staff_selection_interface(available_staff, all_tracks):
     """
@@ -426,19 +433,19 @@ def get_role_statistics(all_tracks):
     
     return role_counts
 
-def get_filtered_staff_count(all_tracks, role_filter, staff_filter):
+def get_filtered_staff_count(all_tracks, role_filter, staff_filter, track_name=None):
     """
     Get count of staff members matching current filters
     """
-    tracks = get_tracks_from_database_by_filters(role_filter, staff_filter)
+    tracks = get_tracks_from_database_by_filters(role_filter, staff_filter, track_name)
     return len(tracks)
 
-def display_filter_status(selected_role, staff_filter, all_tracks):
+def display_filter_status(selected_role, staff_filter, all_tracks, track_name=None):
     """
     Display current filter status with statistics
     """
     # Get filtered count
-    filtered_count = get_filtered_staff_count(all_tracks, selected_role, staff_filter)
+    filtered_count = get_filtered_staff_count(all_tracks, selected_role, staff_filter, track_name)
     total_count = len(all_tracks)
     
     # Create status message
@@ -474,13 +481,14 @@ def get_ordered_day_columns():
     ]
     return day_order
 
-def display_role_tracks_compact(selected_role, selected_staff_filter='All Staff'):
+def display_role_tracks_compact(selected_role, selected_staff_filter='All Staff', track_name=None):
     """
     Display tracks in compact mode with enhanced filtering
     """
     try:
         # Get tracks from database with enhanced filtering
-        tracks = get_tracks_from_database_by_filters(selected_role, selected_staff_filter)
+        tracks = get_tracks_from_database_by_filters(selected_role, selected_staff_filter,
+                                                     track_name)
         
         if not tracks:
             st.info("No tracks match the selected filters.")
@@ -535,13 +543,14 @@ def display_role_tracks_compact(selected_role, selected_staff_filter='All Staff'
     except Exception as e:
         st.error(f"Error displaying tracks: {str(e)}")
 
-def display_role_tracks_fullscreen(selected_role, selected_staff_filter='All Staff'):
+def display_role_tracks_fullscreen(selected_role, selected_staff_filter='All Staff', track_name=None):
     """
     Display tracks in fullscreen mode with enhanced filtering
     """
     try:
         # Get tracks from database with enhanced filtering
-        tracks = get_tracks_from_database_by_filters(selected_role, selected_staff_filter)
+        tracks = get_tracks_from_database_by_filters(selected_role, selected_staff_filter,
+                                                     track_name)
         
         if not tracks:
             st.info("No tracks match the selected filters.")
@@ -623,19 +632,21 @@ def calculate_shift_statistics(tracks):
     
     return shift_counts
 
-def get_tracks_from_database_by_filters(selected_role, selected_staff_filter='All Staff'):
+def get_tracks_from_database_by_filters(selected_role, selected_staff_filter='All Staff',
+                                        track_name=None):
     """
     Get tracks from database filtered by role and comprehensive staff filtering
     
     Args:
         selected_role (str): Role to filter by ('All', 'nurse', 'medic')
         selected_staff_filter (str): Staff filter type ('All Staff', 'Selected Staff', or individual name)
+        track_name (str, optional): the cohort to read; defaults to the live one.
         
     Returns:
         list: List of track data with comprehensive filtering applied
     """
     try:
-        success, tracks_data = get_all_active_tracks()
+        success, tracks_data = get_all_active_tracks(track_name)
         if not success:
             return []
         
@@ -693,7 +704,8 @@ def get_staff_options(all_tracks, role_filter):
 
 # Additional utility functions for enhanced functionality
 
-def export_filtered_tracks_to_excel(selected_role='All', selected_staff_filter='All Staff'):
+def export_filtered_tracks_to_excel(selected_role='All', selected_staff_filter='All Staff',
+                                    track_name=None):
     """
     Export filtered tracks to Excel format
     Enhanced version with comprehensive filtering support
@@ -705,7 +717,8 @@ def export_filtered_tracks_to_excel(selected_role='All', selected_staff_filter='
         import os
         
         # Get filtered tracks
-        tracks = get_tracks_from_database_by_filters(selected_role, selected_staff_filter)
+        tracks = get_tracks_from_database_by_filters(selected_role, selected_staff_filter,
+                                                     track_name)
         
         if not tracks:
             return None, "No tracks match the selected filters for export."

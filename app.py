@@ -33,9 +33,9 @@ try:
     from modules.fiscal_year import add_fiscal_year_display_to_app, add_fiscal_year_export_to_admin
 except ImportError:
     # Create stub functions if fiscal year module doesn't exist
-    def add_fiscal_year_display_to_app():
+    def add_fiscal_year_display_to_app(track_name=None):
         pass
-    def add_fiscal_year_export_to_admin():
+    def add_fiscal_year_export_to_admin(admin_authenticated=False, track_name=None):
         pass
 
 from modules.db_utils import initialize_database
@@ -61,6 +61,12 @@ from modules.enhanced_landing import inject_custom_css
 from modules.track_swap import display_track_swap_section, handle_track_swap_navigation
 from modules.track_bidding import display_track_bidding
 from modules.db_utils import get_active_track_config, get_track_capacity
+from modules.track_year import (
+    SELECTED_YEAR_KEY,
+    get_hub_track_years,
+    get_track_year_dates,
+    resolve_selected_year,
+)
 from modules.staff_database import (
     build_preferences_df,
     build_requirements_df,
@@ -927,19 +933,97 @@ def display_clinical_track_hub():
     if st.button("← Back to CrewOps360", key="back_from_clinical"):
         st.session_state.selected_module = None
         st.rerun()
-    
-    # Show active track name in header
-    active_cfg = get_active_track_config()
-    active_label = active_cfg['track_name'] if active_cfg else "FY26"
-    st.markdown(f"""
-    # <span style='color:#1E88E5'>Clinical Track Hub</span> <span style='color:#4CAF50; font-size:1.2rem;'>— Active Track: {active_label}</span>
-    """, unsafe_allow_html=True)
+
+    # Work out which fiscal year this session is looking at before anything is loaded:
+    # the track grid, the viewer, the calendar export and the fiscal-year display all
+    # have to come from the same year, so the choice can't be made after the data is.
+    selected_year, year_is_writable = display_track_year_selector()
 
     # All the existing Clinical Track Hub functionality goes here
-    run_clinical_track_hub()
+    run_clinical_track_hub(selected_year, year_is_writable)
 
-def run_clinical_track_hub():
-    """Run the original Clinical Track Hub functionality"""
+
+def display_track_year_selector():
+    """Header, and the fiscal-year picker when there is more than one year to pick.
+
+    A cutover is an overlap, not a switch: FY27's tracks are promoted months before
+    FY26's last shift is worked, and promotion clears is_active on FY26's rows. Without
+    a picker the year people are still working simply vanishes from the hub the day the
+    next one goes live.
+
+    Returns:
+        tuple: (selected track cohort name, whether it accepts track changes)
+    """
+    active_cfg = get_active_track_config()
+    active_label = active_cfg['track_name'] if active_cfg else "FY26"
+
+    visible_years = get_hub_track_years()
+    labels = [y['track_name'] for y in visible_years]
+
+    # Only an explicit pick is remembered. Remembering a default would pin a browser
+    # opened before a cutover to the outgoing year with no sign anything had changed.
+    remembered = st.session_state.get(SELECTED_YEAR_KEY)
+    selected_year, dropped_stale = resolve_selected_year(
+        visible_years, active_label, remembered)
+    if dropped_stale:
+        st.session_state.pop(SELECTED_YEAR_KEY, None)
+
+    year = next((y for y in visible_years if y['track_name'] == selected_year), None)
+    year_is_writable = bool(year['is_writable']) if year else selected_year == active_label
+    is_live = selected_year == active_label
+
+    heading_note = (f"Active Track: {selected_year}" if is_live
+                    else f"Viewing: {selected_year} (closed) — Active Track: {active_label}")
+    heading_colour = '#4CAF50' if is_live else '#F57C00'
+    st.markdown(f"""
+    # <span style='color:#1E88E5'>Clinical Track Hub</span> <span style='color:{heading_colour}; font-size:1.2rem;'>— {heading_note}</span>
+    """, unsafe_allow_html=True)
+
+    # Offer the choice only when there is one to make.
+    if len(visible_years) > 1:
+        label_by_name = {y['track_name']: y['label'] for y in visible_years}
+        year_choice = st.selectbox(
+            "Fiscal year",
+            options=labels,
+            index=labels.index(selected_year) if selected_year in labels else 0,
+            format_func=lambda name: label_by_name.get(name, name),
+            key="hub_track_year_selector",
+            help="Two fiscal years overlap during a cutover — the year being worked "
+                 "and the year that has just been promoted. Pick the one you want to "
+                 "see.",
+        )
+        if year_choice != selected_year:
+            st.session_state[SELECTED_YEAR_KEY] = year_choice
+            st.rerun()
+
+    if not year_is_writable:
+        span = get_track_year_dates(selected_year)
+        st.warning(
+            f"**{selected_year} is closed to changes.** It runs "
+            f"{span['start'].strftime('%b %d, %Y')} – {span['end'].strftime('%b %d, %Y')}. "
+            f"You can view, export and print these tracks, but modifications and swap "
+            f"requests are made against the active track"
+            + (f" — switch to **{active_label}** above." if active_label != selected_year
+               else ".")
+        )
+
+    return selected_year, year_is_writable
+
+def run_clinical_track_hub(selected_year=None, year_is_writable=True):
+    """Run the original Clinical Track Hub functionality
+
+    Args:
+        selected_year (str, optional): the track cohort — fiscal year — being viewed.
+            Everything the hub reads is scoped to it; None means the live cohort.
+        year_is_writable (bool): whether track changes may be made against that year.
+            Only the live cohort accepts them, so a closed year gets the read surfaces
+            without the buttons the database would refuse anyway.
+    """
+    # Reads for the live year stay unscoped, exactly as they were: a track row still
+    # carrying an older cycle's name is is_active and belongs in the live grid, and
+    # scoping it away would quietly drop staff from the hub. Only a closed year has to
+    # be fetched by name, because promotion is what cleared is_active on its rows.
+    read_year = None if year_is_writable else selected_year
     # Create wrapper classes for compatibility with new app structure
     class TrainingTrackManager:
         """Track manager wrapper using existing functionality"""
@@ -1141,11 +1225,12 @@ def run_clinical_track_hub():
             return
         
         st.markdown("### 📅 Calendar Export")
-        st.caption("Generate complete fiscal year Google Calendar or iCal files from submitted tracks")
+        st.caption(f"Generate complete {selected_year or 'fiscal year'} Google Calendar "
+                   f"or iCal files from submitted tracks")
         
         # Get available staff
         try:
-            staff_names = extract_staff_names_from_db()
+            staff_names = extract_staff_names_from_db(read_year)
             
             if not staff_names:
                 st.info("No staff tracks found in database. Submit some tracks first.")
@@ -1167,17 +1252,24 @@ def run_clinical_track_hub():
                     key="calendar_format_select"
                 )
             
-            # Show fiscal year info
-            fiscal_info = get_fiscal_year_info()
-            st.info(f"📊 **Export Period:** 28 Sept 2025 through 26 Sept 2026")
+            # Show fiscal year info for the year being exported, not a fixed FY26
+            fiscal_info = get_fiscal_year_info(read_year)
+            st.info(
+                f"📊 **Export Period:** "
+                f"{fiscal_info['fiscal_year_start'].strftime('%d %b %Y')} through "
+                f"{fiscal_info['fiscal_year_end'].strftime('%d %b %Y')}"
+                + (f" ({selected_year})" if selected_year else ""))
             
             # Preview section
             if selected_staff:
                 with st.expander("📋 Preview Schedule (First 14 Days)", expanded=False):
                     try:
-                        schedule_data = get_all_staff_schedules()
+                        schedule_data = get_all_staff_schedules(read_year)
                         if selected_staff in schedule_data:
-                            preview = preview_schedule(selected_staff, schedule_data[selected_staff], num_days=14)
+                            preview = preview_schedule(selected_staff,
+                                                       schedule_data[selected_staff],
+                                                       num_days=14,
+                                                       track_name=read_year)
                             
                             preview_df = pd.DataFrame(preview)
                             preview_df['date'] = preview_df['date'].dt.strftime('%m/%d/%Y (%A)')
@@ -1195,7 +1287,8 @@ def run_clinical_track_hub():
                         format_type = "google" if "Google" in calendar_format else "ical"
                         
                         with st.spinner(f"Generating {calendar_format} file..."):
-                            file_content, filename = generate_calendar_for_staff(selected_staff, format_type)
+                            file_content, filename = generate_calendar_for_staff(
+                                selected_staff, format_type, track_name=read_year)
                         
                         if file_content and filename:
                             # Determine MIME type
@@ -1312,10 +1405,13 @@ def run_clinical_track_hub():
     if 'staff_track_active' not in st.session_state:
         st.session_state.staff_track_active = False
 
-    # Preassignments for the active cycle, from the database (authored per bid cycle in
-    # the Track Bidding admin).
+    # Preassignments for the cycle being viewed, from the database (authored per bid
+    # cycle in the Track Bidding admin). They are per-cycle, so a fiscal year's grid has
+    # to be drawn with its own. Naming it also settles what the default left ambiguous:
+    # load_preassignments() falls back to the cycle bidding is open on, so while FY27
+    # was out to bid the hub was locking FY26's grid against FY27's commitments.
     try:
-        preassignment_df = load_preassignments()
+        preassignment_df = load_preassignments(selected_year)
     except Exception as e:
         st.error(f"Error loading preassignments: {str(e)}")
         preassignment_df = None
@@ -1380,7 +1476,7 @@ def run_clinical_track_hub():
             
             # ADD THIS NEW SECTION HERE:
             st.markdown("---")
-            add_fiscal_year_export_to_admin(admin_authenticated)
+            add_fiscal_year_export_to_admin(admin_authenticated, read_year)
 
             st.header("Enhanced Validation Rules")
             st.markdown("""
@@ -1427,6 +1523,15 @@ def run_clinical_track_hub():
             if active_track_cfg:
                 st.success(f"**Active Track: {active_track_cfg['track_name']}**")
                 cap = get_track_capacity(active_track_cfg['track_name'])
+                # Without a span of its own a cohort is displayed and exported over
+                # FY26's calendar, which is silently wrong for any year but FY26.
+                if not (active_track_cfg.get('start_date')
+                        and active_track_cfg.get('end_date')):
+                    st.warning(
+                        f"⚠️ {active_track_cfg['track_name']} has no fiscal-year dates "
+                        f"set, so the fiscal-year display and the calendar export are "
+                        f"falling back to FY26's span. Set them in Track Bidding → "
+                        f"Track Configs.")
             else:
                 st.warning("No active track configured. Defaulting to FY26 values.")
                 cap = get_track_capacity('FY26')
@@ -1857,7 +1962,11 @@ def run_clinical_track_hub():
         try:
             preferences_df = build_preferences_df()
             requirements_df = build_requirements_df()
-            current_tracks_df = build_current_tracks_df(days=PATTERN_DAYS)
+            # Scoped to the fiscal year being viewed. A cohort that has stopped being
+            # the live one still has months of shifts to work, so include_retired is
+            # what keeps its grid readable after the next year is promoted.
+            current_tracks_df = build_current_tracks_df(
+                track_name=read_year, days=PATTERN_DAYS, include_retired=True)
 
             st.session_state.requirements_df = requirements_df
 
@@ -1925,14 +2034,23 @@ def run_clinical_track_hub():
         
         # Check if we're in fullscreen track viewer mode
         if st.session_state.get('track_viewer_fullscreen', False):
-            display_track_viewer()
+            display_track_viewer(read_year)
             st.stop()  # Prevent other content from rendering
 
         # Check if we're in fullscreen fiscal year mode
         if st.session_state.get('fy_show_fullscreen', False):
-            add_fiscal_year_display_to_app()
+            add_fiscal_year_display_to_app(read_year)
             st.stop()  # Prevent other content from rendering
             
+        # Switching to a closed fiscal year while inside the editor would show that
+        # year's grid while every save landed on the active cohort. Drop back to the
+        # landing page instead.
+        elif (st.session_state.get('staff_track_active', False)
+              and st.session_state.selected_staff and not year_is_writable):
+            st.session_state.staff_track_active = False
+            st.session_state.selected_staff = None
+            st.rerun()
+
         # Skip staff selection if already in track management
         elif st.session_state.get('staff_track_active', False) and st.session_state.selected_staff:
             selected_staff = st.session_state.selected_staff
@@ -1974,6 +2092,12 @@ def run_clinical_track_hub():
             
             # LEFT SIDE section
             with left_col:
+                # A swap form left open from the active year has to close when the
+                # session switches to a closed one — the offer it would submit is
+                # against days that year no longer owns.
+                if not year_is_writable:
+                    st.session_state.pop('show_swap_form', None)
+
                 # Check if we should show the swap form (takes priority)
                 if handle_track_swap_navigation():
                     # Track swap form is being displayed, don't show other sections
@@ -1981,26 +2105,37 @@ def run_clinical_track_hub():
                 else:
                     # Normal landing page layout
                     st.markdown("### Preferred Track Display")
-                    st.caption("View active tracks by role - informational purposes only")
+                    st.caption(f"View {selected_year or 'active'} tracks by role - "
+                               f"informational purposes only")
                 
                     # Enhanced Track viewer component with fullscreen option
-                    display_track_viewer()
+                    display_track_viewer(read_year)
                     
-                    # Track Swap Section
-                    display_track_swap_section()
-                    
-                    #Track Management Section
-                    st.markdown("### Track Management")
+                    # Swaps and modifications are written against the live cohort's
+                    # rows, so a closed year gets the explanation rather than buttons
+                    # that would land on the wrong fiscal year.
+                    if year_is_writable:
+                        # Track Swap Section
+                        display_track_swap_section()
+                        
+                        #Track Management Section
+                        st.markdown("### Track Management")
 
-                    staff_names = st.session_state.master_df.index.tolist()
-                    selected_staff = st.selectbox("Select Staff Member", staff_names, key="main_staff_select")
+                        staff_names = st.session_state.master_df.index.tolist()
+                        selected_staff = st.selectbox("Select Staff Member", staff_names, key="main_staff_select")
 
-                    # Store selected staff and proceed to Track Management
-                    if selected_staff:
-                        if st.button("🔧 Manage Staff Track with Validation", use_container_width=True, type="primary"):
-                            st.session_state.selected_staff = selected_staff
-                            st.session_state.staff_track_active = True
-                            st.rerun()
+                        # Store selected staff and proceed to Track Management
+                        if selected_staff:
+                            if st.button("🔧 Manage Staff Track with Validation", use_container_width=True, type="primary"):
+                                st.session_state.selected_staff = selected_staff
+                                st.session_state.staff_track_active = True
+                                st.rerun()
+                    else:
+                        st.markdown("### Track Management")
+                        st.info(
+                            f"🔒 {selected_year} is closed. Track modifications and swap "
+                            f"requests are made against the active track — switch "
+                            f"fiscal year at the top of the page to submit one.")
 
             # RIGHT SIDE: Calendar Export + Fiscal Year Track Display
             with right_col:
@@ -2010,7 +2145,7 @@ def run_clinical_track_hub():
                 st.markdown("---")  # Separator
                 
                 # Fiscal Year Display Section (BOTTOM)
-                add_fiscal_year_display_to_app()
+                add_fiscal_year_display_to_app(read_year)
     else:
         st.info("Waiting for data to load. If no data appears, please contact an administrator.")
 # SECURITY CHECK - This is the first thing that runs
