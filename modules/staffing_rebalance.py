@@ -43,22 +43,30 @@ def _crew_deficit(nurse, medic, dual, senior, target):
     _max_possible_shifts itself does. New bodies are assumed plain nurse/medic, not
     dual — Δsenior can be satisfied by any of them, it isn't a separate person.
 
-    Returns None if already at/above target, else {'nurse': int, 'medic': int, 'senior': int}.
+    Where more than one mix of the same (minimal) size would do — flexing a dual to
+    the medic side often makes "2 medics" and "1 nurse + 1 medic" equally good — the
+    rest come back under 'alternatives', because the candidate table lists people for
+    every one of them (see helps_shift). Reporting only the first left an admin
+    wondering why nurses were being offered for a shift labelled "2 medic".
+
+    Returns None if already at/above target, else
+    {'nurse': int, 'medic': int, 'senior': int, 'alternatives': [{'nurse','medic'}, ...]}.
     """
     if _max_possible_shifts(nurse, medic, dual, senior) >= target:
         return None
-    best = None
+    mixes = []
     for x in range(dual + 1):
-        eff_nurse = nurse - x
-        eff_medic = medic + x
-        d_nurse = max(0, target - eff_nurse)
-        d_medic = max(0, target - eff_medic)
-        total = d_nurse + d_medic
-        if best is None or total < best[0]:
-            best = (total, d_nurse, d_medic)
-    _, d_nurse, d_medic = best
+        d_nurse = max(0, target - (nurse - x))
+        d_medic = max(0, target - (medic + x))
+        mix = {'nurse': d_nurse, 'medic': d_medic}
+        if mix not in mixes:
+            mixes.append(mix)
+    fewest = min(m['nurse'] + m['medic'] for m in mixes)
+    mixes = [m for m in mixes if m['nurse'] + m['medic'] == fewest]
+
     d_senior = max(0, target - senior)
-    return {'nurse': d_nurse, 'medic': d_medic, 'senior': d_senior}
+    return {'nurse': mixes[0]['nurse'], 'medic': mixes[0]['medic'], 'senior': d_senior,
+            'alternatives': mixes[1:]}
 
 
 def _week_chunks(days):
@@ -337,11 +345,19 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
     cover it outright, converting their AT into the shift, so they appear with nothing
     to give up (see validate_at_conversion).
 
-    Candidates whose arrival wouldn't raise that shift's achievable crews are left
-    out entirely: a nurse is no use to a day held back by a medic shortage, and
-    nobody is any use to a day capped by its no-matrix headcount. Dual-credentialed
-    staff count toward a medic shortfall — _max_possible_shifts() flexes them to the
-    medic side, so achievable_change() credits them for it.
+    Candidates whose arrival wouldn't help that shift are left out entirely: a nurse
+    is no use to a day held back by a medic shortage, and nobody is any use to a day
+    capped by its no-matrix headcount. Dual-credentialed staff count toward a medic
+    shortfall — _max_possible_shifts() flexes them to the medic side, so
+    helps_shift() credits them for it.
+
+    "Help" is measured against the crew mix still missing (helps_shift), not against
+    the crew count alone. A shift two bodies short gains no crew from the first
+    person to arrive, so a crew-count test reported nobody for it — the deepest
+    shortfalls, the ones most worth staffing, came back empty while a shift short by
+    one listed everybody. Such a candidate is listed with what they'd actually
+    accomplish: the crew count holds, and the Crews here column says how many bodies
+    the shift would still be waiting on.
 
     Every give-up also carries what surrendering that particular shift would do to
     it — achievable crews and the headcount left in the candidate's own role bucket
@@ -358,7 +374,7 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
     tuples _give_up_cells() renders into display strings, kept structured for a
     caller that needs real (day, period) pairs rather than a label to re-parse.
     """
-    from modules.track_needs_swap import achievable_change, needs_swap_floors
+    from modules.track_needs_swap import achievable_change, helps_shift, needs_swap_floors
     from modules.track_bidding import _bid_role_and_senior
 
     ctx = report_ctx['ctx']
@@ -366,13 +382,17 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
     floors = needs_swap_floors(report_ctx.get('cfg'))
     pool = candidate_pool(shortfall, report_ctx, floors)
     row = report_ctx['day_stats_by_label'][need_day]
+    # consolidate_needs() entries carry 'minimum' too; the cycle's own floor is the
+    # fallback for any caller that hands over just a day, a period and a week.
+    minimum = shortfall.get('minimum') or (
+        report_ctx['min_day'] if period == 'Day' else report_ctx['min_night'])
 
     rows = []
     for name, give_ups in pool.items():
         role, is_senior = _bid_role_and_senior(
             report_ctx['bids_by_name'][name], ctx['role_mapping'], ctx['no_matrix_mapping'])
         before, after = achievable_change(row, period, role, is_senior, +1)
-        if after <= before:
+        if not helps_shift(row, period, role, is_senior, minimum):
             continue  # their role isn't what's holding this shift back
 
         on_at = is_at_on(name, need_day, report_ctx)
@@ -425,7 +445,7 @@ def candidates_for_shortfall(shortfall, report_ctx, track_name):
         }
         candidate.update(_give_up_cells(usable, name, role, is_senior, report_ctx))
         candidate.update({
-            'Crews here': f"{before} → {after}",
+            'Crews here': _crews_here_text(before, after, row, period, role, is_senior, minimum),
             'On AT here': "Yes" if on_at else "—",
             'Trade-off': _advisory_summary(unavoidable),
             'Hypothetical base': hypo['assignment'],
@@ -501,8 +521,8 @@ def candidates_dataframe(rows):
 _INVALID_SHEET_CHARS = set("[]:*?/" + "\\")  # Excel forbids these in a sheet name
 
 _NO_CANDIDATES_NOTE = (
-    "No one available elsewhere in the same week would raise this shift's achievable "
-    "crews and has a shift they could give up without breaking their own "
+    "No one available elsewhere in the same week is of the role this shift is short of "
+    "and has a shift they could give up without breaking their own "
     "shifts-per-pay-period, weekly, rest, consecutive-shift or cycle-seam rules."
 )
 
@@ -605,6 +625,24 @@ def _advisory_summary(advisories):
     return ", ".join(hit) if hit else "—"
 
 
+def _crews_here_text(before, after, row, period, role, is_senior, minimum):
+    """
+    '6 → 7' — the shift's achievable crews once this candidate joins it.
+
+    When the shift is short by more than one body the count doesn't move, and "6 → 6"
+    on its own reads like the person is no use. It says instead how many more bodies
+    the shift would still be waiting on, so the admin can see that this is one of
+    two asks, not a wasted one.
+    """
+    from modules.track_needs_swap import crew_gap, _adjust_counts, _period_counts
+
+    if after > before:
+        return f"{before} → {after}"
+    counts = _period_counts(row, period)
+    remaining = crew_gap(_adjust_counts(counts, role, is_senior, +1), minimum)
+    return f"{before} → {after} · {remaining} more still needed"
+
+
 def _give_up_label(day, advisories):
     """One give-up day, tagged with what trading that particular shift would cost."""
     return day if not advisories else f"{day} ({_advisory_summary(advisories)})"
@@ -619,11 +657,26 @@ def _format_shortfall_label(s):
     return f"{s['day_label']} — {mode_label} — {s['achievable']}/{s['minimum']}"
 
 
+def _one_mix_text(mix):
+    parts = [f"{mix[k]} {k}" for k in ('nurse', 'medic', 'senior') if mix.get(k)]
+    return " + ".join(parts)
+
+
 def _format_deficit(deficit):
+    """
+    '2 medic' — the bodies that would close this shortfall, with any equally small
+    alternative mix after an 'or' ('2 medic or 1 nurse + 1 medic'), so the crew mix
+    lines up with the roles the candidate table actually lists.
+    """
     if not deficit:
         return ""
-    parts = [f"{deficit[k]} {k}" for k in ('nurse', 'medic', 'senior') if deficit[k]]
-    return " + ".join(parts) if parts else "0 (senior cap only)"
+    text = _one_mix_text(deficit)
+    others = [_one_mix_text(dict(m, senior=deficit.get('senior', 0)))
+              for m in deficit.get('alternatives') or []]
+    others = [t for t in others if t and t != text]
+    if others:
+        text = " or ".join([text] + others)
+    return text or "0 (senior cap only)"
 
 
 def _safe_filename_part(text):
@@ -676,8 +729,9 @@ def _render_staffing_rebalance_tab(config_names, default_track_index):
         "same people: shifts per pay period, the weekly limit, rest, consecutive shifts and the "
         "cycle seam all have to hold, but night and weekend minimums do not — someone covering a "
         "need is allowed to drop below those, and the Trade-off column says when they would. "
-        "Only people whose arrival would actually raise that shift's achievable crews are listed "
-        "(duals count toward a medic shortfall). Anyone already on AT that day can simply cover "
+        "Only people whose arrival would actually help that shift are listed — either raising "
+        "its achievable crews or, on a shift short by more than one body, closing part of the "
+        "gap (duals count toward a medic shortfall). Anyone already on AT that day can simply cover "
         "it — their AT becomes the shift and they give nothing up. Each shift someone could "
         "trade gets a **Could give up** column and an **Impact** column beside it: what that "
         "shift would be left with — achievable crews, then the headcount in their own role "

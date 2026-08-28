@@ -55,8 +55,8 @@ from modules.db_utils import (
     upsert_needs_swap_outreach,
 )
 from modules.nondisplacing_assignment import draft_assignment, nondisplacing_bases, rank_options
-from modules.staffing_rebalance import (_excel_download_button, _GIVE_UP_SLOTS, candidates_for_shortfall,
-                                        find_shortfalls, load_report_context)
+from modules.staffing_rebalance import (_excel_download_button, _format_deficit, _GIVE_UP_SLOTS,
+                                        candidates_for_shortfall, find_shortfalls, load_report_context)
 from modules.track_bidding import (_bid_role_and_senior, _bidding_role_bucket,
                                    _max_possible_shifts, clear_bidding_caches)
 from modules.ui_components import get_query_params
@@ -160,7 +160,47 @@ def achievable_change(row, period, role, is_senior, delta):
     return before, after
 
 
-def shift_impact(row, period, role, is_senior, delta):
+def crew_gap(counts, target):
+    """
+    Fewest extra bodies that would lift a shift to `target` achievable crews — the
+    single-number form of the crew mix staffing_rebalance._crew_deficit() spells out.
+
+    Nurse and medic gaps add together (they're different people); the senior/no-matrix
+    gap doesn't add to them, because any of those new bodies can be the senior one.
+    Duals are searched over the same nurse/medic split _max_possible_shifts() uses.
+    """
+    nurse, medic, dual, senior = counts
+    if _max_possible_shifts(nurse, medic, dual, senior) >= target:
+        return 0
+    bodies = min(max(0, target - (nurse - x)) + max(0, target - (medic + x))
+                 for x in range(dual + 1))
+    return max(bodies, max(0, target - senior))
+
+
+def helps_shift(row, period, role, is_senior, target):
+    """
+    Would one body of this role be any use to a shift that's below `target` crews?
+
+    True when their arrival either raises the shift's achievable crews outright, or
+    closes part of the gap still holding it back. That second case is the one that
+    matters: a shift two bodies short gains no crew from the first of them, but the
+    first still has to arrive before the second can do anything. Testing the crew
+    count alone hid every candidate for exactly the shifts that were worst off —
+    a day short by two medics reported "nobody available", while the same day short
+    by one listed a dozen people.
+
+    A candidate whose role isn't what the shift is missing still fails both tests,
+    which is the point of the filter: an extra nurse is no use to a day held back by
+    medics, and nobody is any use to a day capped by its no-matrix headcount.
+    """
+    counts = _period_counts(row, period)
+    after_counts = _adjust_counts(counts, role, is_senior, +1)
+    if _max_possible_shifts(*after_counts) > _max_possible_shifts(*counts):
+        return True
+    return crew_gap(after_counts, target) < crew_gap(counts, target)
+
+
+def shift_impact(row, period, role, is_senior, delta, target=None):
     """
     Both numbers worth weighing when one body of `role` joins (delta=+1) or leaves
     (delta=-1) a day/period: the shift's achievable crews, and the headcount left in
@@ -172,17 +212,31 @@ def shift_impact(row, period, role, is_senior, delta):
     fewer nurse standing between it and the next request, which is exactly what an
     admin is trying to see before moving somebody.
 
-    Returns a dict: crew_before, crew_after, role, bucket, role_before, role_after.
+    Pass `target` (the shift's minimum) to also get how many bodies it is still short
+    before and after the move — the only way to tell "this arrival does nothing" from
+    "this arrival is the first of the two bodies this shift needs", which look
+    identical in the crew count alone.
+
+    Returns a dict: crew_before, crew_after, role, bucket, role_before, role_after,
+    and (when target is given) target, gap_before, gap_after.
     """
     crew_before, crew_after = achievable_change(row, period, role, is_senior, delta)
     bucket = _bidding_role_bucket(role)
     p = 'day' if period == 'Day' else 'night'
     role_before = int(row[f'{p}_{bucket}'])
-    return {
+    impact = {
         'crew_before': crew_before, 'crew_after': crew_after,
         'role': role, 'bucket': bucket,
         'role_before': role_before, 'role_after': max(0, role_before + delta),
     }
+    if target is not None:
+        counts = _period_counts(row, period)
+        impact.update({
+            'target': target,
+            'gap_before': crew_gap(counts, target),
+            'gap_after': crew_gap(_adjust_counts(counts, role, is_senior, delta), target),
+        })
+    return impact
 
 
 def role_count_text(impact):
@@ -205,12 +259,22 @@ def give_up_impact_text(impact):
 
 
 def pickup_impact_text(impact):
-    """'4 → 5 crews · medics 8 → 9' — what a shift gains if this person moves onto it."""
+    """
+    '4 → 5 crews · medics 8 → 9' — what a shift gains if this person moves onto it.
+
+    A shift more than one body short gains no crew from the first arrival, so when
+    the impact carries gap numbers (shift_impact(..., target=...)) that case reads as
+    the part-payment it is rather than as "no change".
+    """
     if impact is None:
         return "Unknown"
     before, after = impact['crew_before'], impact['crew_after']
+    gap_after = impact.get('gap_after')
     if after > before:
         crew = f"{before} → {after} crews"
+    elif gap_after is not None and gap_after < impact['gap_before']:
+        crew = (f"Still {before} crews — {gap_after} more "
+                f"{'body' if gap_after == 1 else 'bodies'} needed to reach {impact['target']}")
     else:
         crew = f"No change — role isn't the bottleneck ({before} crews)"
     return f"{crew} · {role_count_text(impact)}"
@@ -550,8 +614,9 @@ def swap_options_for_staff(staff_name, needs, report_ctx, floors=None):
     ranked-able list of shifts they could give up to do it.
 
     A need is included only when the staff member is off that day, their move would
-    actually raise that shift's achievable crews, and at least one give-up pairing
-    passes validation. Returns a list of dicts:
+    actually help that shift (helps_shift — raising its achievable crews, or closing
+    part of the gap on a shift that needs more than one body), and at least one
+    give-up pairing passes validation. Returns a list of dicts:
 
         {need: <need dict>, before: int, after: int, options: [
             {day_label, period, code, before, after, minimum}, ...]}
@@ -582,7 +647,7 @@ def swap_options_for_staff(staff_name, needs, report_ctx, floors=None):
             continue
 
         before, after = achievable_change(row, period, role, is_senior, +1)
-        if after <= before:
+        if not helps_shift(row, period, role, is_senior, need['minimum']):
             continue  # their role isn't what's holding this shift back
         if not has_capacity_room(row, period, role, report_ctx.get('weekday_caps')):
             continue  # that day is already at its bid cap for their role
@@ -1280,10 +1345,10 @@ def _render_base_outlook(staff_name, need, report_ctx):
 
 
 def _deficit_text(deficit):
-    if not deficit:
-        return ""
-    parts = [f"{deficit[k]} {k}" for k in ('nurse', 'medic', 'senior') if deficit.get(k)]
-    return " + ".join(parts)
+    """The crew mix a need is short of, worded exactly as Staffing Rebalance words it
+    — including the equally small alternative mixes ('2 medic or 1 nurse + 1 medic'),
+    since the same people qualify for either."""
+    return _format_deficit(deficit)
 
 
 def offers_from_editor(edited, need, options):
@@ -2000,7 +2065,12 @@ def _offer_impact(offer, report_ctx, by_label, side):
     role, is_senior = _bid_role_and_senior(
         bid, report_ctx['ctx']['role_mapping'], report_ctx['ctx']['no_matrix_mapping'])
     delta = -1 if side == 'give_up' else +1
-    return shift_impact(row, offer[f'{side}_period'], role, is_senior, delta)
+    period = offer[f'{side}_period']
+    # Only the pickup side needs a target: it's the one where "no crew gained" can
+    # mean either "wrong role" or "first of the two bodies this shift is short".
+    target = (report_ctx['min_day'] if period == 'Day' else report_ctx['min_night']) \
+        if side == 'need' else None
+    return shift_impact(row, period, role, is_senior, delta, target=target)
 
 
 def _give_up_impact(offer, report_ctx, by_label):
