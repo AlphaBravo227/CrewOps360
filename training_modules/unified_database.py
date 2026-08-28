@@ -52,6 +52,24 @@ YEAR_STATUSES = (YEAR_STATUS_DRAFT, YEAR_STATUS_OPEN,
 STAFF_VISIBLE_STATUSES = (YEAR_STATUS_OPEN, YEAR_STATUS_READONLY)
 
 
+def _parse_class_date(value):
+    """A stored class date as 'YYYY-MM-DD', or None if it isn't a date.
+
+    Class dates come off the roster workbook as MM/DD/YYYY and are stored that way;
+    a training year's span is YYYY-MM-DD. Normalising here is what lets the two be
+    compared, which is how an enrollment filed under the wrong year is spotted.
+    """
+    if not value:
+        return None
+    text = str(value).strip()
+    for fmt in ('%m/%d/%Y', '%Y-%m-%d', '%m/%d/%y'):
+        try:
+            return datetime.strptime(text, fmt).strftime('%Y-%m-%d')
+        except ValueError:
+            continue
+    return None
+
+
 class UnifiedDatabase:
     def __init__(self, db_path, excel_handler=None):
         '''
@@ -157,7 +175,8 @@ class UnifiedDatabase:
                 conflict_override BOOLEAN DEFAULT 0,
                 conflict_details TEXT,
                 action_date TEXT DEFAULT NULL,
-                details TEXT
+                details TEXT,
+                training_year TEXT
             )
         ''')
         
@@ -172,7 +191,8 @@ class UnifiedDatabase:
                 conflict_override BOOLEAN DEFAULT 0,
                 conflict_details TEXT,
                 action_date TEXT DEFAULT NULL,
-                details TEXT
+                details TEXT,
+                training_year TEXT
             )
         ''')
 
@@ -234,6 +254,20 @@ class UnifiedDatabase:
                 )
 
         self._add_training_year_to_unique_constraints()
+
+        # Add training_year to the audit tables (migration). Audit rows carried no
+        # year at all, so once two years were open at once an entry read
+        # "cancelled - Jane Doe - Airway Lab" with nothing to say which year it
+        # belonged to. Existing rows backfill to FY26, the only cohort that existed
+        # while they were written.
+        for table_name in ('training_enrollment_audit', 'training_educator_audit'):
+            self.cursor.execute(f"PRAGMA table_info({table_name})")
+            audit_columns = [col[1] for col in self.cursor.fetchall()]
+            if 'training_year' not in audit_columns:
+                self.cursor.execute(
+                    f"ALTER TABLE {table_name} ADD COLUMN training_year TEXT "
+                    f"DEFAULT '{LEGACY_TRAINING_YEAR}'"
+                )
 
         # Seed the default FY26 training year if it doesn't exist yet
         self.cursor.execute("SELECT id FROM training_years WHERE year_label = 'FY26'")
@@ -470,6 +504,222 @@ class UnifiedDatabase:
         finally:
             self.disconnect()
 
+    def get_admin_visible_training_years(self):
+        """Every training year an admin may work in, active year first, then newest.
+
+        Deliberately wider than get_staff_visible_training_years(): building next
+        year's roster means reporting on a draft before anyone is allowed to see
+        it, and answering a question about a finished year means reading one that
+        has been archived. This mirrors what the Clinical Track Hub does - staff
+        get a picker of years they can act in, admins get every cohort there is.
+
+        Each row carries `enrollment_count` (active enrollments in that year) and a
+        `label` naming the year's state, so an empty draft is visibly a dead end
+        rather than a report that silently comes back with nothing in it.
+        """
+        status_text = {
+            YEAR_STATUS_DRAFT: 'draft',
+            YEAR_STATUS_OPEN: 'open',
+            YEAR_STATUS_READONLY: 'read-only',
+            YEAR_STATUS_ARCHIVED: 'archived',
+        }
+        self.connect()
+        try:
+            self._auto_close_expired_years()
+            self.conn.commit()
+            self.cursor.execute(
+                "SELECT * FROM training_years ORDER BY is_active DESC, created_date DESC")
+            years = [self._training_year_row_to_dict(r) for r in self.cursor.fetchall()]
+
+            self.cursor.execute(
+                "SELECT COALESCE(training_year, ?) AS year, COUNT(*) AS n "
+                "FROM training_enrollments WHERE status = 'active' GROUP BY year",
+                (LEGACY_TRAINING_YEAR,))
+            counts = {r['year']: r['n'] for r in self.cursor.fetchall()}
+        finally:
+            self.disconnect()
+
+        for year in years:
+            label = year['year_label']
+            count = counts.get(label, 0)
+            state = status_text.get(year['status'], year['status'])
+            if year['is_active']:
+                state = f"active, {state}"
+            year['enrollment_count'] = count
+            year['label'] = (f"{label} ({state}) — {count} "
+                             f"enrollment{'' if count == 1 else 's'}")
+        return years
+
+    def get_enrollment_stats_by_year(self):
+        """Active enrollment and educator-signup counts for every year at once.
+
+        get_enrollment_stats() answers "how is this year going"; during a cutover
+        the question an admin actually has is "how are both years going", and a
+        single-year total gives no way to tell whether last year's tail or next
+        year's opening is what moved.
+        """
+        self.connect()
+        try:
+            self.cursor.execute(
+                "SELECT COALESCE(e.training_year, ?) AS year, "
+                "       COUNT(*) AS enrollments, "
+                "       COUNT(DISTINCT e.staff_name) AS staff, "
+                "       SUM(CASE WHEN e.conflict_override = 1 THEN 1 ELSE 0 END) AS conflicts "
+                "FROM training_enrollments e WHERE e.status = 'active' "
+                "GROUP BY year", (LEGACY_TRAINING_YEAR,))
+            rows = {r['year']: dict(r) for r in self.cursor.fetchall()}
+
+            self.cursor.execute(
+                "SELECT COALESCE(training_year, ?) AS year, COUNT(*) AS signups "
+                "FROM training_educator_signups WHERE status = 'active' GROUP BY year",
+                (LEGACY_TRAINING_YEAR,))
+            educator = {r['year']: r['signups'] for r in self.cursor.fetchall()}
+
+            self.cursor.execute("SELECT year_label, is_active, status FROM training_years")
+            configured = {r['year_label']: dict(r) for r in self.cursor.fetchall()}
+        finally:
+            self.disconnect()
+
+        # A year with rows but no config row, or a config row with no rows, both
+        # matter here: the first is orphaned data, the second an empty cohort.
+        labels = set(rows) | set(educator) | set(configured)
+        stats = []
+        for label in labels:
+            row = rows.get(label, {})
+            cfg = configured.get(label)
+            stats.append({
+                'training_year': label,
+                'configured': cfg is not None,
+                'is_active': bool((cfg or {}).get('is_active')),
+                'status': (cfg or {}).get('status') or 'unconfigured',
+                'enrollments': row.get('enrollments', 0),
+                'staff': row.get('staff', 0),
+                'conflict_overrides': row.get('conflicts') or 0,
+                'educator_signups': educator.get(label, 0),
+            })
+        stats.sort(key=lambda s: (not s['is_active'], s['training_year']))
+        return stats
+
+    def get_year_audit_trail(self, training_year=None, limit=200):
+        """Recent enrollment and educator audit entries for one training year.
+
+        Audit rows written before the year column existed are treated as FY26's,
+        which is where they came from - see the migration in
+        initialize_training_tables().
+        """
+        year = self._resolve_training_year(training_year)
+        self.connect()
+        try:
+            self.cursor.execute(
+                f"SELECT action, staff_name, class_name, class_date, role, "
+                f"       action_date FROM training_enrollment_audit "
+                f"WHERE {_YEAR_MATCH} ORDER BY id DESC LIMIT ?", (year, limit))
+            entries = [dict(r) for r in self.cursor.fetchall()]
+            self.cursor.execute(
+                f"SELECT action, staff_name, class_name, class_date, "
+                f"       action_date FROM training_educator_audit "
+                f"WHERE {_YEAR_MATCH} ORDER BY id DESC LIMIT ?", (year, limit))
+            for row in self.cursor.fetchall():
+                entry = dict(row)
+                entry['role'] = 'Educator'
+                entries.append(entry)
+        finally:
+            self.disconnect()
+        entries.sort(key=lambda e: e.get('action_date') or '', reverse=True)
+        return entries[:limit]
+
+    def get_training_year_data_health(self, training_year=None):
+        """Integrity checks that only matter once more than one year exists.
+
+        Every one of these was harmless while there was a single year and becomes
+        a wrong number the moment there are two: rows nobody stamped, rows stamped
+        with a year that was never configured, and rows whose class date falls in
+        a different year than the one they are filed under.
+        """
+        year = self._resolve_training_year(training_year)
+        self.connect()
+        try:
+            report = {'training_year': year}
+
+            self.cursor.execute(
+                "SELECT COUNT(*) AS n FROM training_enrollments "
+                "WHERE training_year IS NULL OR TRIM(training_year) = ''")
+            report['unstamped_enrollments'] = self.cursor.fetchone()['n']
+            self.cursor.execute(
+                "SELECT COUNT(*) AS n FROM training_educator_signups "
+                "WHERE training_year IS NULL OR TRIM(training_year) = ''")
+            report['unstamped_educator_signups'] = self.cursor.fetchone()['n']
+
+            self.cursor.execute(
+                "SELECT COALESCE(e.training_year, ?) AS year, COUNT(*) AS n "
+                "FROM training_enrollments e "
+                "WHERE COALESCE(e.training_year, ?) NOT IN "
+                "      (SELECT year_label FROM training_years) "
+                "GROUP BY year",
+                (LEGACY_TRAINING_YEAR, LEGACY_TRAINING_YEAR))
+            report['orphaned_years'] = {r['year']: r['n'] for r in self.cursor.fetchall()}
+
+            self.cursor.execute(
+                "SELECT start_date, end_date FROM training_years WHERE year_label = ?",
+                (year,))
+            span = self.cursor.fetchone()
+            report['start_date'] = span['start_date'] if span else None
+            report['end_date'] = span['end_date'] if span else None
+            report['out_of_span'] = []
+            # Both ends have to parse before anything can be compared against them.
+            # A span an admin typed wrong would otherwise flag every enrollment in
+            # the year as misfiled, which is a worse answer than not checking.
+            span_start = _parse_class_date(report['start_date'])
+            span_end = _parse_class_date(report['end_date'])
+            report['span_readable'] = bool(span_start and span_end)
+            if span_start and span_end:
+                self.cursor.execute(
+                    f"SELECT staff_name, class_name, class_date "
+                    f"FROM training_enrollments "
+                    f"WHERE status = 'active' AND {_YEAR_MATCH}", (year,))
+                for row in self.cursor.fetchall():
+                    parsed = _parse_class_date(row['class_date'])
+                    if parsed is None:
+                        continue
+                    if not (span_start <= parsed <= span_end):
+                        report['out_of_span'].append({
+                            'staff_name': row['staff_name'],
+                            'class_name': row['class_name'],
+                            'class_date': row['class_date'],
+                        })
+        finally:
+            self.disconnect()
+        return report
+
+    def get_year_export_rows(self, training_year=None):
+        """Every active enrollment and educator signup in one year, for export.
+
+        Returns two lists of plain dicts, each row carrying its training year, so a
+        workbook pulled during a cutover says which year it is on every line rather
+        than only in the filename.
+        """
+        year = self._resolve_training_year(training_year)
+        self.connect()
+        try:
+            self.cursor.execute(
+                f"SELECT staff_name, class_name, class_date, role, meeting_type, "
+                f"       session_time, conflict_override, enrollment_date, "
+                f"       COALESCE(training_year, ?) AS training_year "
+                f"FROM training_enrollments WHERE status = 'active' AND {_YEAR_MATCH} "
+                f"ORDER BY class_name, class_date, staff_name",
+                (LEGACY_TRAINING_YEAR, year))
+            enrollments = [dict(r) for r in self.cursor.fetchall()]
+            self.cursor.execute(
+                f"SELECT staff_name, class_name, class_date, conflict_override, "
+                f"       signup_date, COALESCE(training_year, ?) AS training_year "
+                f"FROM training_educator_signups WHERE status = 'active' AND {_YEAR_MATCH} "
+                f"ORDER BY class_name, class_date, staff_name",
+                (LEGACY_TRAINING_YEAR, year))
+            signups = [dict(r) for r in self.cursor.fetchall()]
+        finally:
+            self.disconnect()
+        return enrollments, signups
+
     def _year_accepts_writes(self, year_label):
         """Whether year_label is open for enrolling/cancelling. Requires an open
         connection, so write paths can check without a second connect()."""
@@ -652,8 +902,9 @@ class UnifiedDatabase:
                     self.cursor.execute('''
                         INSERT OR IGNORE INTO training_enrollment_audit 
                         (action, staff_name, class_name, class_date, role, meeting_type, 
-                         session_time, conflict_override, conflict_details, action_date, details)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         session_time, conflict_override, conflict_details, action_date,
+                         details, training_year)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         record['action'],
                         record['staff_name'],
@@ -665,7 +916,8 @@ class UnifiedDatabase:
                         record.get('conflict_override', 0),
                         record.get('conflict_details'),
                         record.get('action_date'),
-                        record.get('details')
+                        record.get('details'),
+                        LEGACY_TRAINING_YEAR
                     ))
             except sqlite3.OperationalError:
                 print("No audit table found in old database, skipping audit migration")
@@ -771,10 +1023,11 @@ class UnifiedDatabase:
             self.cursor.execute('''
                 INSERT INTO training_enrollment_audit 
                 (action, staff_name, class_name, class_date, role, meeting_type, 
-                 session_time, conflict_override, conflict_details, action_date)
-                VALUES ('enrolled', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 session_time, conflict_override, conflict_details, action_date,
+                 training_year)
+                VALUES ('enrolled', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (staff_name, class_name, class_date, role, meeting_type, session_time,
-                conflict_override, conflict_details, audit_timestamp))
+                conflict_override, conflict_details, audit_timestamp, target_year))
             
             self.conn.commit()
             print(f"DEBUG: Enrollment inserted and committed successfully")
@@ -846,13 +1099,15 @@ class UnifiedDatabase:
                 self.cursor.execute('''
                     INSERT INTO training_enrollment_audit 
                     (action, staff_name, class_name, class_date, role, meeting_type, 
-                     session_time, conflict_override, conflict_details, action_date)
-                    VALUES ('cancelled', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     session_time, conflict_override, conflict_details, action_date,
+                     training_year)
+                    VALUES ('cancelled', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (enrollment['staff_name'], enrollment['class_name'], 
                      enrollment['class_date'], enrollment['role'], 
                      enrollment['meeting_type'], enrollment['session_time'],
                      enrollment['conflict_override'], enrollment['conflict_details'],
-                     audit_timestamp))
+                     audit_timestamp,
+                     year_row['year'] if year_row else LEGACY_TRAINING_YEAR))
                 
                 self.conn.commit()
                 return True
@@ -921,10 +1176,10 @@ class UnifiedDatabase:
             self.cursor.execute('''
                 INSERT INTO training_educator_audit 
                 (action, staff_name, class_name, class_date, conflict_override, 
-                 conflict_details, action_date)
-                VALUES ('educator_signup', ?, ?, ?, ?, ?, ?)
+                 conflict_details, action_date, training_year)
+                VALUES ('educator_signup', ?, ?, ?, ?, ?, ?, ?)
             ''', (staff_name, class_name, class_date, conflict_override, 
-                 conflict_details, audit_timestamp))
+                 conflict_details, audit_timestamp, target_year))
             
             self.conn.commit()
             # ===== ADD THIS SECTION: Send email notification =====
@@ -1029,10 +1284,11 @@ class UnifiedDatabase:
                 self.cursor.execute('''
                     INSERT INTO training_educator_audit 
                     (action, staff_name, class_name, class_date, conflict_override, 
-                    conflict_details, action_date)
-                    VALUES ('educator_cancelled', ?, ?, ?, ?, ?, ?)
+                    conflict_details, action_date, training_year)
+                    VALUES ('educator_cancelled', ?, ?, ?, ?, ?, ?, ?)
                 ''', (staff_name, class_name, class_date,
-                    signup['conflict_override'], signup['conflict_details'], audit_timestamp))
+                    signup['conflict_override'], signup['conflict_details'], audit_timestamp,
+                    year_row['year'] if year_row else LEGACY_TRAINING_YEAR))
                 
                 self.conn.commit()
                 

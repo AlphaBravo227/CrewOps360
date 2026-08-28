@@ -42,6 +42,12 @@ next rerun rather than leaving the session on the settings it started with.
 Summer Leave keeps its own handlers (`summer_leave_track_manager`) and always uses the
 active cohort — it is not scoped to a training year.
 
+## The admin side
+
+How the Training Admin dashboard names, picks and reports on a year — and the three
+admin screens that had no implementation behind them — is in
+[training_admin_years.md](training_admin_years.md).
+
 ## Checking it
 
 ```bash

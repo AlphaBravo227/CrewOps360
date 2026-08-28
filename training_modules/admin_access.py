@@ -38,12 +38,47 @@ def _roster_last_class_date(roster_path, _mtime):
         return None
 
 
+# How long a training admin session stays authenticated. Module-level so the
+# training app can ask whether an admin is signed in before the AdminAccess
+# instance has been built - the year picker has to be widened for admins several
+# steps earlier than that.
+ADMIN_SESSION_TIMEOUT_MINUTES = 30
+
+
+def clear_admin_session():
+    """Drop every key that makes up an authenticated training admin session."""
+    for key in ('training_admin_authenticated', 'training_admin_login_time',
+                'training_admin_current_function', 'training_admin_show_function'):
+        st.session_state.pop(key, None)
+
+
+def training_admin_is_authenticated():
+    """Whether a training admin is signed in and their session hasn't expired.
+
+    Expiry logs the session out here rather than only reporting it, so an expired
+    admin stops seeing draft years on the very render that notices.
+    """
+    if not st.session_state.get('training_admin_authenticated'):
+        return False
+    login_time = st.session_state.get('training_admin_login_time')
+    if not login_time:
+        return False
+    elapsed_minutes = (datetime.now(_eastern_tz) - login_time).total_seconds() / 60
+    if elapsed_minutes > ADMIN_SESSION_TIMEOUT_MINUTES:
+        clear_admin_session()
+        return False
+    return True
+
+
 class AdminAccess:
     def __init__(self):
         self.admin_pin = "9999"
-        self.session_timeout = 30  # minutes
+        self.session_timeout = ADMIN_SESSION_TIMEOUT_MINUTES  # minutes
         self.excel_admin_functions = None
         self.availability_analyzer = None  # NEW: Add availability analyzer
+        # The training year the cached analyzer was built for, so switching years
+        # rebuilds it rather than reusing the previous year's roster and tracks.
+        self.availability_analyzer_year = None
     
     def initialize_admin_functions(self, excel_admin_functions):
         """Initialize with ExcelAdminFunctions instance"""
@@ -51,22 +86,7 @@ class AdminAccess:
     
     def is_admin_authenticated(self):
         """Check if admin is currently authenticated"""
-        if 'training_admin_authenticated' not in st.session_state:
-            return False
-        
-        if 'training_admin_login_time' not in st.session_state:
-            return False
-        
-        # Check if session has expired
-        login_time = st.session_state.training_admin_login_time
-        current_time = datetime.now(_eastern_tz)
-        elapsed_minutes = (current_time - login_time).total_seconds() / 60
-        
-        if elapsed_minutes > self.session_timeout:
-            self.logout_admin()
-            return False
-        
-        return st.session_state.training_admin_authenticated
+        return training_admin_is_authenticated()
     
     def show_admin_access_button(self):
         """Show a discrete admin access button in the sidebar"""
@@ -159,16 +179,7 @@ class AdminAccess:
 
     def logout_admin(self):
         """Logout admin user"""
-        keys_to_remove = [
-            'training_admin_authenticated', 
-            'training_admin_login_time', 
-            'training_admin_current_function',
-            'training_admin_show_function'
-        ]
-        
-        for key in keys_to_remove:
-            if key in st.session_state:
-                del st.session_state[key]
+        clear_admin_session()
     
     def require_admin(self):
         """Decorator-like function to require admin authentication"""
@@ -214,12 +225,165 @@ class AdminAccess:
                 st.rerun()
         
         st.markdown("---")
+
+        # Which fiscal year everything below covers. During a cutover two years are
+        # live at once and the numbers differ completely between them, so this is
+        # not decoration - a compliance report is meaningless without it.
+        self._show_training_year_context()
+
+        st.markdown("---")
         
         # Show the selected admin function
         self._render_admin_function(current_function)
         
         return True
     
+    # ========================================================================
+    # TRAINING YEAR CONTEXT
+    # ========================================================================
+
+    def current_training_year(self):
+        """The training year every admin function on screen is reporting on.
+
+        Read off the enrollment manager rather than the database's active year:
+        during a cutover the two differ, and what an admin needs to know is which
+        year the numbers in front of them came from, not which one is current.
+        """
+        enrollment_manager = st.session_state.get('training_enrollment_manager')
+        year = getattr(enrollment_manager, 'training_year', None)
+        if year:
+            return year
+        return st.session_state.get('training_loaded_year')
+
+    def year_filename_prefix(self):
+        """`FY27_` for the front of an export filename, or '' if no year is set.
+
+        Two years are open at once during a cutover; a download named only for the
+        day it was taken gives no way to tell them apart afterwards.
+        """
+        from .admin_excel_functions import year_filename_prefix
+        return year_filename_prefix(self.current_training_year())
+
+    def _training_year_row(self, year_label=None):
+        """The training_years row for the year on screen, or None."""
+        unified_db = st.session_state.get('unified_db')
+        if not unified_db:
+            return None
+        label = year_label or self.current_training_year()
+        if not label:
+            return None
+        try:
+            return unified_db.get_training_year(label)
+        except Exception:
+            return None
+
+    def training_year_span(self, year_label=None):
+        """(start, end) of the year on screen as dates, or (None, None).
+
+        Admin date pickers default to this. Defaulting to today instead is why a
+        report on a closed year came back empty and a report on next year's draft
+        looked like nobody had signed up.
+        """
+        row = self._training_year_row(year_label) or {}
+        span = []
+        for key in ('start_date', 'end_date'):
+            raw = (row.get(key) or '').strip()
+            try:
+                span.append(datetime.strptime(raw, '%Y-%m-%d').date())
+            except (ValueError, AttributeError):
+                span.append(None)
+        return span[0], span[1]
+
+    def default_report_range(self, default_days=30, year_label=None):
+        """A date range to open a report on: today if the year is running, its own
+        span otherwise.
+
+        A closed year and a draft year both sit entirely in the past or entirely in
+        the future, so 'today plus thirty days' finds nothing in either.
+        """
+        today = datetime.now(_eastern_tz).date()
+        start, end = self.training_year_span(year_label)
+        if start and end and start <= today <= end:
+            return today, min(today + timedelta(days=default_days), end)
+        if start and end:
+            return start, min(start + timedelta(days=default_days), end)
+        return today, today + timedelta(days=default_days)
+
+    def _show_training_year_context(self):
+        """Name the year the dashboard is reporting on, and let an admin change it.
+
+        The admin dashboard returns before the staff year selector is ever drawn, so
+        without this an admin has no way to tell whether a compliance report covers
+        the year that just closed or the one that just opened - and no way to switch
+        without leaving the dashboard entirely.
+        """
+        from .unified_database import (
+            YEAR_STATUS_DRAFT, YEAR_STATUS_OPEN, YEAR_STATUS_READONLY,
+            YEAR_STATUS_ARCHIVED,
+        )
+
+        unified_db = st.session_state.get('unified_db')
+        current = self.current_training_year()
+        if not unified_db or not current:
+            return
+
+        try:
+            years = unified_db.get_admin_visible_training_years()
+        except Exception as e:
+            st.caption(f"📅 Reporting on **{current}** (year list unavailable: {e})")
+            return
+
+        labels = [y['year_label'] for y in years]
+        row = next((y for y in years if y['year_label'] == current), None)
+        status = (row or {}).get('status')
+        badge = {
+            YEAR_STATUS_DRAFT: "📝 draft — staff can't see it",
+            YEAR_STATUS_OPEN: "🟢 open for signups",
+            YEAR_STATUS_READONLY: "🔒 read-only — no enrolling or cancelling",
+            YEAR_STATUS_ARCHIVED: "📦 archived — hidden from staff",
+        }.get(status, status or 'unconfigured')
+        if (row or {}).get('is_active'):
+            badge = f"active, {badge}"
+
+        col_year, col_state = st.columns([2, 3])
+        with col_year:
+            if len(labels) > 1:
+                choice = st.selectbox(
+                    "Reporting on training year",
+                    options=labels,
+                    index=labels.index(current) if current in labels else 0,
+                    format_func=lambda label: next(
+                        (y['label'] for y in years if y['year_label'] == label), label),
+                    key="admin_training_year_selector",
+                    help="Every report, roster and export on this dashboard covers "
+                         "the year selected here. Admins see draft and archived "
+                         "years too, which staff never do.",
+                )
+                if choice != current:
+                    # The same session key the staff screen reads, so the choice
+                    # holds when the admin leaves the dashboard; app.py rebuilds
+                    # the roster and managers for the new year on the next run.
+                    st.session_state.training_selected_year = choice
+                    # The staff screen's own selector keeps its last value in
+                    # widget state. Left alone, it reverts this choice the moment
+                    # the admin steps back out of the dashboard.
+                    st.session_state.pop('training_year_selector', None)
+                    st.rerun()
+            else:
+                st.markdown(f"**Training year:** {current}")
+        with col_state:
+            st.markdown(f"**Status:** {badge}")
+            start, end = self.training_year_span(current)
+            if start and end:
+                st.caption(f"Runs {start} to {end} · roster "
+                           f"`{(row or {}).get('roster_filename') or 'not set'}`")
+
+        if (row or {}).get('enrollment_count') == 0:
+            st.info(
+                f"{current} has no enrollments yet. Reports on this dashboard will "
+                f"come back empty - that's the year, not a fault."
+            )
+
     def _render_admin_function(self, function_key):
         """Render the selected admin function"""
         if function_key == "enrollment_reports":
@@ -257,6 +421,11 @@ class AdminAccess:
     def _show_manage_staff(self):
         """Show staff management functionality - UPDATED with Tab 4"""
         st.subheader("👥 Training Staff Management")
+        year = self.current_training_year()
+        if year:
+            st.caption(f"Compliance and availability are measured against **{year}** "
+                       f"only. A staff member complete in one year is not complete "
+                       f"in the other.")
         
         if not self.excel_admin_functions:
             st.error("Admin functions not initialized")
@@ -346,7 +515,7 @@ class AdminAccess:
                         st.download_button(
                             "Download CSV",
                             csv,
-                            f"training_compliance_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.csv",
+                            f"{self.year_filename_prefix()}training_compliance_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.csv",
                             "text/csv"
                         )
                 else:
@@ -373,8 +542,14 @@ class AdminAccess:
         st.write("### 📅 Available Staff for Events")
         st.caption("Analyze staff availability for class enrollment within a date range")
         
-        # Initialize availability analyzer if not already done
-        if not hasattr(self, 'availability_analyzer') or self.availability_analyzer is None:
+        # Initialize the availability analyzer, or rebuild it when the year changed.
+        # This object holds the roster, enrollment manager and track manager for one
+        # training year. AdminAccess itself survives a year switch - app.py clears the
+        # managers but not the admin instance - so a cached analyzer went on answering
+        # for the year the admin had just switched away from.
+        current_year = self.current_training_year()
+        if (not getattr(self, 'availability_analyzer', None)
+                or getattr(self, 'availability_analyzer_year', None) != current_year):
             try:
                 from training_modules.availability_analyzer import AvailabilityAnalyzer
                 
@@ -391,6 +566,7 @@ class AdminAccess:
                 self.availability_analyzer = AvailabilityAnalyzer(
                     unified_db, excel_handler, enrollment_manager, track_manager
                 )
+                self.availability_analyzer_year = current_year
                 
             except ImportError as e:
                 st.error(f"Could not import AvailabilityAnalyzer: {str(e)}")
@@ -399,22 +575,28 @@ class AdminAccess:
                 st.error(f"Error initializing AvailabilityAnalyzer: {str(e)}")
                 return
         
-        # Date range selection
+        # Date range selection. Open on the year being viewed, not on today: a
+        # closed year's classes are all in the past and a draft year's are all in
+        # the future, so "today plus thirty days" reported nothing for either and
+        # looked like an empty roster rather than an out-of-range window.
         st.markdown("#### 📅 Select Date Range")
-        
+
+        default_start, default_end = self.default_report_range()
+        year_start, year_end = self.training_year_span()
+
         col1, col2 = st.columns(2)
         
         with col1:
             start_date = st.date_input(
                 "Start Date",
-                value=datetime.now(_eastern_tz),
+                value=default_start,
                 key="availability_start_date"
             )
         
         with col2:
             end_date = st.date_input(
                 "End Date",
-                value=datetime.now(_eastern_tz) + timedelta(days=30),
+                value=default_end,
                 key="availability_end_date"
             )
         
@@ -422,6 +604,18 @@ class AdminAccess:
         if start_date > end_date:
             st.error("Start date must be before or equal to end date.")
             return
+
+        # The roster loaded is the selected year's, so a range outside that year
+        # finds nothing. Say which year the window is being measured against.
+        current_year = self.current_training_year()
+        if year_start and year_end and (start_date > year_end or end_date < year_start):
+            st.warning(
+                f"⚠️ This range falls outside **{current_year}** "
+                f"({year_start} to {year_end}), so no classes will be found. "
+                f"Change the range, or switch year at the top of the dashboard."
+            )
+        elif current_year:
+            st.caption(f"Analyzing **{current_year}** enrollments and tracks.")
         
         # Options
         st.markdown("#### ⚙️ Analysis Options")
@@ -629,7 +823,8 @@ class AdminAccess:
                     session_df = pd.DataFrame(session_data)
                     csv_data = session_df.to_csv(index=False)
                     
-                    filename = f"session_availability_report_{start_date_str}_{end_date_str}.csv"
+                    filename = (f"{self.year_filename_prefix()}session_availability_report_"
+                                f"{start_date_str}_{end_date_str}.csv")
                     
                     st.download_button(
                         "📥 Download Session Report",
@@ -684,7 +879,8 @@ class AdminAccess:
                     summary_df = pd.DataFrame(summary_data)
                     csv_data = summary_df.to_csv(index=False)
                     
-                    filename = f"class_summary_report_{start_date_str}_{end_date_str}.csv"
+                    filename = (f"{self.year_filename_prefix()}class_summary_report_"
+                                f"{start_date_str}_{end_date_str}.csv")
                     
                     st.download_button(
                         "📥 Download Summary Report",
@@ -861,6 +1057,10 @@ class AdminAccess:
     def _show_manage_classes(self):
         """Show class management functionality"""
         st.subheader("📚 Training Class Management")
+        year = self.current_training_year()
+        if year:
+            st.caption(f"Classes and rosters for **{year}**, from that year's roster "
+                       f"workbook. Switch year at the top of the dashboard.")
         
         if not self.excel_admin_functions:
             st.error("Admin functions not initialized")
@@ -904,7 +1104,7 @@ class AdminAccess:
                                 st.download_button(
                                     "Download Roster",
                                     csv,
-                                    f"{selected_class.replace(' ', '_')}_roster.csv",
+                                    f"{self.year_filename_prefix()}{selected_class.replace(' ', '_')}_roster.csv",
                                     "text/csv"
                                 )
                 else:
@@ -943,6 +1143,20 @@ class AdminAccess:
         with tab4:
             st.write("### Edit Class Rosters")
             st.info("Manage student enrollments and educator assignments for each class session")
+
+            # A read-only or draft year refuses every write at the database, which
+            # an admin only found out after filling in a form and submitting it.
+            # Say it once, up front, where the roster is.
+            unified_db = st.session_state.get('unified_db')
+            year = self.current_training_year()
+            if unified_db and year and not unified_db.is_training_year_writable(year):
+                row = self._training_year_row(year) or {}
+                st.warning(
+                    f"⚠️ **{year} is {row.get('status') or 'not open'}.** Rosters below "
+                    f"are read-only: adding and removing will be refused. Set the year "
+                    f"to Open in Training Admin > Training Years to edit it, or switch "
+                    f"year at the top of the dashboard."
+                )
 
             try:
                 # Get all classes
@@ -1374,6 +1588,302 @@ class AdminAccess:
                             st.error(f"Failed to add educator: {message}")
                     else:
                         st.error("Unexpected response from educator system")
+
+    # ========================================================================
+    # DATA EXPORT / STATISTICS / MAINTENANCE
+    #
+    # These three were on the admin menu but had no implementation behind them,
+    # so opening any of them raised AttributeError. They are written year-scoped
+    # from the start: an export that doesn't name its year and a statistic that
+    # silently spans two of them are both worse than useless during a cutover.
+    # ========================================================================
+
+    def _show_data_management(self):
+        """Export one training year's enrollment and educator data."""
+        st.subheader("📄 Data Export")
+
+        unified_db = st.session_state.get('unified_db')
+        if not unified_db:
+            st.error("Training database not initialized")
+            return
+
+        year = self.current_training_year()
+        if not year:
+            st.error("No training year selected.")
+            return
+
+        start, end = self.training_year_span(year)
+        st.caption(
+            f"Exports **{year}**"
+            + (f", which runs {start} to {end}. " if start and end else ". ")
+            + "Switch year at the top of the dashboard to export another."
+        )
+
+        try:
+            enrollments, signups = unified_db.get_year_export_rows(year)
+        except Exception as e:
+            st.error(f"Could not read {year}'s data: {e}")
+            return
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Active enrollments", len(enrollments))
+        with col2:
+            st.metric("Active educator signups", len(signups))
+
+        if not enrollments and not signups:
+            st.info(f"{year} has no active enrollments or educator signups to export.")
+            return
+
+        enrollments_df = pd.DataFrame(enrollments)
+        signups_df = pd.DataFrame(signups)
+
+        tab_enrol, tab_edu = st.tabs(["👥 Enrollments", "👨‍🏫 Educator Signups"])
+        with tab_enrol:
+            if enrollments_df.empty:
+                st.info(f"No active enrollments in {year}.")
+            else:
+                st.dataframe(enrollments_df, use_container_width=True)
+        with tab_edu:
+            if signups_df.empty:
+                st.info(f"No active educator signups in {year}.")
+            else:
+                st.dataframe(signups_df, use_container_width=True)
+
+        st.markdown("---")
+        stamp = datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M')
+        prefix = self.year_filename_prefix()
+
+        col_csv, col_xlsx = st.columns(2)
+        with col_csv:
+            if not enrollments_df.empty:
+                st.download_button(
+                    "📥 Enrollments (CSV)",
+                    enrollments_df.to_csv(index=False),
+                    f"{prefix}enrollments_{stamp}.csv",
+                    "text/csv",
+                    use_container_width=True,
+                )
+            if not signups_df.empty:
+                st.download_button(
+                    "📥 Educator signups (CSV)",
+                    signups_df.to_csv(index=False),
+                    f"{prefix}educator_signups_{stamp}.csv",
+                    "text/csv",
+                    use_container_width=True,
+                )
+        with col_xlsx:
+            try:
+                from io import BytesIO
+                from .admin_excel_functions import _write_report_year_sheet
+
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    # Both sheets are always written, empty or not, so the workbook
+                    # has the same shape whichever year it covers.
+                    (enrollments_df if not enrollments_df.empty
+                     else pd.DataFrame(columns=['staff_name', 'class_name', 'class_date'])
+                     ).to_excel(writer, sheet_name='Enrollments', index=False)
+                    (signups_df if not signups_df.empty
+                     else pd.DataFrame(columns=['staff_name', 'class_name', 'class_date'])
+                     ).to_excel(writer, sheet_name='Educator Signups', index=False)
+                    _write_report_year_sheet(writer, year, 'Training data export')
+                st.download_button(
+                    "📊 Both sheets (Excel)",
+                    output.getvalue(),
+                    f"{prefix}training_data_{stamp}.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error(f"Could not build the workbook: {e}")
+
+    def _show_system_stats(self):
+        """Usage statistics for the selected year, and across every year."""
+        st.subheader("📊 System Statistics")
+
+        unified_db = st.session_state.get('unified_db')
+        if not unified_db:
+            st.error("Training database not initialized")
+            return
+
+        year = self.current_training_year()
+
+        try:
+            stats = unified_db.get_enrollment_stats(year)
+        except Exception as e:
+            st.error(f"Could not read statistics: {e}")
+            return
+
+        st.markdown(f"#### {stats['training_year']}")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Enrollments", stats['total_enrollments'])
+        with col2:
+            st.metric("Educator signups", stats['total_educator_signups'])
+        with col3:
+            st.metric("Conflict overrides", stats['total_conflicts'])
+        with col4:
+            st.metric("Added today", stats['recent_enrollments']
+                      + stats['recent_educator_signups'])
+        st.caption(f"As of {stats['current_time_eastern']}")
+
+        st.markdown("---")
+        st.markdown("#### Every training year")
+        st.caption(
+            "A single year's totals can't tell you whether the outgoing year's tail "
+            "or the incoming year's opening moved. This is the same data split by "
+            "year, including any year with rows but no config row of its own."
+        )
+
+        try:
+            per_year = unified_db.get_enrollment_stats_by_year()
+        except Exception as e:
+            st.error(f"Could not read the per-year breakdown: {e}")
+            return
+
+        if not per_year:
+            st.info("No enrollments recorded in any year yet.")
+            return
+
+        breakdown = pd.DataFrame([{
+            'Training Year': row['training_year'],
+            'Status': ('active, ' if row['is_active'] else '') + row['status'],
+            'Staff': row['staff'],
+            'Enrollments': row['enrollments'],
+            'Educator Signups': row['educator_signups'],
+            'Conflict Overrides': row['conflict_overrides'],
+        } for row in per_year])
+        st.dataframe(breakdown, use_container_width=True, hide_index=True)
+
+        unconfigured = [r['training_year'] for r in per_year if not r['configured']]
+        if unconfigured:
+            st.warning(
+                "⚠️ These years have enrollments but no row in Training Years, so "
+                "nobody can see or manage them: **" + "**, **".join(unconfigured)
+                + "**. Create the year in Training Admin > Training Years, or "
+                "correct the stamps with `scripts/repair_training_year_stamps.py`."
+            )
+
+    def _show_database_maintenance(self):
+        """Integrity checks and the audit trail for the selected training year."""
+        st.subheader("🗂️ Database Maintenance")
+
+        unified_db = st.session_state.get('unified_db')
+        if not unified_db:
+            st.error("Training database not initialized")
+            return
+
+        year = self.current_training_year()
+        if not year:
+            st.error("No training year selected.")
+            return
+
+        tab_health, tab_audit = st.tabs(["🩺 Data Health", "📜 Audit Trail"])
+
+        with tab_health:
+            st.caption(
+                f"Checks that only matter once more than one year exists. Each one "
+                f"was harmless with a single year and becomes a wrong number with two."
+            )
+            try:
+                report = unified_db.get_training_year_data_health(year)
+            except Exception as e:
+                st.error(f"Could not run the checks: {e}")
+                return
+
+            clean = True
+
+            unstamped = (report['unstamped_enrollments']
+                         + report['unstamped_educator_signups'])
+            if unstamped:
+                from .unified_database import LEGACY_TRAINING_YEAR
+                clean = False
+                st.error(
+                    f"❌ {report['unstamped_enrollments']} enrollment(s) and "
+                    f"{report['unstamped_educator_signups']} educator signup(s) carry "
+                    f"no training year. Every query reads them as "
+                    f"{LEGACY_TRAINING_YEAR}, so they show up in that year whatever "
+                    f"year they really belong to. Run "
+                    f"`python scripts/repair_training_year_stamps.py` to stamp them."
+                )
+            else:
+                st.success("✅ Every enrollment and educator signup carries a training year.")
+
+            if report['orphaned_years']:
+                clean = False
+                detail = ", ".join(f"{label} ({n} row{'' if n == 1 else 's'})"
+                                   for label, n in report['orphaned_years'].items())
+                st.error(
+                    f"❌ Enrollments are stamped with years that have no Training "
+                    f"Years row: {detail}. Nobody can see or manage them until the "
+                    f"year is created."
+                )
+            else:
+                st.success("✅ Every enrollment's training year is a configured year.")
+
+            out_of_span = report['out_of_span']
+            if out_of_span:
+                clean = False
+                st.warning(
+                    f"⚠️ {len(out_of_span)} active enrollment(s) in **{year}** fall "
+                    f"outside its span ({report['start_date']} to {report['end_date']}). "
+                    f"Either the year's dates are wrong, or these belong to the "
+                    f"neighbouring year — during a cutover it is easy to enrol "
+                    f"someone into the year that happened to be selected."
+                )
+                st.dataframe(pd.DataFrame(out_of_span), use_container_width=True,
+                             hide_index=True)
+            elif report.get('span_readable'):
+                st.success(
+                    f"✅ Every {year} enrollment falls inside {report['start_date']} "
+                    f"to {report['end_date']}."
+                )
+            else:
+                clean = False
+                st.warning(
+                    f"⚠️ {year} has no readable start and end date "
+                    f"({report['start_date'] or 'not set'} to "
+                    f"{report['end_date'] or 'not set'}), so its enrollments can't "
+                    f"be checked against its own span — and it will never "
+                    f"auto-close. Set them as YYYY-MM-DD in Training Admin > "
+                    f"Training Years."
+                )
+
+            if clean:
+                st.info(f"{year} is clean: nothing to correct.")
+
+        with tab_audit:
+            st.caption(
+                f"Enrollment and educator activity recorded against **{year}**. "
+                f"Audit rows written before years were tracked are read as FY26."
+            )
+            try:
+                entries = unified_db.get_year_audit_trail(year, limit=200)
+            except Exception as e:
+                st.error(f"Could not read the audit trail: {e}")
+                return
+
+            if not entries:
+                st.info(f"No recorded activity for {year} yet.")
+                return
+
+            audit_df = pd.DataFrame([{
+                'When': e.get('action_date') or '',
+                'Action': e.get('action'),
+                'Staff': e.get('staff_name'),
+                'Class': e.get('class_name'),
+                'Class Date': e.get('class_date'),
+                'Role': e.get('role') or '',
+            } for e in entries])
+            st.dataframe(audit_df, use_container_width=True, hide_index=True)
+            st.download_button(
+                "📥 Download audit trail (CSV)",
+                audit_df.to_csv(index=False),
+                f"{self.year_filename_prefix()}audit_trail_"
+                f"{datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M')}.csv",
+                "text/csv",
+            )
 
     def _show_training_years(self):
         """Manage fiscal-year training cohorts: which Excel roster is active, which

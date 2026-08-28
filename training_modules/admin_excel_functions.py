@@ -1,6 +1,8 @@
 # training_modules/admin_excel_functions.py - Enhanced with comprehensive schedule report
 import pandas as pd
 import openpyxl
+import re
+from openpyxl.styles import Font
 from datetime import datetime, timedelta
 import streamlit as st
 import calendar
@@ -8,6 +10,44 @@ import pytz
 
 _eastern_tz = pytz.timezone('America/New_York')
 from .config import NON_CLASS_COLUMNS, DEFAULT_CLASS_DETAILS
+
+def year_filename_prefix(training_year):
+    """`FY27_` for use at the front of an export filename, or '' if no year is set.
+
+    Two years are open at once during a cutover, and a download called
+    `compliance_report_20260215_0930.xlsx` says nothing about which of them it
+    covers. Sanitised because the year label is admin-entered free text and ends up
+    in a filename.
+    """
+    if not training_year:
+        return ''
+    safe = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(training_year).strip())
+    return f"{safe}_" if safe else ''
+
+
+def _write_report_year_sheet(writer, training_year, report_name):
+    """Add a 'Report Info' sheet naming the training year a workbook covers.
+
+    Written as its own sheet rather than a banner row because the data sheets are
+    formatted as Excel tables anchored at A1; a title row above them would put the
+    table out of step with its own header.
+    """
+    try:
+        sheet = writer.book.create_sheet('Report Info')
+        rows = [
+            ('Report', report_name),
+            ('Training year', training_year or 'not set'),
+            ('Generated', datetime.now(_eastern_tz).strftime('%m/%d/%Y %I:%M %p %Z')),
+            ('Scope', 'This workbook contains only the training year named above.'),
+        ]
+        for row_idx, (label, value) in enumerate(rows, start=1):
+            sheet.cell(row=row_idx, column=1, value=label).font = Font(bold=True)
+            sheet.cell(row=row_idx, column=2, value=str(value))
+        sheet.column_dimensions['A'].width = 16
+        sheet.column_dimensions['B'].width = 62
+    except Exception as e:
+        print(f"Could not add report info sheet: {e}")
+
 
 class ExcelAdminFunctions:
     def __init__(self, excel_handler, enrollment_manager, database, educator_manager=None):
@@ -440,13 +480,20 @@ class ExcelAdminFunctions:
             # Write title and date range
             worksheet.merge_cells('A1:E1')
             title_cell = worksheet['A1']
-            title_cell.value = f'Comprehensive Education Schedule Report'
+            # Name the training year in the title. This workbook is the one that gets
+            # mailed around, and a date range alone doesn't identify a year: the two
+            # open during a cutover overlap for months.
+            year_label = self.training_year
+            title_cell.value = (f'Comprehensive Education Schedule Report'
+                                + (f' — {year_label}' if year_label else ''))
             title_cell.font = Font(bold=True, size=16)
             title_cell.alignment = Alignment(horizontal='center')
             
             worksheet.merge_cells('A2:E2')
             subtitle_cell = worksheet['A2']
-            subtitle_cell.value = f'Date Range: {start_date} to {end_date}'
+            subtitle_cell.value = (f'Date Range: {start_date} to {end_date}'
+                                   + (f'  ·  Training year: {year_label}'
+                                      if year_label else ''))
             subtitle_cell.font = Font(italic=True)
             subtitle_cell.alignment = Alignment(horizontal='center')
             
@@ -1418,7 +1465,14 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
     """Add enhanced reporting to admin access including educator reports and comprehensive schedule"""
     
     def _show_enhanced_enrollment_reports():
+        # Every report and download below covers one training year. Naming it here
+        # is what keeps an FY26 export from arriving with the same filename as the
+        # FY27 one taken minutes later during a cutover.
+        training_year = excel_admin_functions.training_year
         st.subheader("📈 Enhanced Enrollment Reports")
+        if training_year:
+            st.caption(f"Reporting on **{training_year}**. Every table and download "
+                       f"on this page covers that year only.")
         
         # Add educator tab if educator functionality is available
         has_educator = excel_admin_functions.educator is not None
@@ -1586,6 +1640,13 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                                     cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
                                     except Exception as color_error:
                                         print(f"Error color coding Status column: {color_error}")
+
+                                    # Record which training year this is. The filename
+                                    # carries it too, but a workbook gets renamed, mailed
+                                    # on and opened months later - and two years' reports
+                                    # look identical once the name is gone.
+                                    _write_report_year_sheet(
+                                        writer, training_year, 'Compliance Report')
                                 
                                 # Get the Excel data
                                 excel_data = output.getvalue()
@@ -1594,7 +1655,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                 st.download_button(
                                     label="📊 Download Compliance Report (Excel)",
                                     data=excel_data,
-                                    file_name=f"compliance_report_{datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M')}.xlsx",
+                                    file_name=f"{year_filename_prefix(training_year)}compliance_report_{datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M')}.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     use_container_width=True
                                 )
@@ -1612,7 +1673,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                             st.download_button(
                                 label="📄 Download as CSV (Fallback)",
                                 data=csv,
-                                file_name=f"compliance_report_{datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M')}.csv",
+                                file_name=f"{year_filename_prefix(training_year)}compliance_report_{datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M')}.csv",
                                 mime="text/csv",
                                 use_container_width=True
                             )
@@ -1727,7 +1788,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                 st.download_button(
                                     "Download Coverage CSV",
                                     csv,
-                                    f"educator_coverage_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.csv",
+                                    f"{year_filename_prefix(training_year)}educator_coverage_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.csv",
                                     "text/csv"
                                 )
                         
@@ -1737,7 +1798,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                 st.download_button(
                                     "Download Needs CSV",
                                     csv,
-                                    f"educator_needs_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.csv",
+                                    f"{year_filename_prefix(training_year)}educator_needs_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.csv",
                                     "text/csv"
                                 )
                         
@@ -1747,7 +1808,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                 st.download_button(
                                     "Download Participation CSV",
                                     csv,
-                                    f"educator_participation_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.csv",
+                                    f"{year_filename_prefix(training_year)}educator_participation_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.csv",
                                     "text/csv"
                                 )
                     
@@ -1838,13 +1899,15 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                             len(col)
                                         ) + 2
                                         worksheet.column_dimensions[chr(65 + idx)].width = min(max_length, 50)
+
+                                    _write_report_year_sheet(writer, training_year, f"{selected_class} roster")
                                 
                                 excel_data = output.getvalue()
                                 
                                 st.download_button(
                                     "Download Roster Excel",
                                     excel_data,
-                                    f"{selected_class.replace(' ', '_')}_roster_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.xlsx",
+                                    f"{year_filename_prefix(training_year)}{selected_class.replace(' ', '_')}_roster_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.xlsx",
                                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     use_container_width=True
                                 )
@@ -1867,13 +1930,15 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                             len(col)
                                         ) + 2
                                         worksheet.column_dimensions[chr(65 + idx)].width = min(max_length, 50)
+
+                                    _write_report_year_sheet(writer, training_year, f"{selected_class} completion tracking")
                                 
                                 excel_data = output.getvalue()
                                 
                                 st.download_button(
                                     "Download Completion Excel",
                                     excel_data,
-                                    f"{selected_class.replace(' ', '_')}_completion_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.xlsx",
+                                    f"{year_filename_prefix(training_year)}{selected_class.replace(' ', '_')}_completion_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.xlsx",
                                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     use_container_width=True
                                 )
@@ -1897,13 +1962,15 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                                                 len(col)
                                             ) + 2
                                             worksheet.column_dimensions[chr(65 + idx)].width = min(max_length, 50)
+
+                                        _write_report_year_sheet(writer, training_year, f"{selected_class} educator roster")
                                     
                                     excel_data = output.getvalue()
                                     
                                     st.download_button(
                                         "Download Educator Excel",
                                         excel_data,
-                                        f"{selected_class.replace(' ', '_')}_educators_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.xlsx",
+                                        f"{year_filename_prefix(training_year)}{selected_class.replace(' ', '_')}_educators_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.xlsx",
                                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                         use_container_width=True
                                     )
@@ -1945,16 +2012,31 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
 
     def _show_comprehensive_schedule_report():
         """Show comprehensive education schedule report with date range selection"""
+        training_year = excel_admin_functions.training_year
         st.subheader("📅 Comprehensive Education Schedule Report")
         st.write("Generate a complete schedule showing all staff enrollments and educator signups across a date range.")
-        
+        if training_year:
+            st.caption(f"Covering **{training_year}** — the year selected at the top "
+                       f"of the dashboard. Switch year there to report on another.")
+
+        # The default window has to sit inside the year being reported on. The
+        # current month is right while that year is running and finds nothing at all
+        # once it has closed, or before a draft year has started.
+        year_start, year_end = admin_access_instance.training_year_span()
+        now = datetime.now(_eastern_tz)
+        month_start = now.replace(day=1).date()
+        month_end = now.replace(day=calendar.monthrange(now.year, now.month)[1]).date()
+        if year_start and year_end and not (year_start <= now.date() <= year_end):
+            month_start = year_start
+            month_end = min(year_start + timedelta(days=13), year_end)
+
         # Date range selection
         col1, col2 = st.columns(2)
         
         with col1:
             start_date = st.date_input(
                 "Start Date",
-                value=datetime.now(_eastern_tz).replace(day=1),  # Default to first of current month
+                value=month_start,
                 key="schedule_report_start_date"
             )
 
@@ -1969,14 +2051,9 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
             st.session_state[prev_start_key] = start_date
 
         with col2:
-            # Default end date to end of current month
-            now = datetime.now(_eastern_tz)
-            last_day = calendar.monthrange(now.year, now.month)[1]
-            default_end = now.replace(day=last_day)
-
             end_date = st.date_input(
                 "End Date",
-                value=default_end,
+                value=month_end,
                 key="schedule_report_end_date"
             )
         
@@ -1984,6 +2061,15 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
         if start_date > end_date:
             st.error("Start date must be before or equal to end date.")
             return
+
+        # Enrollments are read for one training year only, so a range outside that
+        # year returns an empty report that looks like nobody signed up.
+        if year_start and year_end and (start_date > year_end or end_date < year_start):
+            st.warning(
+                f"⚠️ This range falls outside **{training_year}** "
+                f"({year_start} to {year_end}), so the report will be empty. "
+                f"Change the range, or switch year at the top of the dashboard."
+            )
         
         # Calculate date range info
         date_diff = (end_date - start_date).days + 1
@@ -2082,7 +2168,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                             label="📊 Download as Excel",
                             type="primary",
                             data=excel_data,
-                            file_name=f"education_schedule_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}{scope_suffix}_{datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M')}.xlsx",
+                            file_name=f"{year_filename_prefix(training_year)}education_schedule_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}{scope_suffix}_{datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M')}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True
                         )
@@ -2272,7 +2358,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                     st.download_button(
                         label="📥 Export",
                         data=csv_data,
-                        file_name=f"{class_name}_{date_str}_{display_time}_participants.csv",
+                        file_name=f"{year_filename_prefix(excel_admin_functions.training_year)}{class_name}_{date_str}_{display_time}_participants.csv",
                         mime="text/csv",
                         key=f"export_{class_name}_{date_str}_{session_time}"
                     )

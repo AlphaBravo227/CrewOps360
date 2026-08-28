@@ -83,7 +83,7 @@ from modules.track_data_admin_ui import display_track_data_admin
 # Import training modules with new unified database approach
 try:
     from training_modules.unified_database import (
-        UnifiedDatabase, get_active_roster_path, YEAR_STATUS_OPEN)
+        UnifiedDatabase, get_active_roster_path, YEAR_STATUS_OPEN, YEAR_STATUS_DRAFT)
     from training_modules.excel_handler import ExcelHandler
     from training_modules.enrollment_manager import EnrollmentManager
     from training_modules.ui_components import UIComponents as TrainingUIComponents  # Renamed to avoid conflict
@@ -91,7 +91,7 @@ try:
     from training_modules.enrollment_session_components import EnrollmentSessionComponents
     from training_modules.staff_meeting_components import StaffMeetingComponents
     from training_modules.track_manager import TrainingTrackManager
-    from training_modules.admin_access import AdminAccess
+    from training_modules.admin_access import AdminAccess, training_admin_is_authenticated
     from training_modules.admin_excel_functions import ExcelAdminFunctions, enhance_admin_reports
     TRAINING_MODULES_AVAILABLE = True
 except ImportError as e:
@@ -459,6 +459,28 @@ def display_shift_location_preferences_module():
 # Enhanced Training Events App Section with Educator Signup
 # This replaces the display_training_events_app() function in app.py
 
+def _offer_training_year_escape(selected_year_label, fallback_label):
+    """A way back when the selected year's roster can't be loaded.
+
+    Everything below the roster load returns early on failure, the year selector
+    included, so a year whose workbook is missing - a draft being built is the
+    normal case - left the session pinned to it with no control on screen to pick
+    another. Admins are the only ones who can reach such a year, and they were the
+    ones with no way out of it.
+    """
+    if not selected_year_label:
+        return
+    target = fallback_label if fallback_label != selected_year_label else None
+    label = (f"⬅️ Back to {target}" if target
+             else "⬅️ Clear the selected training year")
+    if st.button(label, key="training_year_escape"):
+        st.session_state.pop('training_selected_year', None)
+        st.session_state.pop('training_year_selector', None)
+        # Force the handlers to be rebuilt for whatever year we land on.
+        st.session_state.pop('training_loaded_year_signature', None)
+        st.rerun()
+
+
 def display_training_events_app():
     st.markdown("")
     st.markdown("")
@@ -488,7 +510,17 @@ def display_training_events_app():
         # Work out which training year this session is looking at before anything is
         # loaded: the roster, the enrollments and the conflict checks all have to come
         # from the same year, so the choice can't be made after the handlers are built.
-        visible_years = st.session_state.unified_db.get_staff_visible_training_years()
+        # An authenticated admin sees every year, staff only the ones they can act
+        # in. Building next year's roster means reporting on a draft before anyone
+        # else may see it, and answering a question about a finished year means
+        # reading an archived one; restricting admins to the staff picker made both
+        # impossible. The staff-facing screen below is unaffected - a year an admin
+        # picks that staff can't see is simply not in the list once they log out.
+        admin_view = training_admin_is_authenticated()
+        if admin_view:
+            visible_years = st.session_state.unified_db.get_admin_visible_training_years()
+        else:
+            visible_years = st.session_state.unified_db.get_staff_visible_training_years()
         active_year = st.session_state.unified_db.get_active_training_year()
         default_year_label = None
         if active_year:
@@ -537,6 +569,13 @@ def display_training_events_app():
                         'training_enrollment_manager', 'training_educator_manager',
                         'training_excel_admin_functions'):
                 st.session_state.pop(key, None)
+            # Admin date pickers hold a range chosen against the previous year, and
+            # a range from FY26 finds nothing in FY27. Dropping the widget state
+            # lets them re-default to the year now being viewed.
+            for key in ('schedule_report_start_date', 'schedule_report_end_date',
+                        'schedule_report_prev_start_date',
+                        'availability_start_date', 'availability_end_date'):
+                st.session_state.pop(key, None)
             st.session_state.training_loaded_year_signature = year_signature
             st.session_state.training_loaded_year = selected_year_label
 
@@ -551,12 +590,17 @@ def display_training_events_app():
             if not os.path.exists(excel_path):
                 st.error(f"Excel file not found: {excel_path}")
                 st.info("Please ensure the roster file is in the training/upload folder, or check the active Training Year's roster filename in Training Admin > Training Years")
+                _offer_training_year_escape(selected_year_label, default_year_label)
                 return
             
             st.session_state.training_excel_handler = ExcelHandler(excel_path)
             
             if st.session_state.training_excel_handler.load_error:
                 st.error(f"Error loading Excel file: {st.session_state.training_excel_handler.load_error}")
+                # Same trap as a missing file: the roster failed to load, so nothing
+                # below renders, including the year selector that got us here.
+                st.session_state.pop('training_excel_handler', None)
+                _offer_training_year_escape(selected_year_label, default_year_label)
                 return
 
         # Initialize Track Manager (existing code)
@@ -676,32 +720,55 @@ def display_training_events_app():
     # has classes to finish and the incoming year is taking signups. Offer the choice
     # only when there is one to make.
     if len(visible_years) > 1:
+        # An admin's list carries drafts and archived years too, which "closed" does
+        # not describe; get_admin_visible_training_years() already labels each one
+        # with its own state and enrollment count, so use that when it's there.
+        admin_labels = {y['year_label']: y['label']
+                        for y in visible_years if y.get('label')}
         year_choice = st.selectbox(
             "Training year",
             options=visible_labels,
             index=visible_labels.index(selected_year_label) if selected_year_label in visible_labels else 0,
             format_func=lambda label: (
-                f"{label} (current)" if active_year and label == active_year['year_label']
-                else f"{label} (closed)" if not writable_by_label.get(label, True)
-                else label
+                admin_labels.get(label)
+                or (f"{label} (current)" if active_year and label == active_year['year_label']
+                    else f"{label} (closed)" if not writable_by_label.get(label, True)
+                    else label)
             ),
             key="training_year_selector",
         )
         if year_choice != selected_year_label:
             st.session_state.training_selected_year = year_choice
+            # The admin dashboard has a selector of its own writing the same key;
+            # clearing its widget state stops it reverting this choice on the way
+            # back in.
+            st.session_state.pop('admin_training_year_selector', None)
             st.rerun()
     elif selected_year_label:
         st.caption(f"📅 Registering for: **{selected_year_label}**")
 
     if selected_year_label and not year_is_writable:
         end_date = (selected_year or {}).get('end_date')
-        closed_note = f" It ended {end_date}." if end_date else ""
-        st.warning(
-            f"**{selected_year_label} is closed.**{closed_note} You can review what you "
-            f"took, but enrolling and cancelling are no longer available for this year."
-            + (f" Switch to {active_year['year_label']} above to register."
-               if active_year and active_year['year_label'] != selected_year_label else "")
-        )
+        status = (selected_year or {}).get('status')
+        switch_note = (f" Switch to {active_year['year_label']} above to register."
+                       if active_year and active_year['year_label'] != selected_year_label
+                       else "")
+        # A draft year isn't closed - it hasn't opened. Only an admin can be looking
+        # at one, and telling them it has ended sends them checking an end date that
+        # was never the problem.
+        if status == YEAR_STATUS_DRAFT:
+            st.info(
+                f"**{selected_year_label} is a draft.** Staff can't see it and nobody "
+                f"can enrol in it yet. Set it to Open in Training Admin > Training "
+                f"Years when its roster is ready." + switch_note
+            )
+        else:
+            closed_note = f" It ended {end_date}." if end_date else ""
+            st.warning(
+                f"**{selected_year_label} is closed.**{closed_note} You can review what you "
+                f"took, but enrolling and cancelling are no longer available for this year."
+                + switch_note
+            )
 
     # Staff selection
     staff_list = st.session_state.training_excel_handler.get_staff_list()
