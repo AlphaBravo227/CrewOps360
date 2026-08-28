@@ -1179,6 +1179,14 @@ def _day_tag(day_label):
     return f"{parts[0]} {parts[1]}{parts[2]}" if len(parts) == 3 else day_label
 
 
+def _day_tag_lines(day_label):
+    """'Sun A 2' -> ('Sun', 'A2') — the two halves of the day header on separate
+    lines, so a narrow fixed-width email column doesn't force "Sun A2" to
+    overflow into its neighbor the way one nowrap line did on a wider screen."""
+    parts = day_label.split()
+    return (parts[0], f"{parts[1]}{parts[2]}") if len(parts) == 3 else (day_label, '')
+
+
 _WEEKDAY_ORDER = {d: i for i, d in enumerate(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])}
 
 
@@ -2366,9 +2374,9 @@ def _ask_track_table_html(staff_name, need, need_base, give_up_options, report_c
         colgroup = '<colgroup><col style="width:90px;">' + '<col>' * len(block_days) + '</colgroup>'
 
         header_cells = ''.join(
-            f'<th style="{border}{head_bg}padding:6px 4px;font-size:11px;color:#33404b;'
-            f'text-align:center;white-space:nowrap;">{html.escape(_day_tag(d))}</th>'
-            for d in block_days)
+            f'<th style="{border}{head_bg}padding:6px 2px;font-size:11px;color:#33404b;'
+            f'text-align:center;line-height:1.3;">{html.escape(wd)}<br>{html.escape(bw)}</th>'
+            for wd, bw in (_day_tag_lines(d) for d in block_days))
 
         asg_cells = []
         for d in block_days:
