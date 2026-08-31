@@ -17,6 +17,7 @@ import pytz
 import streamlit as st
 
 from . import staff_database as staffdb
+from .educational_groupings import format_seed_report, seed_groupings
 from .security import check_admin_access
 from .staff_import import (
     DEFAULT_PREFERENCES_PATH,
@@ -46,10 +47,12 @@ _OR_GROUP_HELP = ("How many OR rotations this staff member is placed for. \"No O
                   "a real placement and is different from blank, which means they have "
                   "not been placed yet.")
 
-# The OR grouping is an int where 0 is meaningful, so the selectbox carries '' for
-# unplaced and the numbers as strings, and is parsed back on save.
+# The OR grouping is an int where 0 is meaningful, so it is carried through the widgets
+# as the sheet's own labels — '' for unplaced, 'No OR' for 0 — and parsed back on save.
+# Keeping every cell a string also keeps the roster table Arrow-serializable, which a
+# column mixing '' with ints is not.
 _OR_GROUP_UNPLACED = ''
-_OR_GROUP_NO_OR = '0 (No OR)'
+_OR_GROUP_NO_OR = 'No OR'
 
 
 def _or_group_options():
@@ -246,7 +249,7 @@ def _roster_tab():
         'Weekend Group': r['weekend_group'] or '',
         'Education Group': r['education_group'] or '',
         # Blank means unplaced; 0 is the "No OR" placement, so it must still print.
-        'OR Group': '' if r['or_group'] is None else r['or_group'],
+        'OR Group': _or_group_label(r['or_group']),
         'Email': r['email'] or '',
         'Active': r['is_active'],
         'Notes': r['notes'] or '',
@@ -683,6 +686,67 @@ def _import_tab():
                                                           or report['conflicts']
                                                           or report['skipped'])):
             st.code("\n".join(format_import_report(report)), language=None)
+
+    st.markdown("---")
+    _groupings_seed_section()
+
+
+def _groupings_seed_section():
+    """Seed the educational groupings onto the roster from the placement sheets."""
+    st.markdown("#### Seed Educational Groupings")
+    st.markdown(
+        "The **education cohort** (1-4) and the **OR grouping** (No OR, 2, 3, 4) come "
+        "from two placement sheets that are flat columns of names — there is no staff "
+        "key to import on, so they are transcribed in "
+        "`modules/educational_groupings.py`. This places everyone the sheets name in "
+        "one pass, so the groupings do not have to be entered by hand. Afterwards they "
+        "are maintained per staff member on the **Edit** tab."
+    )
+
+    overwrite = st.checkbox(
+        "Let the sheets overwrite placements already on file", value=False,
+        key="staff_db_groupings_overwrite",
+        help="Off by default, so a re-seed never undoes an edit made on the Edit tab. "
+             "Placements that disagree are reported either way.")
+
+    action_cols = st.columns(2)
+    preview = action_cols[0].button("🔍 Preview groupings (no changes)",
+                                    use_container_width=True,
+                                    key="staff_db_groupings_preview")
+    apply_seed = action_cols[1].button("🎓 Seed groupings", type="primary",
+                                       use_container_width=True,
+                                       key="staff_db_groupings_apply")
+
+    if not (preview or apply_seed):
+        return
+
+    with st.spinner("Placing staff into their groupings…"):
+        report = seed_groupings(overwrite=overwrite, dry_run=preview,
+                                changed_by='admin')
+
+    if report['errors']:
+        st.error("❌ The seed reported errors — see the details below.")
+    elif preview:
+        st.info("🔍 Preview only — nothing was written.")
+    else:
+        st.success("✅ Groupings seeded.")
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Placements " + ("to set" if preview else "set"),
+                          len(report['changes']))
+    metric_cols[1].metric("Already correct", report['unchanged'])
+    metric_cols[2].metric("Left alone", len(report['conflicts']))
+    # Names on a sheet with no roster row, and staff who work tracks but appear on
+    # neither sheet — the two that need a person to decide something.
+    metric_cols[3].metric("Need attention",
+                          len(report['unmatched']) + len(report['working_unplaced']))
+
+    # Anything a person has to act on opens the details by default; a clean run does not.
+    needs_attention = bool(report['errors'] or report['unmatched']
+                           or report['duplicated'] or report['conflicts']
+                           or report['working_unplaced'])
+    with st.expander("Seed details", expanded=needs_attention):
+        st.code("\n".join(format_seed_report(report)), language=None)
 
 
 def _history_tab():

@@ -21,12 +21,11 @@ import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd  # noqa: E402
 
-import seed_educational_groupings as groupings  # noqa: E402
+from modules import educational_groupings as groupings  # noqa: E402
 
 from modules import staff_database as staffdb  # noqa: E402
 from modules.staff_import import (  # noqa: E402
@@ -412,8 +411,7 @@ def check_educational_groupings():
     """The placement sheets seed onto the roster and read back unchanged."""
     print("\nEducational groupings")
 
-    index = groupings.build_index()
-    placements, unmatched, duplicated = groupings.collect(index)
+    placements, unmatched, duplicated = groupings.collect()
 
     check("no name is listed in two columns of the same sheet",
           not duplicated, str(duplicated))
@@ -428,7 +426,7 @@ def check_educational_groupings():
           set(unmatched_names) <= {'Wheeler', 'Grotton', 'Lurie', 'McWeeney'},
           str(unmatched_names))
 
-    outcome = groupings.apply(placements, changed_by='self-check')
+    outcome = groupings.apply_placements(placements, changed_by='self-check')
     check("seeding the groupings reports no errors", not outcome['errors'],
           str(outcome['errors']))
     check("every matched placement was written",
@@ -444,10 +442,10 @@ def check_educational_groupings():
     education_sizes = {group: (len(staffdb.get_education_group_members(
                                    group, include_inactive=True)),
                                len(names) - missing_from('Group', group))
-                       for group, names in groupings.EDUCATION_GROUPS.items()}
+                       for group, names in groupings.EDUCATION_GROUP_SHEET.items()}
     or_sizes = {group: (len(staffdb.get_or_group_members(group, include_inactive=True)),
                         len(names) - missing_from('OR', group))
-                for group, names in groupings.OR_GROUPS.items()}
+                for group, names in groupings.OR_GROUP_SHEET.items()}
     check("every education group holds the staff its column listed",
           all(got == expected for got, expected in education_sizes.values()),
           str(education_sizes))
@@ -485,20 +483,43 @@ def check_educational_groupings():
           issues['missing_or_group'] == ['Johnson'], str(issues['missing_or_group']))
 
     # Re-running must be a no-op, since it is how a re-seed is done.
-    again = groupings.apply(placements, changed_by='self-check')
+    again = groupings.apply_placements(placements, changed_by='self-check')
     check("re-seeding the groupings changes nothing",
           not again['changes'] and not again['errors'], str(again['changes']))
 
     # Placements already on file are not overwritten unless asked.
     staffdb.update_staff('Bach', education_group='1', changed_by='self-check')
-    guarded = groupings.apply(placements, changed_by='self-check')
+    guarded = groupings.apply_placements(placements, changed_by='self-check')
     check("a placement already on file is reported, not overwritten",
           staffdb.get_education_group('Bach') == '1'
           and ('Bach', 'education_group', '1', '3') in guarded['conflicts'],
           str(guarded['conflicts']))
-    forced = groupings.apply(placements, overwrite=True, changed_by='self-check')
-    check("--overwrite lets the sheet win",
+    forced = groupings.apply_placements(placements, overwrite=True, changed_by='self-check')
+    check("overwrite lets the sheet win",
           staffdb.get_education_group('Bach') == '3' and not forced['conflicts'])
+
+    # seed_groupings() is what both entry points call — the admin page's button and the
+    # command line — so the whole path, report included, is exercised here.
+    preview = groupings.seed_groupings(dry_run=True, changed_by='self-check')
+    check("a preview reports no work left on an already-seeded roster",
+          not preview['changes'] and not preview['errors']
+          and preview['matched'] == len(placements), str(preview['changes']))
+    check("the preview still reports the mismatches",
+          preview['unmatched'] == unmatched
+          and preview['working_unplaced'] == ['Johnson'],
+          f"{preview['unmatched']}, {preview['working_unplaced']}")
+    check("the seed report renders",
+          any('Sheet entries read' in line
+              for line in groupings.format_seed_report(preview)))
+
+    # An empty roster is the one condition the button has to refuse rather than
+    # silently do nothing.
+    staffdb.update_staff('Bach', education_group=None, changed_by='self-check')
+    reseed = groupings.seed_groupings(changed_by='self-check')
+    check("seeding fills a placement that was cleared",
+          staffdb.get_education_group('Bach') == '3'
+          and ('Bach', 'education_group', None, '3') in reseed['changes'],
+          str(reseed['changes']))
 
 
 def main():

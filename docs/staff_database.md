@@ -125,7 +125,8 @@ admin-password gated and has five tabs:
 - **Add Staff** — new hires, including their shift requirements.
 - **Edit / Rename / Remove** — attributes, requirements, active status, name changes,
   deletion.
-- **Import from Excel** — first-time seed and later refreshes.
+- **Import from Excel** — first-time seed and later refreshes, plus seeding the
+  educational groupings.
 - **History** — the audit log and past name changes.
 
 The page also flags anything needing attention: staff with no role, clinical staff with
@@ -188,9 +189,15 @@ Behavior worth knowing:
 
 ### Seeding the educational groupings
 
-The two placement sheets are two flat columns-of-names with no staff key of their own,
-so they are transcribed into `scripts/seed_educational_groupings.py` rather than read
-from a workbook. After the roster exists:
+The two placement sheets are two flat columns-of-names with no staff key of their own —
+there is nothing to key an import on and nothing to re-read later — so they are
+transcribed into `modules/educational_groupings.py` rather than read from a workbook.
+Seeding them places everyone the sheets name in one pass, so the groupings never have
+to be entered by hand.
+
+Once the roster exists, from the admin page: **Import from Excel** tab →
+**Seed Educational Groupings**. *Preview* reports what would change without writing;
+*Seed groupings* applies it. Or on the command line:
 
 ```bash
 python scripts/seed_educational_groupings.py --dry-run    # report only
@@ -198,11 +205,13 @@ python scripts/seed_educational_groupings.py              # apply
 python scripts/seed_educational_groupings.py --overwrite  # let the sheets win
 ```
 
+Both run the same `seed_groupings()`, and neither needs the app to be stopped.
+
 Like the roster import, a placement already on file is reported rather than overwritten
-unless `--overwrite` is passed, so a re-seed never quietly undoes an admin's edit. The
-report names every entry that does not line up: sheet names with no roster row, names
-listed in two columns of the same sheet, staff who work tracks but appear on neither
-sheet, and staff on one sheet but not the other.
+unless overwrite is asked for, so a re-seed never quietly undoes an edit made on the
+Edit tab. The report names every entry that does not line up: sheet names with no roster
+row, names listed in two columns of the same sheet, staff who work tracks but appear on
+neither sheet, and staff on one sheet but not the other.
 
 As transcribed, against the FY27 roster, that is:
 
@@ -218,6 +227,10 @@ mapped in the script's `ALIASES`: `Hanley` → `Hanley-McCarthy`, `Steck`/`Steck
 `Murphy E` → `Murphy`, `Parkas` → `Farkas`. Case, spacing and punctuation are folded
 away separately, which is what lets the sheets' `O'Donnell` and `Vanderkooi` reach the
 roster's `O’Donnell` and `VanderKooi`.
+
+Everything left over is a decision rather than data entry, and belongs on the **Edit**
+tab: `Wheeler`, `Johnson`, and whichever of the partly-placed staff should hold the
+other placement.
 
 ## Reading the roster in code
 
