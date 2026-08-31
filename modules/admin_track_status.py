@@ -330,7 +330,7 @@ def add_track_status_manager_to_admin():
 """
 To integrate this into your admin dashboard, add the following changes:
 
-1. In the _show_admin_functions method, add this to the admin_sections list:
+1. In the AdminAccess.ADMIN_SECTIONS list, add:
    ("🔧 Track Manager", "track_manager", "Manage track status and edit assignments"),
 
 2. In the _render_admin_function method, add this condition:

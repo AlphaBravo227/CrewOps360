@@ -459,7 +459,8 @@ def display_shift_location_preferences_module():
 # Enhanced Training Events App Section with Educator Signup
 # This replaces the display_training_events_app() function in app.py
 
-def _offer_training_year_escape(selected_year_label, fallback_label):
+def _offer_training_year_escape(selected_year_label, fallback_label,
+                                show_module_exit=False):
     """A way back when the selected year's roster can't be loaded.
 
     Everything below the roster load returns early on failure, the year selector
@@ -467,8 +468,16 @@ def _offer_training_year_escape(selected_year_label, fallback_label):
     normal case - left the session pinned to it with no control on screen to pick
     another. Admins are the only ones who can reach such a year, and they were the
     ones with no way out of it.
+
+    show_module_exit adds a way off the module entirely, for the admin dashboard:
+    it draws its own navigation, and a roster failure returns before it is ever
+    reached, so without this there is nothing on screen to leave with.
     """
     if not selected_year_label:
+        if show_module_exit and st.button("← Back to CrewOps360",
+                                          key="training_year_escape_module"):
+            st.session_state.selected_module = None
+            st.rerun()
         return
     target = fallback_label if fallback_label != selected_year_label else None
     label = (f"⬅️ Back to {target}" if target
@@ -480,17 +489,31 @@ def _offer_training_year_escape(selected_year_label, fallback_label):
         st.session_state.pop('training_loaded_year_signature', None)
         st.rerun()
 
-
-def display_training_events_app():
-    st.markdown("")
-    st.markdown("")
-    
-    # Back button
-    if st.button("← Back to CrewOps360", key="back_from_training"):
+    if show_module_exit and st.button("← Back to CrewOps360",
+                                      key="training_year_escape_module"):
         st.session_state.selected_module = None
         st.rerun()
+
+
+def display_training_events_app():
+    # An authenticated admin on the training admin dashboard gets the whole page.
+    # The header, the back button and the sidebar below belong to the staff-facing
+    # enrollment screen; the dashboard replaces that screen outright rather than
+    # sitting beside it, the same way the Staff Database and Track Data admins do
+    # in Track Bidding.
+    admin_dashboard = (training_admin_is_authenticated()
+                       and st.session_state.get('training_admin_show_function', False))
+
+    st.markdown("")
+    st.markdown("")
     
-    display_training_header()
+    if not admin_dashboard:
+        # Back button
+        if st.button("← Back to CrewOps360", key="back_from_training"):
+            st.session_state.selected_module = None
+            st.rerun()
+        
+        display_training_header()
     
     if not TRAINING_MODULES_AVAILABLE:
         st.error("Training modules are not available. Please ensure all training files are properly configured.")
@@ -590,7 +613,8 @@ def display_training_events_app():
             if not os.path.exists(excel_path):
                 st.error(f"Excel file not found: {excel_path}")
                 st.info("Please ensure the roster file is in the training/upload folder, or check the active Training Year's roster filename in Training Admin > Training Years")
-                _offer_training_year_escape(selected_year_label, default_year_label)
+                _offer_training_year_escape(selected_year_label, default_year_label,
+                                            show_module_exit=admin_dashboard)
                 return
             
             st.session_state.training_excel_handler = ExcelHandler(excel_path)
@@ -600,7 +624,8 @@ def display_training_events_app():
                 # Same trap as a missing file: the roster failed to load, so nothing
                 # below renders, including the year selector that got us here.
                 st.session_state.pop('training_excel_handler', None)
-                _offer_training_year_escape(selected_year_label, default_year_label)
+                _offer_training_year_escape(selected_year_label, default_year_label,
+                                            show_module_exit=admin_dashboard)
                 return
 
         # Initialize Track Manager (existing code)
@@ -690,17 +715,23 @@ def display_training_events_app():
 
     except Exception as e:
         st.error(f"Error initializing training components: {str(e)}")
+        # The admin dashboard draws its own navigation and is never reached from
+        # here, so leave a way off the module rather than a dead page.
+        if admin_dashboard and st.button("← Back to CrewOps360",
+                                         key="training_init_error_back"):
+            st.session_state.selected_module = None
+            st.rerun()
         return
 
-    # Show admin access in sidebar (for administrators only)
-    st.session_state.training_admin_access.show_admin_access_button()
-    
-    # Check if admin function page should be displayed - ONLY block if admin is authenticated AND viewing admin page
-    if (st.session_state.training_admin_access.is_admin_authenticated() and 
-        st.session_state.get('training_admin_show_function', False)):
-        # Admin dashboard is being displayed, don't show regular content
+    # The admin dashboard is a full-width page: nothing of the staff screen, the
+    # sidebar included, is drawn behind it.
+    if (st.session_state.training_admin_access.is_admin_authenticated() and
+            st.session_state.get('training_admin_show_function', False)):
         st.session_state.training_admin_access.show_admin_function_page()
         return
+
+    # Show the way in to the admin dashboard in the sidebar (for administrators only)
+    st.session_state.training_admin_access.show_admin_access_button()
 
     # Add track database status to sidebar
     with st.sidebar:

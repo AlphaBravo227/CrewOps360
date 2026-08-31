@@ -89,7 +89,13 @@ class AdminAccess:
         return training_admin_is_authenticated()
     
     def show_admin_access_button(self):
-        """Show a discrete admin access button in the sidebar"""
+        """Show the sidebar way in to the training admin.
+
+        The dashboard itself is a full-width page of its own - the same shape as
+        the Staff Database and Track Data admins in Track Bidding - so the sidebar
+        carries only the door: a PIN form when nobody is signed in, and a button
+        back into the dashboard for an admin who has stepped out of it.
+        """
         with st.sidebar:
             st.markdown("---")
             
@@ -98,7 +104,7 @@ class AdminAccess:
                 if not self.is_admin_authenticated():
                     self._show_login_form()
                 else:
-                    self._show_admin_panel()
+                    self._show_admin_entry()
     
     def _show_login_form(self):
         """Show the PIN entry form"""
@@ -120,62 +126,37 @@ class AdminAccess:
                 if pin_input == self.admin_pin:
                     st.session_state.training_admin_authenticated = True
                     st.session_state.training_admin_login_time = datetime.now(_eastern_tz)
+                    # Signing in lands straight on the full-screen dashboard rather
+                    # than leaving the admin to find a second control in the sidebar.
+                    st.session_state.training_admin_current_function = None
+                    st.session_state.training_admin_show_function = True
                     st.success("✅ Training admin access granted")
                     st.rerun()
                 else:
                     st.error("❌ Invalid PIN")
     
-    def _show_admin_panel(self):
-        """Show admin panel when authenticated"""
-        st.success("🔓 **Training Admin Panel Active**")
+    def _show_admin_entry(self):
+        """Sidebar controls for an admin who is signed in but out on a staff page."""
+        st.success("🔓 **Training Admin signed in**")
+        st.info(f"⏱️ Session expires in {self.session_minutes_remaining():.0f} minutes")
         
-        # Show session info
-        login_time = st.session_state.training_admin_login_time
-        elapsed_minutes = (datetime.now(_eastern_tz) - login_time).total_seconds() / 60
-        remaining_minutes = max(0, self.session_timeout - elapsed_minutes)
-        
-        st.info(f"⏱️ Session expires in {remaining_minutes:.0f} minutes")
-        
-        # Logout button
-        if st.button("🔒 Logout", key="training_admin_logout"):
-            self.logout_admin()
+        if st.button("🛠️ Open Training Admin", key="training_admin_open_dashboard",
+                     use_container_width=True, type="primary"):
+            st.session_state.training_admin_current_function = None
+            st.session_state.training_admin_show_function = True
             st.rerun()
         
-        st.markdown("---")
-        
-        # Admin functions
-        self._show_admin_functions()
+        if st.button("🔒 Logout", key="training_admin_logout", use_container_width=True):
+            self.logout_admin()
+            st.rerun()
     
-    def _show_admin_functions(self):
-        """Show available admin functions"""
-        st.write("**📊 Training Administrative Functions**")
-        
-        # Create sections for different admin functions
-        admin_sections = [
-            ("📈 Enrollment Reports", "enrollment_reports", "View and export enrollment data"),
-            ("👥 Manage Staff", "manage_staff", "View staff enrollment status"),
-            ("📚 Manage Classes", "manage_classes", "Configure class settings and schedules"),
-            ("🗓️ Training Years", "training_years", "Manage fiscal-year rosters and cutover"),
-            ("📄 Data Export", "data_management", "Export training data"),
-            ("📊 System Statistics", "system_stats", "View training system usage"),
-            ("🗂️ Database Maintenance", "database_maintenance", "Training database operations"),
-            ("🔧 Track Manager", "track_manager", "Manage track status and edit assignments"),
-        ]
-        
-        for label, key, description in admin_sections:
-            with st.container():
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.write(f"**{label}**")
-                    st.caption(description)
-                with col2:
-                    if st.button("Open", key=f"training_admin_{key}", use_container_width=True):
-                        st.session_state.training_admin_current_function = key
-                        st.session_state.training_admin_show_function = True
-                        st.rerun()
-                
-                st.markdown("---")
-
+    def session_minutes_remaining(self):
+        """Minutes left on the current admin session (0 once it has expired)."""
+        login_time = st.session_state.get('training_admin_login_time')
+        if not login_time:
+            return 0
+        elapsed_minutes = (datetime.now(_eastern_tz) - login_time).total_seconds() / 60
+        return max(0, self.session_timeout - elapsed_minutes)
 
     def logout_admin(self):
         """Logout admin user"""
@@ -191,8 +172,27 @@ class AdminAccess:
         # Extend session on activity
         st.session_state.training_admin_login_time = datetime.now(_eastern_tz)
     
+    # The functions the dashboard offers, in the order they appear on its home
+    # page. Shared by the home grid and the header of each function page, so a
+    # function's title and description are written once.
+    ADMIN_SECTIONS = [
+        ("📈 Enrollment Reports", "enrollment_reports", "View and export enrollment data"),
+        ("👥 Manage Staff", "manage_staff", "View staff enrollment status"),
+        ("📚 Manage Classes", "manage_classes", "Configure class settings and schedules"),
+        ("🗓️ Training Years", "training_years", "Manage fiscal-year rosters and cutover"),
+        ("📄 Data Export", "data_management", "Export training data"),
+        ("📊 System Statistics", "system_stats", "View training system usage"),
+        ("🗂️ Database Maintenance", "database_maintenance", "Training database operations"),
+        ("🔧 Track Manager", "track_manager", "Manage track status and edit assignments"),
+    ]
+
     def show_admin_function_page(self):
-        """Show the selected admin function page"""
+        """Render the training admin as a full-width page of its own.
+
+        With no function chosen it shows the dashboard home - the function menu,
+        which used to live in the sidebar. Choosing one replaces the menu with that
+        function, still full width, with a way back to the menu in the header.
+        """
         if not self.is_admin_authenticated():
             st.error("🔒 Access Denied")
             st.info("Please authenticate through the training admin panel in the sidebar")
@@ -201,30 +201,10 @@ class AdminAccess:
         if not st.session_state.get('training_admin_show_function', False):
             return False
         
-        current_function = st.session_state.get('training_admin_current_function', '')
+        current_function = st.session_state.get('training_admin_current_function') or ''
+        section = next((s for s in self.ADMIN_SECTIONS if s[1] == current_function), None)
         
-        # Admin page header
-        st.title("🛠️ Training Administrative Dashboard")
-        
-        # Session status bar
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Session Status", "🟢 Active")
-        with col2:
-            login_time = st.session_state.training_admin_login_time
-            elapsed_minutes = (datetime.now(_eastern_tz) - login_time).total_seconds() / 60
-            remaining_minutes = max(0, self.session_timeout - elapsed_minutes)
-            st.metric("Time Remaining", f"{remaining_minutes:.0f} min")
-        with col3:
-            if st.button("🔒 Logout", key="training_admin_logout_main"):
-                self.logout_admin()
-                st.rerun()
-        with col4:
-            if st.button("⬅️ Back to Panel", key="training_admin_back"):
-                st.session_state.training_admin_show_function = False
-                st.rerun()
-        
-        st.markdown("---")
+        self._show_admin_page_header(section)
 
         # Which fiscal year everything below covers. During a cutover two years are
         # live at once and the numbers differ completely between them, so this is
@@ -233,11 +213,74 @@ class AdminAccess:
 
         st.markdown("---")
         
-        # Show the selected admin function
-        self._render_admin_function(current_function)
+        if section:
+            self._render_admin_function(current_function)
+        elif current_function:
+            st.error("Unknown admin function")
+        else:
+            self._show_admin_home()
         
         return True
-    
+
+    def _show_admin_page_header(self, section=None):
+        """Navigation, title block and session status for the full-screen dashboard."""
+        # Leaving the dashboard, and - once inside a function - stepping back to the
+        # function menu. Both live here rather than in the sidebar, which is where
+        # every other full-screen admin page in CrewOps360 keeps them.
+        nav_cols = st.columns([2, 2, 6])
+        with nav_cols[0]:
+            if st.button("← Back to Training & Events", key="training_admin_exit",
+                         use_container_width=True):
+                st.session_state.training_admin_show_function = False
+                st.session_state.training_admin_current_function = None
+                st.rerun()
+        if section:
+            with nav_cols[1]:
+                if st.button("⬅️ Admin Menu", key="training_admin_back",
+                             use_container_width=True):
+                    st.session_state.training_admin_current_function = None
+                    st.rerun()
+
+        title = section[0] if section else "🛠️ Training Administration"
+        subtitle = (section[2] if section
+                    else "Enrollment, classes, training years and reporting")
+        st.markdown(f"""
+        <div style="text-align: center; padding: 1rem;">
+            <h1 style="color: #9C27B0;">{title}</h1>
+            <p style="color: #666; font-size: 1.1rem;">{subtitle}</p>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("---")
+
+        status_cols = st.columns(4)
+        with status_cols[0]:
+            st.metric("Session Status", "🟢 Active")
+        with status_cols[1]:
+            st.metric("Time Remaining", f"{self.session_minutes_remaining():.0f} min")
+        with status_cols[2]:
+            if st.button("🔒 Logout", key="training_admin_logout_main",
+                         use_container_width=True):
+                self.logout_admin()
+                st.rerun()
+        st.markdown("---")
+
+    def _show_admin_home(self):
+        """The function menu, as a full-width grid of cards."""
+        st.markdown("### 📊 Training Administrative Functions")
+        st.caption("Everything below reports on the training year named above.")
+
+        columns = st.columns(2)
+        for index, (label, key, description) in enumerate(self.ADMIN_SECTIONS):
+            with columns[index % 2]:
+                with st.container(border=True):
+                    st.markdown(f"**{label}**")
+                    st.caption(description)
+                    if st.button("Open", key=f"training_admin_{key}",
+                                 use_container_width=True):
+                        st.session_state.training_admin_current_function = key
+                        st.session_state.training_admin_show_function = True
+                        st.rerun()
+
     # ========================================================================
     # TRAINING YEAR CONTEXT
     # ========================================================================
