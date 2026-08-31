@@ -375,7 +375,7 @@ class FiscalYearDisplay:
         with filter_col1:
             st.markdown("**Filter by Role:**")
             role_filter = st.selectbox(
-                "",
+                "Filter by Role",
                 options=available_roles,
                 index=available_roles.index(st.session_state.fy_role_filter) if st.session_state.fy_role_filter in available_roles else 0,
                 key="fy_role_select",
@@ -386,7 +386,7 @@ class FiscalYearDisplay:
         with filter_col2:
             st.markdown("**Filter by Staff:**")
             staff_filter = st.selectbox(
-                "",
+                "Filter by Staff",
                 options=staff_filter_options,
                 index=staff_filter_options.index(st.session_state.fy_staff_filter) if st.session_state.fy_staff_filter in staff_filter_options else 0,
                 key="fy_staff_select",

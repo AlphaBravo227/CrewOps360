@@ -82,7 +82,7 @@ def display_compact_track_viewer(track_name=None):
         role_display = reverse_role_mapping.get(current_role, 'All Roles')
         
         role_filter = st.selectbox(
-            "",
+            "Filter by Role",
             options=available_roles,
             index=available_roles.index(role_display) if role_display in available_roles else 0,
             key="compact_role_select_box",
@@ -111,7 +111,7 @@ def display_compact_track_viewer(track_name=None):
         
         # Staff filter selectbox
         selected_staff_filter = st.selectbox(
-            "",
+            "Filter by Staff",
             options=staff_filter_options,
             index=staff_filter_options.index(current_staff_filter) if current_staff_filter in staff_filter_options else 0,
             key="compact_staff_filter_select",
