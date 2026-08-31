@@ -9,6 +9,9 @@ Runs the Excel import into a throwaway database and verifies two things:
      app to the database does not change behavior.
   2. Roster management — add, update, activate/deactivate, rename (including
      propagation of a name change into other tables) and delete all behave.
+  3. Educational groupings — the placement sheets seed onto the roster, round-trip
+     through the getters, and report the same name mismatches they did when they were
+     transcribed.
 
 Usage:
     python scripts/check_staff_database.py
@@ -18,9 +21,12 @@ import os
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd  # noqa: E402
+
+import seed_educational_groupings as groupings  # noqa: E402
 
 from modules import staff_database as staffdb  # noqa: E402
 from modules.staff_import import (  # noqa: E402
@@ -402,6 +408,99 @@ def check_roster_issues():
           not issues['missing_requirements'], str(issues['missing_requirements']))
 
 
+def check_educational_groupings():
+    """The placement sheets seed onto the roster and read back unchanged."""
+    print("\nEducational groupings")
+
+    index = groupings.build_index()
+    placements, unmatched, duplicated = groupings.collect(index)
+
+    check("no name is listed in two columns of the same sheet",
+          not duplicated, str(duplicated))
+
+    unmatched_names = [name for _, _, name in unmatched]
+    check("Wheeler is on the OR sheet but on no roster",
+          'Wheeler' in unmatched_names, str(unmatched_names))
+    # Grotton, Lurie and McWeeney joined on the FY27 roster, so they go unmatched when
+    # this runs against FY26 — the import default. Anything beyond those four means a
+    # sheet name has stopped lining up with the roster.
+    check("no other sheet name has come adrift from the roster",
+          set(unmatched_names) <= {'Wheeler', 'Grotton', 'Lurie', 'McWeeney'},
+          str(unmatched_names))
+
+    outcome = groupings.apply(placements, changed_by='self-check')
+    check("seeding the groupings reports no errors", not outcome['errors'],
+          str(outcome['errors']))
+    check("every matched placement was written",
+          outcome['unchanged'] == 0
+          and len(outcome['changes']) == sum(len(p) for p in placements.values()),
+          f"{len(outcome['changes'])} written, {outcome['unchanged']} unchanged")
+
+    # Every column should hold exactly the staff it listed, less any name the roster
+    # this ran against does not carry.
+    def missing_from(sheet, column):
+        return sum(1 for s, c, _ in unmatched if s == sheet and c == column)
+
+    education_sizes = {group: (len(staffdb.get_education_group_members(
+                                   group, include_inactive=True)),
+                               len(names) - missing_from('Group', group))
+                       for group, names in groupings.EDUCATION_GROUPS.items()}
+    or_sizes = {group: (len(staffdb.get_or_group_members(group, include_inactive=True)),
+                        len(names) - missing_from('OR', group))
+                for group, names in groupings.OR_GROUPS.items()}
+    check("every education group holds the staff its column listed",
+          all(got == expected for got, expected in education_sizes.values()),
+          str(education_sizes))
+    check("every OR grouping holds the staff its column listed",
+          all(got == expected for got, expected in or_sizes.values()), str(or_sizes))
+
+    # The two placements are independent: more staff hold an OR placement than a
+    # cohort, so neither can be derived from the other.
+    education = staffdb.get_education_group_mapping(include_inactive=True)
+    or_groups = staffdb.get_or_group_mapping(include_inactive=True)
+    check("the two groupings are independent of one another",
+          len(education) == sum(e for _, e in education_sizes.values())
+          and len(or_groups) == sum(e for _, e in or_sizes.values())
+          and set(education) != set(or_groups),
+          f"{len(education)} in a cohort, {len(or_groups)} with an OR placement")
+
+    # 0 is the "No OR" placement and has to survive the round trip as a value, not as
+    # the falsy stand-in for "unplaced".
+    check("a No OR placement reads back as 0, not as unplaced",
+          staffdb.get_or_group('Ahlstedt') == 0
+          and 'Ahlstedt' in staffdb.get_or_group_mapping(include_inactive=True),
+          repr(staffdb.get_or_group('Ahlstedt')))
+    check("an unplaced staff member reads back as None",
+          staffdb.get_or_group('Johnson') is None
+          and staffdb.get_education_group('Johnson') is None)
+    check("the sheets' own column headings resolve",
+          staffdb.get_or_group_members('No OR') == staffdb.get_or_group_members(0)
+          and (staffdb.get_education_group_members('Group 1')
+               == staffdb.get_education_group_members('1')))
+
+    # The sheets place the clinical roster; management, the non-clinical roles and the
+    # newest hires are the expected blanks.
+    issues = staffdb.get_roster_issues(include_inactive=True)
+    check("only Johnson works tracks with neither placement",
+          issues['missing_or_group'] == ['Johnson'], str(issues['missing_or_group']))
+
+    # Re-running must be a no-op, since it is how a re-seed is done.
+    again = groupings.apply(placements, changed_by='self-check')
+    check("re-seeding the groupings changes nothing",
+          not again['changes'] and not again['errors'], str(again['changes']))
+
+    # Placements already on file are not overwritten unless asked.
+    staffdb.update_staff('Bach', education_group='1', changed_by='self-check')
+    guarded = groupings.apply(placements, changed_by='self-check')
+    check("a placement already on file is reported, not overwritten",
+          staffdb.get_education_group('Bach') == '1'
+          and ('Bach', 'education_group', '1', '3') in guarded['conflicts'],
+          str(guarded['conflicts']))
+    forced = groupings.apply(placements, overwrite=True, changed_by='self-check')
+    check("--overwrite lets the sheet win",
+          staffdb.get_education_group('Bach') == '3' and not forced['conflicts'])
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, 'staff_check.db')
@@ -438,6 +537,7 @@ def main():
         check_parity()
         check_requirements_parity()
         check_roster_issues()
+        check_educational_groupings()
         check_roster_management()
         check_requirements_editing()
 

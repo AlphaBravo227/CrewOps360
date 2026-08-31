@@ -27,6 +27,11 @@ reproduced here as the *clinical role*:
     clinical_role = 'dual' if is_dual else role.lower()      # nurse / medic / dual
     effective_role = 'nurse' if clinical_role != 'medic'     # staffing bucket
 
+Two further attributes place a staff member for education rather than describe them:
+`education_group` (cohort 1-4) and `or_group` (OR rotations: 0, 2, 3 or 4). Classes are
+scheduled against those placements. Both are NULL until someone is placed, and for the
+OR grouping that blank is not the same as 0 — 0 is the "No OR" placement.
+
 Names are the join key across every other table (tracks, bids, enrollments, …), so
 renaming a staff member is a first-class operation: rename_staff() updates the roster
 row and every staff-name reference in the database in one transaction, and records what
@@ -62,6 +67,18 @@ CLINICAL_ROLES = ['NURSE', 'MEDIC']
 
 # Weekend groups as spelled in Requirements.xlsx's WEEKEND GROUP column.
 WEEKEND_GROUPS = ['A', 'B', 'C', 'D', 'E']
+
+# Educational groupings. Two independent placements that classes are scheduled
+# against — a staff member normally holds one of each.
+#
+# `education_group` is the cohort a staff member attends recurring education with:
+# groups 1-4, kept as labels rather than counts.
+EDUCATION_GROUPS = ['1', '2', '3', '4']
+
+# `or_group` is how many OR rotations they are placed for. 0 ("No OR") is a real
+# placement and is not the same as blank, which means nobody has placed them yet —
+# the same blank-is-not-zero rule the shift requirements follow.
+OR_GROUPS = [0, 2, 3, 4]
 
 # Every (table, column) pair in the database that stores a staff name as free text.
 # Discovered dynamically against the live schema in _staff_reference_columns() so a new
@@ -166,6 +183,8 @@ def initialize_staff_tables():
             night_minimum INTEGER,
             weekend_minimum INTEGER,
             weekend_group TEXT,
+            education_group TEXT,
+            or_group INTEGER,
             email TEXT,
             is_active INTEGER NOT NULL DEFAULT 1,
             notes TEXT,
@@ -186,6 +205,10 @@ def initialize_staff_tables():
             ('weekend_minimum', 'INTEGER'),
             ('weekend_group', 'TEXT'),
             ('email', 'TEXT'),
+            # The educational groupings arrived later still, and are NULL until a
+            # staff member is placed.
+            ('education_group', 'TEXT'),
+            ('or_group', 'INTEGER'),
         ):
             if column not in staff_columns:
                 cursor.execute(f"ALTER TABLE staff ADD COLUMN {column} {definition}")
@@ -219,6 +242,9 @@ def initialize_staff_tables():
 
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_staff_active ON staff(is_active)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_staff_role ON staff(role)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_staff_education_group '
+                       'ON staff(education_group)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_staff_or_group ON staff(or_group)')
 
         conn.commit()
         invalidate_cache()
@@ -371,6 +397,61 @@ def to_weekend_group(value):
     return text if text in WEEKEND_GROUPS else None
 
 
+def to_education_group(value):
+    """
+    Normalize an educational group to '1', '2', '3' or '4', or None when unplaced.
+
+    Accepts the grouping sheet's column headings ("Group 3") as well as a bare number,
+    including the float a spreadsheet read hands back.
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip().upper()
+    if not text or text in ('NAN', 'NONE'):
+        return None
+    if text.startswith('GROUP'):
+        text = text[len('GROUP'):].strip()
+    try:
+        text = str(int(float(text)))
+    except (TypeError, ValueError):
+        pass
+    return text if text in EDUCATION_GROUPS else None
+
+
+def to_or_group(value):
+    """
+    Normalize an OR grouping to 0, 2, 3 or 4, or None when unplaced.
+
+    Accepts the grouping sheet's column headings ("No OR", "2 OR") as well as a bare
+    number. Note that 0 and None are different answers: 0 is "placed, with no OR
+    rotations", None is "nobody has placed them yet".
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip().upper()
+    if not text or text in ('NAN', 'NONE'):
+        return None
+    if text.endswith('OR'):
+        text = text[:-2].strip()
+    if text in ('NO', 'NONE'):
+        return 0
+    try:
+        number = int(float(text))
+    except (TypeError, ValueError):
+        return None
+    return number if number in OR_GROUPS else None
+
+
 def to_email(value):
     """Trim an email address, or None when blank."""
     if value is None:
@@ -451,7 +532,7 @@ def _select_staff_rows():
         SELECT id, staff_name, role, is_management, is_dual, is_educator_at,
                no_matrix, seniority, is_active, notes, created_date, modified_date,
                shifts_per_pay_period, night_minimum, weekend_minimum,
-               weekend_group, email
+               weekend_group, email, education_group, or_group
         FROM staff
     ''')
     return cursor.fetchall()
@@ -474,9 +555,9 @@ def _roster():
             try:
                 rows = _select_staff_rows()
             except sqlite3.OperationalError as e:
-                # A staff table created by an older version of this module is missing the
-                # requirements columns. Run the migration and read again rather than
-                # returning an empty roster.
+                # A staff table created by an older version of this module is missing
+                # the requirements or educational-grouping columns. Run the migration
+                # and read again rather than returning an empty roster.
                 if 'no such column' not in str(e).lower():
                     raise
                 initialize_staff_tables()
@@ -501,6 +582,8 @@ def _roster():
                     'weekend_minimum': row[14],
                     'weekend_group': row[15],
                     'email': row[16],
+                    'education_group': row[17],
+                    'or_group': row[18],
                 }
                 record['clinical_role'] = clinical_role_of(record)
                 record['effective_role'] = effective_role_of(record)
@@ -540,7 +623,9 @@ def get_staff(staff_name):
 
     Returns:
         dict or None: keys staff_name, role, clinical_role, effective_role,
-        is_management, is_dual, is_educator_at, no_matrix, seniority, is_active, notes.
+        is_management, is_dual, is_educator_at, no_matrix, seniority,
+        shifts_per_pay_period, night_minimum, weekend_minimum, weekend_group,
+        education_group, or_group, email, is_active, notes.
     """
     record = _lookup(staff_name)
     return dict(record) if record else None
@@ -693,6 +778,27 @@ def get_weekend_group(staff_name, default=None):
     return record['weekend_group']
 
 
+def get_education_group(staff_name, default=None):
+    """Educational group ('1'-'4'), or default when the staff member is unplaced."""
+    record = _lookup(staff_name)
+    if not record or not record['education_group']:
+        return default
+    return record['education_group']
+
+
+def get_or_group(staff_name, default=None):
+    """
+    OR grouping (0, 2, 3 or 4), or default when the staff member is unplaced.
+
+    0 is a real placement ("No OR"), so an unplaced staff member is the only case that
+    yields the default — testing the result for truthiness would conflate the two.
+    """
+    record = _lookup(staff_name)
+    if not record or record['or_group'] is None:
+        return default
+    return record['or_group']
+
+
 def get_email(staff_name, default=None):
     """Email address, or default when not on file."""
     record = _lookup(staff_name)
@@ -812,6 +918,46 @@ def get_no_matrix_mapping(include_inactive=False):
             for r in get_all_staff(include_inactive=include_inactive)}
 
 
+def get_education_group_mapping(include_inactive=False):
+    """{staff_name: education group} for staff who have been placed in one."""
+    return {r['staff_name']: r['education_group']
+            for r in get_all_staff(include_inactive=include_inactive)
+            if r['education_group']}
+
+
+def get_or_group_mapping(include_inactive=False):
+    """
+    {staff_name: OR grouping} for staff who have been placed.
+
+    Staff placed in "No OR" appear with a value of 0; only the unplaced are left out.
+    """
+    return {r['staff_name']: r['or_group']
+            for r in get_all_staff(include_inactive=include_inactive)
+            if r['or_group'] is not None}
+
+
+def get_education_group_members(group, include_inactive=False):
+    """Names of the staff in one educational group, in roster order."""
+    target = to_education_group(group)
+    if target is None:
+        return []
+    return [r['staff_name'] for r in get_all_staff(include_inactive=include_inactive)
+            if r['education_group'] == target]
+
+
+def get_or_group_members(group, include_inactive=False):
+    """
+    Names of the staff in one OR grouping, in roster order.
+
+    Pass 0 (or "No OR") for the staff placed with no OR rotations.
+    """
+    target = to_or_group(group)
+    if target is None:
+        return []
+    return [r['staff_name'] for r in get_all_staff(include_inactive=include_inactive)
+            if r['or_group'] == target]
+
+
 def get_management_names(include_inactive=False):
     """Names of management staff."""
     return [r['staff_name'] for r in get_all_staff(include_inactive=include_inactive,
@@ -831,7 +977,9 @@ def get_roster_issues(include_inactive=False):
     Returns:
         dict: with keys 'unassigned_role' (imported without a role),
         'missing_seniority' (clinical staff with no rank, which leaves them out of bid
-        ordering) and 'duplicate_seniority' ({rank: [names]}).
+        ordering), 'duplicate_seniority' ({rank: [names]}), 'missing_requirements',
+        'missing_email', and 'missing_education_group' / 'missing_or_group' (staff who
+        work tracks but have not been placed in an educational grouping).
     """
     records = get_all_staff(include_inactive=include_inactive)
 
@@ -865,6 +1013,14 @@ def get_roster_issues(include_inactive=False):
         # which silently can't happen without an address on file.
         'missing_email': [r['staff_name'] for r in records
                           if bids_on_tracks(r) and not r['email']],
+        # Classes are scheduled against the educational groupings, so a staff member
+        # who works tracks and holds neither placement gets no class assigned. Blank is
+        # normal for management and the non-clinical roles, so only track-working staff
+        # are flagged. Note the `is None` on the OR grouping — 0 is a real placement.
+        'missing_education_group': [r['staff_name'] for r in records
+                                    if bids_on_tracks(r) and not r['education_group']],
+        'missing_or_group': [r['staff_name'] for r in records
+                             if bids_on_tracks(r) and r['or_group'] is None],
     }
 
 
@@ -873,7 +1029,8 @@ def get_staff_dataframe(include_inactive=True):
     records = get_all_staff(include_inactive=include_inactive)
     columns = ['staff_name', 'role', 'clinical_role', 'is_management', 'is_dual',
                'is_educator_at', 'no_matrix', 'seniority', 'shifts_per_pay_period',
-               'night_minimum', 'weekend_minimum', 'weekend_group', 'email',
+               'night_minimum', 'weekend_minimum', 'weekend_group',
+               'education_group', 'or_group', 'email',
                'is_active', 'notes', 'created_date', 'modified_date']
     if not records:
         return pd.DataFrame(columns=columns)
@@ -1046,7 +1203,8 @@ def build_preferences_df(include_inactive=False, clinical_only=True):
 
 _EDITABLE_FIELDS = ['role', 'is_management', 'is_dual', 'is_educator_at', 'no_matrix',
                     'seniority', 'shifts_per_pay_period', 'night_minimum',
-                    'weekend_minimum', 'weekend_group', 'email', 'is_active', 'notes']
+                    'weekend_minimum', 'weekend_group', 'education_group', 'or_group',
+                    'email', 'is_active', 'notes']
 
 # Fields where NULL is a meaningful value, so an update passing None clears them.
 _NULLABLE_INT_FIELDS = ['shifts_per_pay_period', 'night_minimum', 'weekend_minimum']
@@ -1064,7 +1222,8 @@ def _log_audit(cursor, staff_name, action, changes=None, changed_by=None):
 
 def validate_staff_fields(staff_name, role, seniority=None, exclude_name=None,
                           shifts_per_pay_period=None, night_minimum=None,
-                          weekend_minimum=None, weekend_group=None, email=None):
+                          weekend_minimum=None, weekend_group=None, email=None,
+                          education_group=None, or_group=None):
     """
     Check a proposed roster row.
 
@@ -1127,6 +1286,16 @@ def validate_staff_fields(staff_name, role, seniority=None, exclude_name=None,
             errors.append(f"Weekend group must be one of {', '.join(WEEKEND_GROUPS)}, "
                           "or left blank.")
 
+    if education_group not in (None, '') and to_education_group(education_group) is None:
+        errors.append(f"Educational group must be one of "
+                      f"{', '.join(EDUCATION_GROUPS)}, or left blank.")
+
+    # Not `if or_group:` — 0 is the "No OR" placement and has to be validated like any
+    # other value.
+    if or_group not in (None, '') and to_or_group(or_group) is None:
+        errors.append("OR grouping must be one of "
+                      f"{', '.join(str(g) for g in OR_GROUPS)}, or left blank.")
+
     if email not in (None, ''):
         address = str(email).strip()
         if '@' not in address or address.startswith('@') or address.endswith('@') \
@@ -1139,7 +1308,8 @@ def validate_staff_fields(staff_name, role, seniority=None, exclude_name=None,
 def add_staff(staff_name, role, is_management=False, is_dual=False, is_educator_at=False,
               no_matrix=False, seniority=None, shifts_per_pay_period=None,
               night_minimum=None, weekend_minimum=None, weekend_group=None, email=None,
-              is_active=True, notes=None, changed_by=None, validate=True):
+              is_active=True, notes=None, changed_by=None, validate=True,
+              education_group=None, or_group=None):
     """
     Add a staff member to the roster.
 
@@ -1157,6 +1327,8 @@ def add_staff(staff_name, role, is_management=False, is_dual=False, is_educator_
             weekend_minimum=weekend_minimum,
             weekend_group=weekend_group,
             email=email,
+            education_group=education_group,
+            or_group=or_group,
         )
         if errors:
             return False, " ".join(errors)
@@ -1177,13 +1349,15 @@ def add_staff(staff_name, role, is_management=False, is_dual=False, is_educator_
         cursor.execute('''
             INSERT INTO staff (staff_name, role, is_management, is_dual, is_educator_at,
                                no_matrix, seniority, shifts_per_pay_period,
-                               night_minimum, weekend_minimum, weekend_group, email,
+                               night_minimum, weekend_minimum, weekend_group,
+                               education_group, or_group, email,
                                is_active, notes, created_date, modified_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (name, canonical, to_flag(is_management), to_flag(is_dual),
               to_flag(is_educator_at), to_flag(no_matrix), to_seniority(seniority),
               to_optional_int(shifts_per_pay_period), to_optional_int(night_minimum),
               to_optional_int(weekend_minimum), to_weekend_group(weekend_group),
+              to_education_group(education_group), to_or_group(or_group),
               to_email(email), to_flag(is_active), notes, now, now))
         _log_audit(cursor, name, 'added', {
             'role': canonical,
@@ -1196,6 +1370,8 @@ def add_staff(staff_name, role, is_management=False, is_dual=False, is_educator_
             'night_minimum': to_optional_int(night_minimum),
             'weekend_minimum': to_optional_int(weekend_minimum),
             'weekend_group': to_weekend_group(weekend_group),
+            'education_group': to_education_group(education_group),
+            'or_group': to_or_group(or_group),
             'email': to_email(email),
             'is_active': bool(is_active),
         }, changed_by)
@@ -1213,11 +1389,13 @@ def update_staff(staff_name, changed_by=None, validate=True, **fields):
     Update attributes of an existing staff member. Only the fields passed are changed.
 
     Accepted fields: role, is_management, is_dual, is_educator_at, no_matrix, seniority,
-    shifts_per_pay_period, night_minimum, weekend_minimum, weekend_group, email,
-    is_active, notes. Use rename_staff() to change the name.
+    shifts_per_pay_period, night_minimum, weekend_minimum, weekend_group,
+    education_group, or_group, email, is_active, notes. Use rename_staff() to change
+    the name.
 
-    Passing None for seniority, a requirements number, the weekend group or the email
-    clears that field — blank is a meaningful value for all of them.
+    Passing None for seniority, a requirements number, either grouping, the weekend
+    group or the email clears that field — blank is a meaningful value for all of
+    them.
 
     Returns:
         tuple: (success, message)
@@ -1254,6 +1432,20 @@ def update_staff(staff_name, changed_by=None, validate=True, **fields):
                 return False, (f"Weekend group must be one of "
                                f"{', '.join(WEEKEND_GROUPS)}, or left blank.")
             updates['weekend_group'] = group
+        elif key == 'education_group':
+            group = to_education_group(value)
+            if group is None and str(value if value is not None else '').strip():
+                return False, (f"Educational group must be one of "
+                               f"{', '.join(EDUCATION_GROUPS)}, or left blank.")
+            updates['education_group'] = group
+        elif key == 'or_group':
+            # 0 is a real placement, so an unrecognized value is reported rather than
+            # coerced — clearing the field takes an explicit None or ''.
+            group = to_or_group(value)
+            if group is None and str(value if value is not None else '').strip():
+                return False, ("OR grouping must be one of "
+                               f"{', '.join(str(g) for g in OR_GROUPS)}, or left blank.")
+            updates['or_group'] = group
         elif key == 'email':
             updates['email'] = to_email(value)
         elif key == 'notes':
@@ -1273,6 +1465,8 @@ def update_staff(staff_name, changed_by=None, validate=True, **fields):
             weekend_minimum=updates.get('weekend_minimum', record['weekend_minimum']),
             weekend_group=updates.get('weekend_group', record['weekend_group']),
             email=updates.get('email', record['email']),
+            education_group=updates.get('education_group', record['education_group']),
+            or_group=updates.get('or_group', record['or_group']),
         )
         if errors:
             return False, " ".join(errors)

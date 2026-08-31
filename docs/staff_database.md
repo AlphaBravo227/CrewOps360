@@ -36,6 +36,8 @@ Table `staff` (in `data/medflight_tracks.db`):
 | `night_minimum` | Minimum night shifts per cycle. |
 | `weekend_minimum` | Minimum weekend shifts per cycle. |
 | `weekend_group` | Weekend group A–E, or `NULL`. |
+| `education_group` | Educational cohort `1`–`4`, or `NULL` when unplaced. |
+| `or_group` | OR rotations held: `0` ("No OR"), `2`, `3` or `4`, or `NULL` when unplaced. |
 | `email` | Used for bid notifications and confirmations. |
 | `is_active` | Inactive staff keep their history but disappear from staff pickers. |
 | `notes`, `created_date`, `modified_date` | Housekeeping. |
@@ -57,6 +59,41 @@ different from `0`, and both are preserved:
 Because a number input cannot express "empty", these three fields are typed as text in
 the admin form and parsed on save. A value that is neither blank nor a number is
 rejected rather than silently clearing the field.
+
+### Educational groupings
+
+Two placements decide which education a staff member is scheduled for, and they are
+independent of each other:
+
+- **`education_group`** — the cohort they attend recurring education with: group 1, 2, 3
+  or 4. Stored as a label rather than a count.
+- **`or_group`** — how many OR rotations they hold: 0 ("No OR"), 2, 3 or 4.
+
+Both are `NULL` until someone is placed. For the OR grouping the blank-is-not-zero rule
+above applies again, and matters more here than anywhere else: `0` means *placed, with
+no OR rotations*, while `NULL` means *nobody has placed them yet*. Read them with
+`get_or_group()`, never by testing the stored value for truthiness.
+
+They are read back either per staff member or as whole cohorts:
+
+```python
+staffdb.get_education_group('Bach')            # '3'
+staffdb.get_or_group('Ahlstedt')               # 0
+
+staffdb.get_education_group_members('Group 1') # the cohort, in roster order
+staffdb.get_or_group_members('No OR')          # same, by OR placement
+staffdb.get_education_group_mapping()          # {name: group} for everyone placed
+staffdb.get_or_group_mapping()
+```
+
+The membership helpers and the normalizers accept the placement sheets' own spellings
+("Group 1", "No OR", "2 OR") as well as plain values, so a heading can be passed
+straight through.
+
+Only clinical staff are placed. Management, the non-clinical roles (COMMS, CCEMT, ATP,
+AMT) and the newest hires are expected blanks, so the admin page and
+`get_roster_issues()` flag an unplaced staff member only when they actually work tracks
+— a clinical role with a shift requirement on file.
 
 ### Role vs. dual
 
@@ -83,7 +120,8 @@ Shewan.
 Clinical Track Hub → sidebar **Admin Area** → **Manage Staff Database**. The page is
 admin-password gated and has five tabs:
 
-- **Roster** — filter by name/role/active/management, and download as CSV.
+- **Roster** — filter by name/role/active/management/educational grouping, and download
+  as CSV.
 - **Add Staff** — new hires, including their shift requirements.
 - **Edit / Rename / Remove** — attributes, requirements, active status, name changes,
   deletion.
@@ -92,7 +130,8 @@ admin-password gated and has five tabs:
 
 The page also flags anything needing attention: staff with no role, clinical staff with
 no seniority, duplicate seniority ranks, non-management clinical staff with no shift
-requirement, and bidding staff with no email.
+requirement, bidding staff with no email, and track-working staff with no educational
+grouping.
 
 ### Someone leaves
 
@@ -147,6 +186,39 @@ Behavior worth knowing:
   lost when the spreadsheet stops being consulted. Preferences a staff member has
   already saved in the app are not touched unless `--overwrite-preferences` is passed.
 
+### Seeding the educational groupings
+
+The two placement sheets are two flat columns-of-names with no staff key of their own,
+so they are transcribed into `scripts/seed_educational_groupings.py` rather than read
+from a workbook. After the roster exists:
+
+```bash
+python scripts/seed_educational_groupings.py --dry-run    # report only
+python scripts/seed_educational_groupings.py              # apply
+python scripts/seed_educational_groupings.py --overwrite  # let the sheets win
+```
+
+Like the roster import, a placement already on file is reported rather than overwritten
+unless `--overwrite` is passed, so a re-seed never quietly undoes an admin's edit. The
+report names every entry that does not line up: sheet names with no roster row, names
+listed in two columns of the same sheet, staff who work tracks but appear on neither
+sheet, and staff on one sheet but not the other.
+
+As transcribed, against the FY27 roster, that is:
+
+| | |
+| --- | --- |
+| On a sheet, not on the roster | `Wheeler` (No OR) — no such staff member exists in any source |
+| Works tracks, on neither sheet | `Johnson` |
+| OR placement but no cohort | `Farkas`, `Frakes`, `Muszalski` (management); `Grotton`, `Lurie`, `McWeeney` (new hires); `O'Flaherty`, `Phelan`, `VanderKooi` (0 shifts) |
+| Cohort but no OR placement | `Powers` (management) |
+
+Five sheet spellings, covering four staff members, differ from the roster and are
+mapped in the script's `ALIASES`: `Hanley` → `Hanley-McCarthy`, `Steck`/`Steckewicz` → `Steckevicz`,
+`Murphy E` → `Murphy`, `Parkas` → `Farkas`. Case, spacing and punctuation are folded
+away separately, which is what lets the sheets' `O'Donnell` and `Vanderkooi` reach the
+roster's `O’Donnell` and `VanderKooi`.
+
 ## Reading the roster in code
 
 ```python
@@ -155,9 +227,10 @@ from modules.staff_database import (
     get_role, get_clinical_role, get_effective_role,
     is_management, is_dual, is_educator_at, get_no_matrix, get_seniority,
     get_shifts_per_pay_period, get_night_minimum, get_weekend_minimum,
-    get_weekend_group, get_email,
+    get_weekend_group, get_email, get_education_group, get_or_group,
+    get_education_group_members, get_or_group_members,
     get_role_mapping, get_seniority_mapping, get_no_matrix_mapping,
-    get_requirements_map,
+    get_requirements_map, get_education_group_mapping, get_or_group_mapping,
     build_preferences_df, build_requirements_df,
 )
 ```
@@ -190,4 +263,7 @@ Imports the spreadsheets into a throwaway database and verifies that every attri
 round-trips identically, that `build_preferences_df()` and `build_requirements_df()`
 match the spreadsheets' layouts and values (including blank-vs-zero), and that
 add/update/activate/rename/delete behave — including that a rename follows the staff
-member into other tables.
+member into other tables. It also seeds the educational groupings and checks that every
+column places the staff it lists, that a `No OR` placement survives as `0` rather than
+collapsing into "unplaced", and that the sheets' name mismatches are still the ones
+listed above.

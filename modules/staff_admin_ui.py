@@ -39,6 +39,37 @@ _SHIFTS_HELP = ("Required shifts per 14-day pay period. Leave blank for manageme
 _EMAIL_HELP = ("Used to notify this staff member when their bid opens, and to send bid "
                "confirmations.")
 
+_EDUCATION_GROUP_HELP = ("Education cohort 1-4. Classes are scheduled against these "
+                         "groupings. Leave blank for staff who are not placed.")
+
+_OR_GROUP_HELP = ("How many OR rotations this staff member is placed for. \"No OR\" is "
+                  "a real placement and is different from blank, which means they have "
+                  "not been placed yet.")
+
+# The OR grouping is an int where 0 is meaningful, so the selectbox carries '' for
+# unplaced and the numbers as strings, and is parsed back on save.
+_OR_GROUP_UNPLACED = ''
+_OR_GROUP_NO_OR = '0 (No OR)'
+
+
+def _or_group_options():
+    return [_OR_GROUP_UNPLACED] + [_OR_GROUP_NO_OR if g == 0 else str(g)
+                                   for g in staffdb.OR_GROUPS]
+
+
+def _or_group_label(value):
+    """Selectbox label for a stored OR grouping (None -> unplaced)."""
+    if value is None:
+        return _OR_GROUP_UNPLACED
+    return _OR_GROUP_NO_OR if int(value) == 0 else str(int(value))
+
+
+def _parse_or_group(label):
+    """Selectbox label back to a stored OR grouping, or None when unplaced."""
+    if not label:
+        return None
+    return 0 if label == _OR_GROUP_NO_OR else int(label)
+
 
 def _optional_number_input(label, value, key, help_text=None, placeholder="blank"):
     """
@@ -142,6 +173,13 @@ def _display_summary():
         st.info(
             f"ℹ️ No email on file for: {', '.join(issues['missing_email'])}. "
             "They cannot be auto-notified when their bid opens.")
+    unplaced = sorted(set(issues['missing_education_group'])
+                      | set(issues['missing_or_group']))
+    if unplaced:
+        st.info(
+            f"ℹ️ No educational grouping on file for: {', '.join(unplaced)}. "
+            "Classes are scheduled against the education and OR groupings, so staff "
+            "who work tracks without one get nothing assigned.")
 
 
 def _roster_tab():
@@ -162,12 +200,29 @@ def _roster_tab():
         management_only = st.checkbox("Management only", value=False,
                                       key="staff_db_mgmt_only")
 
+    group_cols = st.columns([2, 2])
+    with group_cols[0]:
+        education_groups = st.multiselect(
+            "Educational group", options=staffdb.EDUCATION_GROUPS,
+            key="staff_db_education_group_filter",
+            help="Who attends education with which cohort.")
+    with group_cols[1]:
+        or_groups = st.multiselect(
+            "OR grouping", options=_or_group_options()[1:],
+            key="staff_db_or_group_filter",
+            help="How many OR rotations each staff member is placed for.")
+
     records = staffdb.get_all_staff(include_inactive=show_inactive,
                                     roles=roles or None,
                                     management_only=management_only)
     if search:
         needle = search.strip().lower()
         records = [r for r in records if needle in r['staff_name'].lower()]
+    if education_groups:
+        records = [r for r in records if r['education_group'] in education_groups]
+    if or_groups:
+        wanted = {_parse_or_group(label) for label in or_groups}
+        records = [r for r in records if r['or_group'] in wanted]
 
     if not records:
         st.info("No staff match these filters.")
@@ -189,6 +244,9 @@ def _roster_tab():
         'Night Min': r['night_minimum'],
         'Weekend Min': r['weekend_minimum'],
         'Weekend Group': r['weekend_group'] or '',
+        'Education Group': r['education_group'] or '',
+        # Blank means unplaced; 0 is the "No OR" placement, so it must still print.
+        'OR Group': '' if r['or_group'] is None else r['or_group'],
         'Email': r['email'] or '',
         'Active': r['is_active'],
         'Notes': r['notes'] or '',
@@ -247,6 +305,18 @@ def _add_tab():
             weekend_group = st.selectbox("Weekend group",
                                         options=[''] + staffdb.WEEKEND_GROUPS,
                                         key="staff_db_add_group")
+
+        st.markdown("**Educational Groupings**")
+        edu_cols = st.columns(2)
+        with edu_cols[0]:
+            education_group = st.selectbox(
+                "Educational group", options=[''] + staffdb.EDUCATION_GROUPS,
+                key="staff_db_add_education_group", help=_EDUCATION_GROUP_HELP)
+        with edu_cols[1]:
+            or_group_label = st.selectbox(
+                "OR grouping", options=_or_group_options(),
+                key="staff_db_add_or_group", help=_OR_GROUP_HELP)
+
         email = st.text_input("Email", key="staff_db_add_email", help=_EMAIL_HELP)
         notes = st.text_input("Notes", placeholder="Optional")
 
@@ -274,6 +344,8 @@ def _add_tab():
             night_minimum=nights,
             weekend_minimum=weekends,
             weekend_group=weekend_group or None,
+            education_group=education_group or None,
+            or_group=_parse_or_group(or_group_label),
             email=email or None,
             is_active=is_active,
             notes=notes or None,
@@ -371,6 +443,28 @@ def _edit_tab():
             weekend_group = st.selectbox(
                 "Weekend group", options=group_options,
                 index=group_options.index(current_group), key="staff_db_edit_group")
+
+        st.markdown("**Educational Groupings**")
+        edu_cols = st.columns(2)
+        with edu_cols[0]:
+            education_options = [''] + staffdb.EDUCATION_GROUPS
+            current_education = record['education_group'] or ''
+            if current_education not in education_options:
+                education_options.append(current_education)
+            education_group = st.selectbox(
+                "Educational group", options=education_options,
+                index=education_options.index(current_education),
+                key="staff_db_edit_education_group", help=_EDUCATION_GROUP_HELP)
+        with edu_cols[1]:
+            or_options = _or_group_options()
+            current_or = _or_group_label(record['or_group'])
+            if current_or not in or_options:
+                or_options.append(current_or)
+            or_group_label = st.selectbox(
+                "OR grouping", options=or_options,
+                index=or_options.index(current_or),
+                key="staff_db_edit_or_group", help=_OR_GROUP_HELP)
+
         email = st.text_input("Email", value=record['email'] or '',
                               key="staff_db_edit_email", help=_EMAIL_HELP)
         notes = st.text_input("Notes", value=record['notes'] or '')
@@ -399,6 +493,8 @@ def _edit_tab():
             night_minimum=nights,
             weekend_minimum=weekends,
             weekend_group=weekend_group or None,
+            education_group=education_group or None,
+            or_group=_parse_or_group(or_group_label),
             email=email or None,
             notes=notes,
             changed_by='admin',
