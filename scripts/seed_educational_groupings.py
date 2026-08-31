@@ -4,8 +4,8 @@ Seed the educational groupings on the staff roster from the placement sheets.
 
 Two placements per staff member, both consumed when classes are scheduled:
 
-    education_group   the cohort they attend education with:  1, 2, 3, 4
-    or_group          how many OR rotations they hold:        0 ("No OR"), 2, 3, 4
+    education_group   the cohort they attend education with:   1, 2, 3, 4
+    or_group          OR classes they must sign up for a year: 0 ("No OR"), 2, 3, 4
 
 The placements themselves, and everything this does with them, live in
 modules/educational_groupings.py — the Staff Database admin page's Import tab runs the

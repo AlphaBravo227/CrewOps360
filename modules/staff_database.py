@@ -28,9 +28,10 @@ reproduced here as the *clinical role*:
     effective_role = 'nurse' if clinical_role != 'medic'     # staffing bucket
 
 Two further attributes place a staff member for education rather than describe them:
-`education_group` (cohort 1-4) and `or_group` (OR rotations: 0, 2, 3 or 4). Classes are
-scheduled against those placements. Both are NULL until someone is placed, and for the
-OR grouping that blank is not the same as 0 — 0 is the "No OR" placement.
+`education_group` (cohort 1-4) and `or_group` (OR classes required for the year: 0, 2,
+3 or 4). Classes are scheduled against those placements. Both are NULL until someone is
+placed, and for the OR grouping that blank is not the same as 0 — 0 is a placement
+meaning no OR class is required.
 
 Names are the join key across every other table (tracks, bids, enrollments, …), so
 renaming a staff member is a first-class operation: rename_staff() updates the roster
@@ -75,9 +76,12 @@ WEEKEND_GROUPS = ['A', 'B', 'C', 'D', 'E']
 # groups 1-4, kept as labels rather than counts.
 EDUCATION_GROUPS = ['1', '2', '3', '4']
 
-# `or_group` is how many OR rotations they are placed for. 0 ("No OR") is a real
-# placement and is not the same as blank, which means nobody has placed them yet —
-# the same blank-is-not-zero rule the shift requirements follow.
+# `or_group` is how many OR classes a staff member has to sign up for over the year:
+# a 2 signs up for two, a 4 for four. 0 ("No OR") means none are required — the OR
+# class does not appear among the classes they need, and adds nothing to their yearly
+# total. It is a real placement all the same, and is not the same as blank, which means
+# nobody has placed them yet: the same blank-is-not-zero rule the shift requirements
+# follow.
 OR_GROUPS = [0, 2, 3, 4]
 
 # Every (table, column) pair in the database that stores a staff name as free text.
@@ -428,8 +432,8 @@ def to_or_group(value):
     Normalize an OR grouping to 0, 2, 3 or 4, or None when unplaced.
 
     Accepts the grouping sheet's column headings ("No OR", "2 OR") as well as a bare
-    number. Note that 0 and None are different answers: 0 is "placed, with no OR
-    rotations", None is "nobody has placed them yet".
+    number. Note that 0 and None are different answers: 0 is "placed, and required to
+    sign up for no OR classes", None is "nobody has placed them yet".
     """
     if value is None:
         return None
@@ -788,10 +792,13 @@ def get_education_group(staff_name, default=None):
 
 def get_or_group(staff_name, default=None):
     """
-    OR grouping (0, 2, 3 or 4), or default when the staff member is unplaced.
+    How many OR classes this staff member must sign up for (0, 2, 3 or 4), or default
+    when nobody has placed them.
 
-    0 is a real placement ("No OR"), so an unplaced staff member is the only case that
-    yields the default — testing the result for truthiness would conflate the two.
+    0 is a real placement ("No OR") meaning no OR class is required, so an unplaced
+    staff member is the only case that yields the default. Test the result against None
+    to ask "have they been placed?" — testing it for truthiness conflates a required
+    count of zero with no placement at all.
     """
     record = _lookup(staff_name)
     if not record or record['or_group'] is None:
@@ -949,7 +956,7 @@ def get_or_group_members(group, include_inactive=False):
     """
     Names of the staff in one OR grouping, in roster order.
 
-    Pass 0 (or "No OR") for the staff placed with no OR rotations.
+    Pass 0 (or "No OR") for the staff who are required to sign up for no OR classes.
     """
     target = to_or_group(group)
     if target is None:

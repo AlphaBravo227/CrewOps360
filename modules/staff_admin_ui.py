@@ -43,9 +43,10 @@ _EMAIL_HELP = ("Used to notify this staff member when their bid opens, and to se
 _EDUCATION_GROUP_HELP = ("Education cohort 1-4. Classes are scheduled against these "
                          "groupings. Leave blank for staff who are not placed.")
 
-_OR_GROUP_HELP = ("How many OR rotations this staff member is placed for. \"No OR\" is "
-                  "a real placement and is different from blank, which means they have "
-                  "not been placed yet.")
+_OR_GROUP_HELP = ("How many OR classes this staff member has to sign up for over the "
+                  "year. \"No OR\" means none are required — the class will not appear "
+                  "for them at all. That is a real placement, and is different from "
+                  "blank, which means they have not been placed yet.")
 
 # The OR grouping is an int where 0 is meaningful, so it is carried through the widgets
 # as the sheet's own labels — '' for unplaced, 'No OR' for 0 — and parsed back on save.
@@ -213,7 +214,7 @@ def _roster_tab():
         or_groups = st.multiselect(
             "OR grouping", options=_or_group_options()[1:],
             key="staff_db_or_group_filter",
-            help="How many OR rotations each staff member is placed for.")
+            help="How many OR classes each staff member has to sign up for.")
 
     records = staffdb.get_all_staff(include_inactive=show_inactive,
                                     roles=roles or None,

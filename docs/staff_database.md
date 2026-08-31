@@ -37,7 +37,7 @@ Table `staff` (in `data/medflight_tracks.db`):
 | `weekend_minimum` | Minimum weekend shifts per cycle. |
 | `weekend_group` | Weekend group A–E, or `NULL`. |
 | `education_group` | Educational cohort `1`–`4`, or `NULL` when unplaced. |
-| `or_group` | OR rotations held: `0` ("No OR"), `2`, `3` or `4`, or `NULL` when unplaced. |
+| `or_group` | OR classes required for the year: `0` ("No OR"), `2`, `3` or `4`, or `NULL` when unplaced. |
 | `email` | Used for bid notifications and confirmations. |
 | `is_active` | Inactive staff keep their history but disappear from staff pickers. |
 | `notes`, `created_date`, `modified_date` | Housekeeping. |
@@ -67,12 +67,27 @@ independent of each other:
 
 - **`education_group`** — the cohort they attend recurring education with: group 1, 2, 3
   or 4. Stored as a label rather than a count.
-- **`or_group`** — how many OR rotations they hold: 0 ("No OR"), 2, 3 or 4.
+- **`or_group`** — how many OR classes they have to sign up for over the year: 0
+  ("No OR"), 2, 3 or 4. It is a count of required signups, not a cohort label: a 2 signs
+  up for two OR classes, a 4 for four, and a 0 for none. A staff member on 0 should not
+  see the OR class among the ones they need, and it should add nothing to their yearly
+  class total.
 
 Both are `NULL` until someone is placed. For the OR grouping the blank-is-not-zero rule
-above applies again, and matters more here than anywhere else: `0` means *placed, with
-no OR rotations*, while `NULL` means *nobody has placed them yet*. Read them with
-`get_or_group()`, never by testing the stored value for truthiness.
+above applies again, and matters more here than anywhere else: `0` means *placed, and
+required to sign up for none*, while `NULL` means *nobody has placed them yet*.
+
+That distinction is the one thing to get right when class generation reads this field.
+Test for placement against `None`, and use the value itself as the count — testing it
+for truthiness silently treats a required count of zero as an unplaced staff member:
+
+```python
+required = staffdb.get_or_group(name)
+if required is None:
+    ...                  # nobody has placed them — a gap to flag, not a zero
+else:
+    ...                  # they sign up for exactly `required` OR classes; 0 means none
+```
 
 They are read back either per staff member or as whole cohorts:
 

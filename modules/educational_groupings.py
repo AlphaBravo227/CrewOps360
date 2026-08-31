@@ -4,8 +4,8 @@ The educational groupings, and seeding them onto the staff roster.
 
 Two placements per staff member decide what education they are scheduled for:
 
-    education_group   the cohort they attend education with:  1, 2, 3, 4
-    or_group          how many OR rotations they hold:        0 ("No OR"), 2, 3, 4
+    education_group   the cohort they attend education with:   1, 2, 3, 4
+    or_group          OR classes they must sign up for a year: 0 ("No OR"), 2, 3, 4
 
 Both live on the `staff` table (see modules/staff_database.py) and are maintained on the
 Staff Database admin page from then on. This module holds their initial source and the
