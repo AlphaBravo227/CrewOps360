@@ -36,6 +36,35 @@ except Exception as e:  # pragma: no cover
 DRAFT_KEY = 'training_class_draft'
 DRAFT_FOR_KEY = 'training_class_draft_for'
 
+# A keyed Streamlit widget ignores the `value` or `default` it is handed once it has
+# state of its own, and returns whatever the browser last had in it. So changing the
+# draft in code - filling the staff list from a group, removing a date, loading a
+# different class - does not reach the fields: the widget writes its old value straight
+# back over the change on the next render, and the form silently disagrees with the
+# draft it is supposed to be showing. Deleting the key does not help either, because the
+# browser re-sends the value it is still displaying.
+#
+# So the widgets are keyed with a token that changes whenever the draft changes
+# underneath them. New key, new widget, initialized from the draft - which stays the one
+# source of truth.
+WIDGET_PREFIX = 'class_editor_'
+TOKEN_KEY = 'training_class_widget_token'
+
+
+def wkey(name):
+    """The session key for one of this form's widgets, under the current token."""
+    return f"{WIDGET_PREFIX}{name}_{st.session_state.get(TOKEN_KEY, 0)}"
+
+
+def reset_widget_state():
+    """Re-key every field, so they all re-read the draft on the next render."""
+    stale = [key for key in st.session_state if key.startswith(WIDGET_PREFIX)]
+    st.session_state[TOKEN_KEY] = st.session_state.get(TOKEN_KEY, 0) + 1
+    # The old keys are unreachable now that the token has moved on; dropping them keeps
+    # session state from growing by a full form's worth of widgets on every edit.
+    for key in stale:
+        st.session_state.pop(key, None)
+
 
 def _blank_option():
     return {'location': '', 'start_time': '', 'end_time': '', 'capacity': None}
@@ -132,6 +161,10 @@ def load_draft(training_year, class_name=None, db_path=catalog.DEFAULT_DB_PATH):
     if st.session_state.get(DRAFT_FOR_KEY) == target and DRAFT_KEY in st.session_state:
         return st.session_state[DRAFT_KEY]
 
+    # A different class than the form last held. Its fields still carry the previous
+    # one's values until their widget state goes.
+    reset_widget_state()
+
     if class_name:
         record = catalog.load_class_for_editing(training_year, class_name,
                                                 db_path=db_path)
@@ -145,9 +178,10 @@ def load_draft(training_year, class_name=None, db_path=catalog.DEFAULT_DB_PATH):
 
 
 def clear_draft():
-    """Forget the working copy, after saving or cancelling."""
+    """Forget the working copy and the fields showing it, after saving or cancelling."""
     st.session_state.pop(DRAFT_KEY, None)
     st.session_state.pop(DRAFT_FOR_KEY, None)
+    reset_widget_state()
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +234,7 @@ def _render_staff_assignment(draft):
             default=[g for g in source.get('education_groups', [])
                      if g in staffdb.EDUCATION_GROUPS],
             format_func=lambda g: f"Group {g}",
-            key="class_editor_education_groups",
+            key=wkey("education_groups"),
             help="The cohort a staff member attends recurring education with.")
     with group_columns[1]:
         or_groups = st.multiselect(
@@ -208,7 +242,7 @@ def _render_staff_assignment(draft):
             default=[g for g in source.get('or_groups', [])
                      if g in staffdb.OR_GROUPS],
             format_func=lambda g: "No OR" if g == 0 else f"{g} OR",
-            key="class_editor_or_groups",
+            key=wkey("or_groups"),
             help="How many OR classes a staff member signs up for over the year. "
                  "'No OR' is a real placement — those people are required to take none.")
 
@@ -221,15 +255,17 @@ def _render_staff_assignment(draft):
         fill_columns = st.columns(2)
         with fill_columns[0]:
             if st.button("➕ Add everyone in those groups", use_container_width=True,
-                         key="class_editor_add_groups"):
+                         key=wkey("add_groups")):
                 draft['assigned_staff'] = sorted(
                     dict.fromkeys(list(draft['assigned_staff']) + matched))
+                reset_widget_state()
                 st.rerun()
         with fill_columns[1]:
             if st.button("➖ Remove everyone in those groups", use_container_width=True,
-                         key="class_editor_remove_groups"):
+                         key=wkey("remove_groups")):
                 draft['assigned_staff'] = [name for name in draft['assigned_staff']
                                            if name not in set(matched)]
+                reset_widget_state()
                 st.rerun()
 
         unplaced = [name for name in matched if name not in set(staffdb.get_staff_names())]
@@ -245,7 +281,7 @@ def _render_staff_assignment(draft):
         f"Assigned staff ({len(draft['assigned_staff'])})",
         options=options,
         default=[name for name in draft['assigned_staff'] if name in options],
-        key="class_editor_assigned_staff")
+        key=wkey("assigned_staff"))
 
 
 # ---------------------------------------------------------------------------
@@ -273,26 +309,26 @@ def _render_dates(draft):
                 # staff a "not configured" warning, which is not something to reach
                 # by clicking a button labelled Remove.
                 if len(draft['dates']) > 1:
-                    if st.button("Remove", key=f"class_editor_remove_date_{index}",
+                    if st.button("Remove", key=wkey(f"remove_date_{index}"),
                                  use_container_width=True):
                         removing = index
 
             entry['class_date'] = st.date_input(
-                "Date", value=entry['class_date'], key=f"class_editor_date_{index}",
+                "Date", value=entry['class_date'], key=wkey(f"date_{index}"),
                 format="MM/DD/YYYY")
 
             flag_columns = st.columns(2)
             with flag_columns[0]:
                 entry['can_work_n_prior'] = st.checkbox(
                     "Staff can work the night before", value=entry['can_work_n_prior'],
-                    key=f"class_editor_nprior_{index}",
+                    key=wkey(f"nprior_{index}"),
                     help="Leave unchecked and a night shift the evening before counts "
                          "as a conflict for this date.")
             with flag_columns[1]:
                 if is_meeting:
                     entry['has_live'] = st.checkbox(
                         "LIVE option available", value=entry['has_live'],
-                        key=f"class_editor_live_{index}",
+                        key=wkey(f"live_{index}"),
                         help="Staff meetings only: offers this date as LIVE as well "
                              "as Virtual.")
                 else:
@@ -305,49 +341,54 @@ def _render_dates(draft):
                 with option_columns[0]:
                     option['location'] = st.text_input(
                         "Location", value=option['location'],
-                        key=f"class_editor_loc_{index}_{option_index}",
+                        key=wkey(f"loc_{index}_{option_index}"),
                         placeholder="KBED")
                 with option_columns[1]:
                     option['start_time'] = st.text_input(
                         "Start", value=option['start_time'] or '',
-                        key=f"class_editor_start_{index}_{option_index}",
+                        key=wkey(f"start_{index}_{option_index}"),
                         placeholder=draft['settings'].get('time_1_start') or '08:00')
                 with option_columns[2]:
                     option['end_time'] = st.text_input(
                         "End", value=option['end_time'] or '',
-                        key=f"class_editor_end_{index}_{option_index}",
+                        key=wkey(f"end_{index}_{option_index}"),
                         placeholder=draft['settings'].get('time_1_end') or '16:00')
                 with option_columns[3]:
                     capacity = st.text_input(
                         "Seats", value=('' if option['capacity'] is None
                                         else str(option['capacity'])),
-                        key=f"class_editor_cap_{index}_{option_index}",
+                        key=wkey(f"cap_{index}_{option_index}"),
                         placeholder=str(draft['settings'].get('students_per_class')
                                         or 21))
                     option['capacity'] = catalog.parse_int(capacity)
                 with option_columns[4]:
                     st.write("")
                     if len(entry['options']) > 1:
-                        if st.button("✕", key=f"class_editor_rmloc_{index}_{option_index}",
+                        if st.button("✕", key=wkey(f"rmloc_{index}_{option_index}"),
                                      help="Remove this location"):
                             option_removing = option_index
 
             if option_removing is not None:
                 entry['options'].pop(option_removing)
+                # The locations after it shift down an index, onto the widget keys
+                # their neighbours were using.
+                reset_widget_state()
                 st.rerun()
 
             st.caption("Times and seats left blank fall back to the class settings "
                        "below, which is what a class taught at one site wants.")
 
-            if st.button("➕ Add another location", key=f"class_editor_addloc_{index}"):
+            if st.button("➕ Add another location", key=wkey(f"addloc_{index}")):
                 entry['options'].append(_blank_option())
                 st.rerun()
 
     if removing is not None:
         draft['dates'].pop(removing)
+        # Same shift as removing a location, over whole dates.
+        reset_widget_state()
         st.rerun()
 
-    if st.button("➕ Add another date", key="class_editor_add_date",
+    if st.button("➕ Add another date", key=wkey("add_date"),
                  use_container_width=True):
         draft['dates'].append(_blank_date())
         st.rerun()
@@ -367,53 +408,53 @@ def _render_settings(draft):
         settings['students_per_class'] = st.number_input(
             "Students per class", min_value=1, max_value=500,
             value=int(settings.get('students_per_class') or 21),
-            key="class_editor_students",
+            key=wkey("students"),
             help="The seat count a date uses when its locations don't set their own.")
     with columns[1]:
         settings['classes_per_day'] = st.number_input(
             "Classes per day", min_value=1, max_value=4,
             value=int(settings.get('classes_per_day') or 1),
-            key="class_editor_per_day",
+            key=wkey("per_day"),
             help="More than one runs the class several times a day, using the time "
                  "slots below.")
     with columns[2]:
         settings['instructors_per_day'] = st.number_input(
             "Instructors needed per day", min_value=0, max_value=20,
             value=int(settings.get('instructors_per_day') or 0),
-            key="class_editor_instructors",
+            key=wkey("instructors"),
             help="Zero means the class takes no educator signups.")
 
     flag_columns = st.columns(3)
     with flag_columns[0]:
         settings['is_staff_meeting'] = st.checkbox(
             "Staff meeting", value=bool(settings.get('is_staff_meeting')),
-            key="class_editor_is_meeting",
+            key=wkey("is_meeting"),
             help="Staff meetings are booked as LIVE or Virtual and count towards the "
                  "meeting requirement. This used to be inferred from 'SM' appearing "
                  "in the class name.")
         settings['nurses_medic_separate'] = st.checkbox(
             "Nurses and medics enrolled separately",
             value=bool(settings.get('nurses_medic_separate')),
-            key="class_editor_nm_separate",
+            key=wkey("nm_separate"),
             help="Splits each session's seats between the two roles.")
     with flag_columns[1]:
         settings['has_ccemt'] = st.checkbox(
             "CCEMT role split", value=bool(settings.get('has_ccemt')),
-            key="class_editor_ccemt",
+            key=wkey("ccemt"),
             help="With nurse/medic separation on, gives each session one nurse, one "
                  "medic and one CCEMT seat.")
         settings['is_two_day_class'] = st.checkbox(
             "Two-day class", value=bool(settings.get('is_two_day_class')),
-            key="class_editor_two_day",
+            key=wkey("two_day"),
             help="Each date covers that day and the next. Staff enroll once for both.")
     with flag_columns[2]:
         settings['is_count_exempt'] = st.checkbox(
             "Count-exempt", value=bool(settings.get('is_count_exempt')),
-            key="class_editor_count_exempt",
+            key=wkey("count_exempt"),
             help="Lets a non-management medic take a second class in the same week.")
         settings['is_multi_session'] = st.checkbox(
             "Multi-session", value=bool(settings.get('is_multi_session')),
-            key="class_editor_multi_session",
+            key=wkey("multi_session"),
             help="Splits the day into back-to-back sessions of the length below, "
                  "between the Time 1 start and end.")
 
@@ -421,7 +462,7 @@ def _render_settings(draft):
         settings['session_length'] = st.number_input(
             "Session length (minutes)", min_value=5, max_value=600,
             value=int(settings.get('session_length') or 60),
-            key="class_editor_session_length")
+            key=wkey("session_length"))
     else:
         settings['session_length'] = None
 
@@ -439,15 +480,15 @@ def _render_settings(draft):
         with time_columns[0]:
             settings[f'time_{slot}_start'] = st.text_input(
                 f"Time {slot} start", value=settings.get(f'time_{slot}_start') or '',
-                key=f"class_editor_t{slot}s", placeholder="08:00")
+                key=wkey(f"t{slot}s"), placeholder="08:00")
         with time_columns[1]:
             settings[f'time_{slot}_end'] = st.text_input(
                 f"Time {slot} end", value=settings.get(f'time_{slot}_end') or '',
-                key=f"class_editor_t{slot}e", placeholder="16:00")
+                key=wkey(f"t{slot}e"), placeholder="16:00")
 
     settings['notes'] = st.text_area(
         "Notes (admin only)", value=settings.get('notes') or '',
-        key="class_editor_notes",
+        key=wkey("notes"),
         help="Not shown to staff. Somewhere to record why the class is set up as it is.")
 
 
@@ -565,7 +606,7 @@ def render_class_form(training_year, class_name=None, db_path=catalog.DEFAULT_DB
     draft = load_draft(training_year, class_name, db_path=db_path)
 
     draft['class_name'] = st.text_input(
-        "Class name", value=draft['class_name'], key="class_editor_name",
+        "Class name", value=draft['class_name'], key=wkey("name"),
         help="What staff see, and what enrollments are recorded against. Renaming an "
              "existing class carries its enrollments and educator signups with it.")
 
@@ -584,7 +625,7 @@ def render_class_form(training_year, class_name=None, db_path=catalog.DEFAULT_DB
     action_columns = st.columns([2, 2, 6])
     with action_columns[0]:
         if st.button("💾 Save class", type="primary", disabled=bool(problems),
-                     use_container_width=True, key="class_editor_save"):
+                     use_container_width=True, key=wkey("save")):
             saved, message = _save(draft, training_year, class_name, db_path)
             if saved:
                 clear_draft()
@@ -595,7 +636,7 @@ def render_class_form(training_year, class_name=None, db_path=catalog.DEFAULT_DB
             else:
                 st.error(message)
     with action_columns[1]:
-        if st.button("Cancel", use_container_width=True, key="class_editor_cancel"):
+        if st.button("Cancel", use_container_width=True, key=wkey("cancel")):
             clear_draft()
             if on_saved:
                 on_saved()

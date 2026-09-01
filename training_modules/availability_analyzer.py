@@ -640,58 +640,32 @@ class AvailabilityAnalyzer:
             if staff_count(include_inactive=False) > 0:
                 return get_base_role_mapping()
         except Exception as e:
-            print(f"Staff database unavailable, falling back to the roster sheet: {e}")
+            print(f"Staff database unavailable for the role mapping: {e}")
 
+        # No roster in the staff database. This used to read the workbook's Role
+        # column; the catalog reads the same staff database, so with the roster empty
+        # there is genuinely nothing to report and everyone is treated as General.
         try:
-            if not self.excel.enrollment_sheet:
-                print("No enrollment sheet available")
-                return staff_roles
-            
-            # Find the Role column
-            role_col = None
-            for col_idx, col in enumerate(self.excel.enrollment_sheet.iter_cols(min_row=1, max_row=1), start=1):
-                header_value = str(col[0].value).strip() if col[0].value else ""
-                if header_value == "Role":
-                    role_col = col_idx
-                    break
-            
-            if not role_col:
-                print("Role column not found")
-                return staff_roles
-            
-            # Read staff names and roles
-            for row in self.excel.enrollment_sheet.iter_rows(min_row=2):
-                staff_name_cell = row[0].value
-                role_cell = row[role_col - 1].value if len(row) >= role_col else None
-                
-                if staff_name_cell:
-                    staff_name = str(staff_name_cell).strip()
-                    role = str(role_cell).strip() if role_cell else 'General'
-                    staff_roles[staff_name] = role
-            
-            print(f"DEBUG: Loaded roles for {len(staff_roles)} staff members")
+            for staff_name in self.excel.get_staff_list():
+                staff_roles[staff_name] = (self.excel.get_staff_role(staff_name)
+                                           or 'General')
             return staff_roles
-            
         except Exception as e:
             print(f"Error getting staff roles: {e}")
-            import traceback
-            traceback.print_exc()
             return staff_roles
     
     def _get_assigned_staff(self, class_name):
-        """Get list of staff assigned to a specific class"""
-        all_staff = self.excel.get_staff_list()
-        assigned_staff = []
-        
-        print(f"DEBUG: Checking assignments for {class_name}")
-        print(f"DEBUG: Total staff in system: {len(all_staff)}")
-        
-        for staff_name in all_staff:
-            assigned_classes = self.excel.get_assigned_classes(staff_name)
-            if class_name in assigned_classes:
-                assigned_staff.append(staff_name)
-                print(f"DEBUG: {staff_name} is assigned to {class_name}")
-        
+        """Who is assigned to a class. One query, rather than one per staff member."""
+        if hasattr(self.excel, 'get_staff_assigned_to_class'):
+            assigned_staff = self.excel.get_staff_assigned_to_class(class_name)
+        else:
+            assigned_staff = [name for name in self.excel.get_staff_list()
+                              if class_name in self.excel.get_assigned_classes(name)]
+
+        active = set(self.excel.get_staff_list())
+        if active:
+            assigned_staff = [name for name in assigned_staff if name in active]
+
         print(f"DEBUG: {len(assigned_staff)} staff assigned to {class_name}")
         return assigned_staff
     

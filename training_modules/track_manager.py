@@ -157,16 +157,21 @@ class TrainingTrackManager:
         - Columns B-AC (28 columns = 4 weeks): Shift codes (REPEATING PATTERN)
         - Starting date: 9/14/2025 (first Sunday)
         """
-        if not self.tracks_excel_handler or not self.tracks_excel_handler.workbook:
+        # A Tracks workbook opened with openpyxl, which nothing currently supplies -
+        # CCEMT schedules come from the database. getattr rather than an attribute:
+        # the enrollment handler is a class catalog now and holds no workbook, so
+        # reaching for one directly would raise rather than skip.
+        workbook = getattr(self.tracks_excel_handler, 'workbook', None)
+        if workbook is None:
             return
 
         try:
             # Access the CCEMT worksheet
-            if 'CCEMT' not in self.tracks_excel_handler.workbook.sheetnames:
+            if 'CCEMT' not in workbook.sheetnames:
                 print("CCEMT tab not found in Tracks workbook")
                 return
-            
-            ccemt_sheet = self.tracks_excel_handler.workbook['CCEMT']
+
+            ccemt_sheet = workbook['CCEMT']
             
             # Build pattern mapping for 28 days (4 weeks) - columns B through AC
             # This pattern repeats indefinitely
@@ -298,8 +303,7 @@ class TrainingTrackManager:
         """
         Get the role of a staff member from the staff database.
 
-        Falls back to the enrollment workbook's Role column, then to the CCEMT cache,
-        when the staff database has no roster yet.
+        Falls back to the CCEMT cache when the staff database has no roster yet.
         """
         try:
             from modules.staff_database import get_role, staff_count
@@ -310,22 +314,16 @@ class TrainingTrackManager:
         except Exception as e:
             print(f"Staff database unavailable for {staff_name}'s role: {e}")
 
-        # Fall back to the enrollment Excel handler
+        # Ask the class catalog, which reads the same staff database. Worth a second
+        # attempt only because the call above is skipped entirely when the roster is
+        # empty, and the catalog answers for a name the count did not see.
         if self.enrollment_excel_handler:
             try:
-                # Access the enrollment sheet to get role information
-                enrollment_sheet = self.enrollment_excel_handler.enrollment_sheet
-                
-                if enrollment_sheet:
-                    # Find staff member's row and get their role
-                    for row in enrollment_sheet.iter_rows(min_row=2):
-                        if row[0].value and str(row[0].value).strip() == staff_name:
-                            # Role is in column B (index 1)
-                            role_cell = row[1].value if len(row) > 1 else None
-                            return str(role_cell).strip() if role_cell else None
-                
+                role = self.enrollment_excel_handler.get_staff_role(staff_name)
+                if role:
+                    return role
             except Exception as e:
-                print(f"Error getting staff role for {staff_name} from enrollment sheet: {e}")
+                print(f"Error getting staff role for {staff_name}: {e}")
         
         # Fallback: if staff is in CCEMT cache, assume they're CCEMT
         if staff_name in self.ccemt_schedule_cache:

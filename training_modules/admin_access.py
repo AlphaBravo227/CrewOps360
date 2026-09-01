@@ -1161,7 +1161,7 @@ class AdminAccess:
 
     def _show_class_editor(self, year, editing, class_editor_ui):
         """The create/edit form, with a way back to the class list."""
-        if st.button("⬅️ Back to classes", key="class_editor_back"):
+        if st.button("⬅️ Back to classes", key="class_form_back"):
             class_editor_ui.clear_draft()
             st.session_state.pop('training_class_editing', None)
             st.session_state.training_class_creating = False
@@ -1197,7 +1197,7 @@ class AdminAccess:
 
         st.write(f"**{len(class_names)} class(es) in {year}**")
 
-        for class_name in class_names:
+        for position, class_name in enumerate(class_names):
             record = catalog.load_class_for_editing(year, class_name)
             if not record:
                 continue
@@ -1219,13 +1219,13 @@ class AdminAccess:
                         f"{len(dates)} date(s) · {len(record['assigned_staff'])} "
                         f"staff assigned · {origin}")
                 with heading[1]:
-                    if st.button("Edit", key=f"class_edit_{class_name}",
+                    if st.button("Edit", key=f"class_edit_{position}",
                                  use_container_width=True):
                         st.session_state.training_class_editing = class_name
                         st.session_state.training_class_creating = False
                         st.rerun()
                 with heading[2]:
-                    if st.button("Delete", key=f"class_del_{class_name}",
+                    if st.button("Delete", key=f"class_del_{position}",
                                  use_container_width=True):
                         st.session_state['training_class_deleting'] = class_name
                         st.rerun()
@@ -1266,7 +1266,7 @@ class AdminAccess:
 
         confirm_columns = st.columns([2, 2, 6])
         with confirm_columns[0]:
-            if st.button("Yes, delete it", key=f"class_del_yes_{class_name}",
+            if st.button("Yes, delete it", key="class_del_confirm",
                          use_container_width=True):
                 try:
                     catalog.delete_class(year, class_name)
@@ -1279,7 +1279,7 @@ class AdminAccess:
                 except Exception as e:
                     st.error(f"Could not delete the class: {e}")
         with confirm_columns[1]:
-            if st.button("Keep it", key=f"class_del_no_{class_name}",
+            if st.button("Keep it", key="class_del_cancel",
                          use_container_width=True):
                 st.session_state.pop('training_class_deleting', None)
                 st.rerun()
