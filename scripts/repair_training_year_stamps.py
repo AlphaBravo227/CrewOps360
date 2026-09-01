@@ -31,11 +31,10 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from training_modules.excel_handler import ExcelHandler  # noqa: E402
+from training_modules.class_catalog import ClassCatalog  # noqa: E402
 from training_modules.unified_database import LEGACY_TRAINING_YEAR  # noqa: E402
 
 DEFAULT_DB = 'data/medflight_tracks.db'
-UPLOAD_FOLDER = os.path.join('training', 'upload')
 
 TABLES = {
     'training_enrollments': 'enrollment',
@@ -44,31 +43,31 @@ TABLES = {
 
 
 def load_year_catalog(conn):
-    """Map each configured year to the {(class_name, class_date)} its roster holds."""
+    """Map each configured year to the {(class_name, class_date)} it holds.
+
+    Read from the class catalog rather than the year's roster workbook, which the
+    app no longer opens - a year whose spreadsheet has been moved or deleted still
+    knows its own schedule, and used to be skipped here for want of the file.
+    """
     catalog = {}
     rows = conn.execute(
-        "SELECT year_label, roster_filename FROM training_years ORDER BY year_label"
+        "SELECT year_label FROM training_years ORDER BY year_label"
     ).fetchall()
     for row in rows:
         label = row['year_label']
-        filename = row['roster_filename']
-        if not filename:
-            print(f"  {label}: no roster filename configured - skipping")
-            continue
-        path = os.path.join(UPLOAD_FOLDER, filename)
-        if not os.path.exists(path):
-            print(f"  {label}: roster not found at {path} - skipping")
-            continue
-        handler = ExcelHandler(path)
+        handler = ClassCatalog(label)
         if handler.load_error:
-            print(f"  {label}: roster failed to load ({handler.load_error}) - skipping")
+            print(f"  {label}: catalog unavailable ({handler.load_error}) - skipping")
             continue
         pairs = set()
         for class_name in handler.get_all_classes():
             for class_date in handler.get_class_dates(class_name):
                 pairs.add((class_name.strip().lower(), str(class_date).strip()))
+        if not pairs:
+            print(f"  {label}: no classes configured - skipping")
+            continue
         catalog[label] = pairs
-        print(f"  {label}: {len(pairs)} class/date pairs from {filename}")
+        print(f"  {label}: {len(pairs)} class/date pairs")
     return catalog
 
 
