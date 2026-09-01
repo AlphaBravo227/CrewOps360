@@ -1,6 +1,7 @@
 # training_modules/class_display_components.py - Class Information Display Components
 import streamlit as st
 from datetime import datetime, timedelta
+from .class_catalog import date_indices
 
 class ClassDisplayComponents:
     
@@ -13,7 +14,7 @@ class ClassDisplayComponents:
         
         # Check if this is missing class data
         is_missing_data = (not class_details or 
-                        not any(class_details.get(f'date_{i}') for i in range(1, 15)))
+                        not any(class_details.get(f'date_{i}') for i in date_indices(class_details)))
         
         if is_missing_data:
             st.error("📅 **Class data not configured**")
@@ -64,7 +65,7 @@ class ClassDisplayComponents:
         # Display available dates with two-day expansion
         st.write("**📅 Available Dates:**")
         dates = []
-        for i in range(1, 15):  # Check rows 1-14 for dates
+        for i in date_indices(class_details):  # Check rows 1-14 for dates
             date_key = f'date_{i}'
             if date_key in class_details and class_details[date_key]:
                 base_date = class_details[date_key]

@@ -9,6 +9,7 @@ from datetime import datetime
 import os
 import pytz
 from .training_email_notifications import send_training_event_notification
+from .class_catalog import date_indices
 
 # The roster workbook FY26 uses. Before FY27 got its own file there was only one
 # roster, named "MASTER", so a database written back then still points at that name.
@@ -264,6 +265,20 @@ class UnifiedDatabase:
                 )
 
         self._add_training_year_to_unique_constraints()
+
+        # Add the location column (migration). A class date used to carry one location
+        # and it was only ever displayed, so there was nothing to record: everyone on
+        # that date was in the same room. A date can now offer several locations and a
+        # staff member picks between them, which makes the choice part of the
+        # enrollment. Existing rows stay NULL - their class had one location, and the
+        # catalog still knows what it was.
+        for table_name in ('training_enrollments', 'training_educator_signups',
+                           'training_enrollment_audit', 'training_educator_audit'):
+            self.cursor.execute(f"PRAGMA table_info({table_name})")
+            table_columns = [col[1] for col in self.cursor.fetchall()]
+            if 'location' not in table_columns:
+                self.cursor.execute(
+                    f"ALTER TABLE {table_name} ADD COLUMN location TEXT")
 
         # Add training_year to the audit tables (migration). Audit rows carried no
         # year at all, so once two years were open at once an entry read
@@ -945,7 +960,7 @@ class UnifiedDatabase:
     # STUDENT ENROLLMENT METHODS - COMPLETELY FIXED
     def add_enrollment(self, staff_name, class_name, class_date, role='General', 
                     meeting_type=None, session_time=None, conflict_override=False, 
-                    conflict_details=None, training_year=None):
+                    conflict_details=None, training_year=None, location=None):
         """Add a new training enrollment.
 
         training_year is the year the enrollment belongs to, defaulting to the
@@ -953,6 +968,13 @@ class UnifiedDatabase:
         active: during a cutover both are open, and a row stamped with the active
         year while the staff member is looking at the other one is written
         successfully and then filtered straight back out of their view.
+
+        location is which site the staff member picked, on a date that runs at more
+        than one. It is recorded on every enrollment, single-location classes
+        included, so a roster can say where somebody is without going back to the
+        catalog. It deliberately plays no part in whether this enrollment already
+        exists: nobody attends the same class twice on the same day by being in two
+        places, so a second booking is a duplicate wherever it is held.
         """
         print(f"DEBUG: add_enrollment called for {staff_name}, {class_name}, {class_date}")
         
@@ -994,10 +1016,11 @@ class UnifiedDatabase:
                         UPDATE training_enrollments 
                         SET status = 'active', role = ?, conflict_override = ?,
                             conflict_details = ?, override_acknowledged = ?, enrollment_date = ?,
-                            training_year = ?
+                            training_year = ?, location = ?
                         WHERE id = ?
                     ''', (role, conflict_override, conflict_details, 
-                        override_timestamp, enrollment_timestamp, target_year, existing['id']))
+                        override_timestamp, enrollment_timestamp, target_year, location,
+                        existing['id']))
                     
                     self.conn.commit()
                     print(f"DEBUG: Enrollment reactivated successfully")
@@ -1018,11 +1041,11 @@ class UnifiedDatabase:
                 INSERT INTO training_enrollments
                 (staff_name, class_name, class_date, role, meeting_type, session_time,
                  conflict_override, conflict_details, override_acknowledged, enrollment_date, status,
-                 training_year)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+                 training_year, location)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
             ''', (staff_name, class_name, class_date, role, meeting_type, session_time,
                 conflict_override, conflict_details, override_timestamp, enrollment_timestamp,
-                target_year))
+                target_year, location))
             
             # Get the auto-generated ID
             inserted_id = self.cursor.lastrowid
@@ -1034,10 +1057,10 @@ class UnifiedDatabase:
                 INSERT INTO training_enrollment_audit 
                 (action, staff_name, class_name, class_date, role, meeting_type, 
                  session_time, conflict_override, conflict_details, action_date,
-                 training_year)
-                VALUES ('enrolled', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 training_year, location)
+                VALUES ('enrolled', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (staff_name, class_name, class_date, role, meeting_type, session_time,
-                conflict_override, conflict_details, audit_timestamp, target_year))
+                conflict_override, conflict_details, audit_timestamp, target_year, location))
             
             self.conn.commit()
             print(f"DEBUG: Enrollment inserted and committed successfully")
@@ -1210,7 +1233,7 @@ class UnifiedDatabase:
                     
                     # Get class location for the specific date
                     class_location = "Location not specified"
-                    for i in range(1, 15):  # Check rows 1-14 for dates
+                    for i in date_indices(class_details):  # Check rows 1-14 for dates
                         date_key = f'date_{i}'
                         location_key = f'date_{i}_location'
                         
@@ -1426,7 +1449,8 @@ class UnifiedDatabase:
             self.cursor.execute(f'''
                 SELECT id, staff_name, class_name, class_date, role, meeting_type, 
                     session_time, conflict_override, conflict_details, 
-                    override_acknowledged, enrollment_date, status, training_year
+                    override_acknowledged, enrollment_date, status, training_year,
+                    location
                 FROM training_enrollments
                 WHERE staff_name = ? AND status = 'active' AND {_YEAR_MATCH}
                 ORDER BY {_CLASS_DATE_ORDER}
@@ -1450,7 +1474,8 @@ class UnifiedDatabase:
                     'override_acknowledged': row['override_acknowledged'],
                     'enrollment_date': row['enrollment_date'],
                     'status': row['status'],
-                    'training_year': row['training_year']
+                    'training_year': row['training_year'],
+                    'location': row['location']
                 }
                 
                 # Convert timestamps for display
@@ -1477,7 +1502,8 @@ class UnifiedDatabase:
         if class_date:
             self.cursor.execute(f'''
                 SELECT id, staff_name, class_name, class_date, role, meeting_type, 
-                       session_time, conflict_override, conflict_details, status
+                       session_time, conflict_override, conflict_details, status,
+                       location
                 FROM training_enrollments
                 WHERE class_name = ? AND class_date = ? AND status = 'active'
                       AND {_YEAR_MATCH}
@@ -1485,7 +1511,8 @@ class UnifiedDatabase:
         else:
             self.cursor.execute(f'''
                 SELECT id, staff_name, class_name, class_date, role, meeting_type, 
-                       session_time, conflict_override, conflict_details, status
+                       session_time, conflict_override, conflict_details, status,
+                       location
                 FROM training_enrollments
                 WHERE class_name = ? AND status = 'active' AND {_YEAR_MATCH}
             ''', (class_name, year))
@@ -1503,18 +1530,20 @@ class UnifiedDatabase:
                 'session_time': row['session_time'],
                 'conflict_override': row['conflict_override'],
                 'conflict_details': row['conflict_details'],
-                'status': row['status']
+                'status': row['status'],
+                'location': row['location']
             })
         
         self.disconnect()
         return enrollments
         
     def get_enrollment_count(self, class_name, class_date, role=None, meeting_type=None,
-                             session_time=None, training_year=None):
+                             session_time=None, training_year=None, location=None):
         """Get enrollment count for a specific class, date, and optional filters.
 
         Scoped to one training year so a prior year's enrollments never consume
-        this year's seats.
+        this year's seats. Pass `location` on a date that runs at more than one site,
+        so a full room at one of them doesn't consume the seats at the other.
         """
         self.connect()
         
@@ -1525,6 +1554,10 @@ class UnifiedDatabase:
                   AND {_YEAR_MATCH}
         '''
         params = [class_name, class_date, year]
+
+        if location:
+            query += ' AND location = ?'
+            params.append(location)
         
         if role and role != 'General':
             query += ' AND role = ?'
@@ -1544,19 +1577,30 @@ class UnifiedDatabase:
         return count
         
     def get_session_enrollments(self, class_name, class_date, session_time=None,
-                                meeting_type=None, training_year=None):
-        """Get all enrollments for a specific training session in one training year"""
+                                meeting_type=None, training_year=None, location=None):
+        """Get all enrollments for a specific training session in one training year.
+
+        Pass `location` on a date that runs at more than one site, to count only the
+        people booked into that one - each location is its own room with its own seat
+        count, so counting them together would fill both at once. Leave it None for a
+        date with a single location, which also keeps the older rows that predate the
+        column in view.
+        """
         self.connect()
         
         year = self._resolve_training_year(training_year)
         query = f'''
             SELECT id, staff_name, class_name, class_date, role, meeting_type, 
-                   session_time, conflict_override
+                   session_time, conflict_override, location
             FROM training_enrollments
             WHERE class_name = ? AND class_date = ? AND status = 'active'
                   AND {_YEAR_MATCH}
         '''
         params = [class_name, class_date, year]
+
+        if location:
+            query += ' AND location = ?'
+            params.append(location)
         
         if session_time:
             query += ' AND session_time = ?'
@@ -1582,7 +1626,8 @@ class UnifiedDatabase:
                 'role': row['role'],
                 'meeting_type': row['meeting_type'],
                 'session_time': row['session_time'],
-                'conflict_override': row['conflict_override']
+                'conflict_override': row['conflict_override'],
+                'location': row['location']
             })
         
         self.disconnect()

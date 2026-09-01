@@ -8,6 +8,7 @@ INCLUDES ALL MISSING METHODS
 from datetime import datetime, timedelta
 import sqlite3
 import pandas as pd
+from .class_catalog import date_indices
 
 class AvailabilityAnalyzer:
     def __init__(self, unified_database, excel_handler, enrollment_manager, track_manager=None):
@@ -522,7 +523,7 @@ class AvailabilityAnalyzer:
     
     def _check_live_option_for_date(self, class_name, class_date, class_details):
         """Check if a specific date has LIVE option for staff meetings"""
-        for i in range(1, 15):
+        for i in date_indices(class_details):
             date_key = f'date_{i}'
             live_key = f'date_{i}_has_live'
             
@@ -604,7 +605,7 @@ class AvailabilityAnalyzer:
             class_dates = []
             found_dates = []
             
-            for i in range(1, 15):  # Check up to 14 date slots
+            for i in date_indices(class_details):  # Check up to 14 date slots
                 date_key = f'date_{i}'
                 if date_key in class_details and class_details[date_key]:
                     found_dates.append(class_details[date_key])

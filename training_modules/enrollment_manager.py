@@ -5,6 +5,7 @@ FIXED: Handles consecutive day enrollment, conflict checking, and cancellation.
 """
 from datetime import datetime, timedelta
 from .training_email_notifications import send_training_event_notification
+from .class_catalog import date_indices
 
 class EnrollmentManager:
     def __init__(self, unified_database, excel_handler, track_manager=None,
@@ -165,11 +166,14 @@ class EnrollmentManager:
 
     def enroll_staff(self, staff_name, class_name, class_date, role='General',
                     meeting_type=None, session_time=None, override_conflict=False,
-                    override_capacity=False, replace_existing=False, existing_enrollment_id=None):
+                    override_capacity=False, replace_existing=False, existing_enrollment_id=None,
+                    location=None):
         """Enroll a staff member in a class with proper two-day class support
 
         Args:
             override_capacity: If True, bypass capacity/slot checks (admin override)
+            location: Which site the staff member picked, on a date that runs at
+                more than one. Recorded on the enrollment either way.
         """
         
         # Check if this is a Staff Meeting class or two-day class
@@ -243,7 +247,8 @@ class EnrollmentManager:
         # Check if enrollment is allowed for ALL dates (unless admin override)
         if not override_capacity:
             for date in enrollment_dates:
-                can_enroll_result = self.can_enroll(staff_name, class_name, date, role, meeting_type, session_time)
+                can_enroll_result = self.can_enroll(staff_name, class_name, date, role,
+                                                    meeting_type, session_time, location)
                 if not can_enroll_result:
                     return False, f"No available slots for {date}"
         
@@ -256,7 +261,7 @@ class EnrollmentManager:
             success = self.db.add_enrollment(
                 staff_name, class_name, date, role, 
                 meeting_type, session_time, override_conflict, combined_conflict_str,
-                training_year=self.training_year
+                training_year=self.training_year, location=location
             )
             
             if success:
@@ -305,7 +310,7 @@ class EnrollmentManager:
                 
                 # Get class location for the specific date
                 class_location = "Location not specified"
-                for i in range(1, 15):  # Check rows 1-14 for dates
+                for i in date_indices(class_details):  # Check rows 1-14 for dates
                     date_key = f'date_{i}'
                     location_key = f'date_{i}_location'
                     
@@ -424,7 +429,7 @@ class EnrollmentManager:
                 
                 # Get class location for the specific date
                 class_location = "Location not specified"
-                for i in range(1, 15):  # Check rows 1-14 for dates
+                for i in date_indices(class_details):  # Check rows 1-14 for dates
                     date_key = f'date_{i}'
                     location_key = f'date_{i}_location'
                     
@@ -507,7 +512,7 @@ class EnrollmentManager:
         
         # Find which date index this is to get the can_work_n_prior setting
         can_work_n_prior = False
-        for i in range(1, 15):  # Check rows 1-14
+        for i in date_indices(class_details):  # Check rows 1-14
             date_key = f'date_{i}'
             if date_key in class_details and class_details[date_key] == class_date:
                 can_work_n_prior = class_details.get(f'date_{i}_can_work_n_prior', False)
@@ -569,7 +574,7 @@ class EnrollmentManager:
         dates = []
         can_work_n_prior_list = []
         
-        for i in range(1, 15):  # Check rows 1-14
+        for i in date_indices(class_details):  # Check rows 1-14
             date_key = f'date_{i}'
             if date_key in class_details and class_details[date_key]:
                 base_date = class_details[date_key]
@@ -623,7 +628,8 @@ class EnrollmentManager:
         return class_conflicts
 
     # Keep all other existing methods unchanged...
-    def can_enroll(self, staff_name, class_name, class_date, role, meeting_type=None, session_time=None):
+    def can_enroll(self, staff_name, class_name, class_date, role, meeting_type=None,
+                   session_time=None, location=None):
         """Check if enrollment is allowed based on slots and assignment"""
         # Get class details
         class_details = self.excel.get_class_details(class_name)
@@ -637,22 +643,38 @@ class EnrollmentManager:
             
         # Check available slots
         max_students = int(class_details.get('students_per_class', 21))
-        
+
+        # On a date taught at several sites the seats belong to the location, not to
+        # the date: the room being booked has its own capacity, and the people in the
+        # other room are not in it. Counting is filtered to match, so a full site
+        # can't consume the seats at an empty one. A date with a single location
+        # counts as it always did, unfiltered, which keeps rows written before
+        # locations were bookable in the count.
+        count_location = None
+        if location and hasattr(self.excel, 'get_date_options'):
+            date_options = self.excel.get_date_options(class_name, class_date)
+            if len(date_options) > 1:
+                count_location = location
+                for date_option in date_options:
+                    if date_option['location'] == location and date_option.get('capacity'):
+                        max_students = int(date_option['capacity'])
+                        break
+
         # For staff meetings, we need to check meeting type specific slots
         if self.excel.is_staff_meeting(class_name) and meeting_type:
             current_enrollment = self.db.get_enrollment_count(
                 class_name, class_date, None, meeting_type, session_time,
-                training_year=self.training_year)
+                training_year=self.training_year, location=count_location)
         elif class_details.get('nurses_medic_separate', 'No').lower() == 'yes' and role != 'General':
             # If nurses and medics are separate, check role-specific slots
             max_students = max_students // 2
             current_enrollment = self.db.get_enrollment_count(
                 class_name, class_date, role, meeting_type, session_time,
-                training_year=self.training_year)
+                training_year=self.training_year, location=count_location)
         else:
             current_enrollment = self.db.get_enrollment_count(
                 class_name, class_date, None, meeting_type, session_time,
-                training_year=self.training_year)
+                training_year=self.training_year, location=count_location)
         
         available_slots = max_students - current_enrollment
         
@@ -677,11 +699,12 @@ class EnrollmentManager:
         """Get count of LIVE staff meetings for a staff member"""
         return self.db.get_live_staff_meeting_count(staff_name, training_year=self.training_year)
         
-    def get_session_enrollments(self, class_name, class_date, session_time=None, meeting_type=None):
+    def get_session_enrollments(self, class_name, class_date, session_time=None,
+                                meeting_type=None, location=None):
         """Get list of staff enrolled in a specific session"""
         return self.db.get_session_enrollments(
             class_name, class_date, session_time, meeting_type,
-            training_year=self.training_year)
+            training_year=self.training_year, location=location)
     
     def get_staff_meeting_enrollments(self, staff_name, class_name=None):
         """Get all Staff Meeting enrollments for a staff member"""
@@ -746,11 +769,67 @@ class EnrollmentManager:
         return False
 
     def get_available_session_options(self, class_name, class_date):
-        """Get available session options - updated for two-day class display"""
+        """
+        What a staff member can book on one date of a class.
+
+        A date that runs at a single location produces the sessions it always did. A
+        date that runs at several produces that same set once per location, each
+        carrying its own seat count and its own times, because each location is a
+        separate room that fills separately. Every option is tagged with its
+        `location` so the screen can label it and the enrollment can record it.
+        """
+        date_options = []
+        if hasattr(self.excel, 'get_date_options'):
+            date_options = self.excel.get_date_options(class_name, class_date)
+
+        if len(date_options) <= 1:
+            # One location, or a class whose catalog entry predates them. Counting
+            # stays unfiltered so rows written before the location column still show.
+            location = date_options[0]['location'] if date_options else ''
+            single = self._session_options_for_location(
+                class_name, class_date, option=None, location=location,
+                count_by_location=False)
+            # The date heading already names the one location; labelling every session
+            # under it with the same place adds nothing.
+            for session in single:
+                session['_label_location'] = False
+            return single
+
+        options = []
+        for date_option in date_options:
+            options.extend(self._session_options_for_location(
+                class_name, class_date, option=date_option,
+                location=date_option['location'], count_by_location=True))
+        return options
+
+    def _session_options_for_location(self, class_name, class_date, option=None,
+                                      location='', count_by_location=False):
+        """
+        The bookable sessions on one date at one location.
+
+        `option` carries that location's own times and seat count when it has them;
+        without one the class-level settings apply, which is every class that runs at a
+        single site. `count_by_location` decides whether seats are counted against that
+        location alone - it must stay off for a single-location date so enrollments
+        recorded before locations were bookable are still counted.
+        """
         class_details = self.excel.get_class_details(class_name)
         if not class_details:
             return []
-            
+
+        # A location's own times and capacity stand in for the class's, so the rest of
+        # this method never has to know which of the two a value came from.
+        if option:
+            class_details = dict(class_details)
+            if option.get('start_time'):
+                class_details['time_1_start'] = option['start_time']
+            if option.get('end_time'):
+                class_details['time_1_end'] = option['end_time']
+            if option.get('capacity'):
+                class_details['students_per_class'] = option['capacity']
+
+        count_location = location if count_by_location else None
+
         classes_per_day = int(class_details.get('classes_per_day', 1))
         max_students = int(class_details.get('students_per_class', 21))
         nurses_medic_separate = class_details.get('nurses_medic_separate', 'No').lower() == 'yes'
@@ -791,7 +870,8 @@ class EnrollmentManager:
                         display_time += " - 2-Day Class"
 
                     if nurses_medic_separate:
-                        all_enrollments = self.get_session_enrollments(class_name, class_date, session_time)
+                        all_enrollments = self.get_session_enrollments(class_name, class_date, session_time,
+                                                             location=count_location)
                         nurses = []
                         medics = []
                         ccemts = []
@@ -828,10 +908,12 @@ class EnrollmentManager:
                             'has_ccemt': has_ccemt,
                             'type': 'nurse_medic_separate',
                             'is_two_day': is_two_day,
-                            'date_display': date_display
+                            'date_display': date_display,
+                            'location': location
                         })
                     else:
-                        all_enrollments = self.get_session_enrollments(class_name, class_date, session_time)
+                        all_enrollments = self.get_session_enrollments(class_name, class_date, session_time,
+                                                             location=count_location)
                         enrolled_names = [e['staff_name'] for e in all_enrollments]
                         available_slots = max_students - len(enrolled_names)
 
@@ -842,7 +924,8 @@ class EnrollmentManager:
                             'available_slots': available_slots,
                             'type': 'regular',
                             'is_two_day': is_two_day,
-                            'date_display': date_display
+                            'date_display': date_display,
+                            'location': location
                         })
 
                     current_start = current_end
@@ -873,7 +956,8 @@ class EnrollmentManager:
                             has_ccemt = class_details.get('has_ccemt', 'No').lower() == 'yes'
                             
                             # Multiple sessions with nurse/medic separation (and possibly CCEMT)
-                            all_enrollments = self.get_session_enrollments(class_name, class_date, session_time)
+                            all_enrollments = self.get_session_enrollments(class_name, class_date, session_time,
+                                                             location=count_location)
                             
                             nurses = []
                             medics = []
@@ -916,12 +1000,14 @@ class EnrollmentManager:
                                 'has_ccemt': has_ccemt,  # NEW
                                 'type': 'nurse_medic_separate',
                                 'is_two_day': is_two_day,
-                                'date_display': date_display
+                                'date_display': date_display,
+                                'location': location
                             })
 
                         else:
                             # Regular multiple sessions
-                            all_enrollments = self.get_session_enrollments(class_name, class_date, session_time)
+                            all_enrollments = self.get_session_enrollments(class_name, class_date, session_time,
+                                                             location=count_location)
                             enrolled_names = [e['staff_name'] for e in all_enrollments]
                             available_slots = max_students - len(enrolled_names)
                             
@@ -932,13 +1018,14 @@ class EnrollmentManager:
                                 'available_slots': available_slots,
                                 'type': 'regular',
                                 'is_two_day': is_two_day,
-                                'date_display': date_display
+                                'date_display': date_display,
+                                'location': location
                             })
         
         elif is_staff_meeting:
             # Staff meeting logic (unchanged, but add two-day support if needed)
             has_live_option = False
-            for i in range(1, 15):
+            for i in date_indices(class_details):
                 date_key = f'date_{i}'
                 live_key = f'date_{i}_has_live'
                 
@@ -951,7 +1038,8 @@ class EnrollmentManager:
                 meeting_types.append('LIVE')
             
             for meeting_type in meeting_types:
-                all_enrollments = self.get_session_enrollments(class_name, class_date, None, meeting_type)
+                all_enrollments = self.get_session_enrollments(class_name, class_date, None, meeting_type,
+                                                             location=count_location)
                 enrolled_names = [e['staff_name'] for e in all_enrollments]
                 available_slots = max_students - len(enrolled_names)
                 
@@ -961,7 +1049,8 @@ class EnrollmentManager:
                     'available_slots': available_slots,
                     'type': 'staff_meeting',
                     'is_two_day': is_two_day,
-                    'date_display': date_display
+                    'date_display': date_display,
+                    'location': location
                 })
         
         else:
@@ -980,7 +1069,8 @@ class EnrollmentManager:
                 # Single session with nurse/medic separation (and possibly CCEMT)
                 has_ccemt = class_details.get('has_ccemt', 'No').lower() == 'yes'
 
-                all_enrollments = self.get_session_enrollments(class_name, class_date)
+                all_enrollments = self.get_session_enrollments(class_name, class_date,
+                                                             location=count_location)
 
                 nurses = []
                 medics = []
@@ -1020,12 +1110,14 @@ class EnrollmentManager:
                     'display_time': display_time,  # NEW: Add time display
                     'type': 'nurse_medic_separate_single',
                     'is_two_day': is_two_day,
-                    'date_display': date_display
+                    'date_display': date_display,
+                    'location': location
                 })
 
             else:
                 # Single regular session (NO CCEMT needed - this is the original else block)
-                all_enrollments = self.get_session_enrollments(class_name, class_date)
+                all_enrollments = self.get_session_enrollments(class_name, class_date,
+                                                             location=count_location)
                 enrolled_names = [e['staff_name'] for e in all_enrollments]
                 available_slots = max_students - len(enrolled_names)
 
@@ -1035,7 +1127,8 @@ class EnrollmentManager:
                     'display_time': display_time,  # NEW: Add time display
                     'type': 'regular_single',
                     'is_two_day': is_two_day,
-                    'date_display': date_display
+                    'date_display': date_display,
+                    'location': location
                 })
         
         return session_options        

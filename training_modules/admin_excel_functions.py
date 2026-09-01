@@ -10,6 +10,7 @@ import pytz
 
 _eastern_tz = pytz.timezone('America/New_York')
 from .config import NON_CLASS_COLUMNS, DEFAULT_CLASS_DETAILS
+from .class_catalog import date_indices
 
 def year_filename_prefix(training_year):
     """`FY27_` for use at the front of an export filename, or '' if no year is set.
@@ -280,7 +281,7 @@ class ExcelAdminFunctions:
                 if class_details:
                     # Find the earliest date for this class (first date)
                     earliest_date = None
-                    for i in range(1, 15):  # Check rows 1-14 for dates
+                    for i in date_indices(class_details):  # Check rows 1-14 for dates
                         date_key = f'date_{i}'
                         if date_key in class_details and class_details[date_key]:
                             try:
@@ -780,8 +781,13 @@ class ExcelAdminFunctions:
                     # Fall back to general class time (first session only)
                     time_info = self._get_general_class_time(class_details)
                 
-                # Get location for this date
-                location_info = self._get_class_location_for_date(class_details, class_date)
+                # Where this person actually is. On a date running at several sites
+                # the date's own location text lists them all, which says nothing
+                # about where to find this staff member - their enrollment recorded
+                # the site they picked, so that is what the schedule shows.
+                location_info = (matching_enrollment.get('location')
+                                 or self._get_class_location_for_date(class_details,
+                                                                      class_date))
                 
                 return time_info, location_info
             else:
@@ -849,7 +855,7 @@ class ExcelAdminFunctions:
         """Get location information for a specific date"""
         try:
             # Search through date rows to find matching date and its location
-            for i in range(1, 15):  # Check rows 1-14 for dates
+            for i in date_indices(class_details):  # Check rows 1-14 for dates
                 date_key = f'date_{i}'
                 location_key = f'date_{i}_location'
                 
@@ -1063,7 +1069,7 @@ class ExcelAdminFunctions:
                 capacity_per_date = max_students * classes_per_day
             
             # Calculate across all dates
-            for i in range(1, 15):  # Check rows 1-14
+            for i in date_indices(class_details):  # Check rows 1-14
                 date_key = f'date_{i}'
                 if date_key in class_details and class_details[date_key]:
                     date_str = class_details[date_key]
@@ -1260,7 +1266,7 @@ class ExcelAdminFunctions:
         total_educator_signups = 0
         total_educator_conflicts = 0
         
-        for i in range(1, 15):  # Check rows 1-14 for dates
+        for i in date_indices(class_details):  # Check rows 1-14 for dates
             date_key = f'date_{i}'
             if date_key in class_details and class_details[date_key]:
                 date_str = class_details[date_key]
@@ -1428,6 +1434,7 @@ class ExcelAdminFunctions:
                 'Staff Name': enrollment['staff_name'],
                 'Date': enrollment['class_date'],
                 'Role': enrollment.get('role', 'General'),
+                'Location': enrollment.get('location') or '',
                 'Meeting Type': enrollment.get('meeting_type', ''),
                 'Session Time': enrollment.get('session_time', ''),
                 'Has Conflict': '⚠️' if enrollment.get('conflict_override') else '',

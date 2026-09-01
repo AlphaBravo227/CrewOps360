@@ -2,6 +2,7 @@
 import streamlit as st
 from datetime import datetime, timedelta
 from .staff_meeting_components import EnrollmentDialogComponents
+from .class_catalog import date_indices
 
 class EnrollmentSessionComponents:
     
@@ -18,7 +19,7 @@ class EnrollmentSessionComponents:
             # Check if this returns default values (indicating missing sheet/data)
             is_missing_data = (not class_details or 
                              class_details.get('class_name') == class_name and 
-                             not any(class_details.get(f'date_{i}') for i in range(1, 15)))
+                             not any(class_details.get(f'date_{i}') for i in date_indices(class_details)))
             
             if is_missing_data:
                 st.error("📅 **Class data not configured**")
@@ -53,21 +54,23 @@ class EnrollmentSessionComponents:
             else:
                 st.subheader(f"📅 {date}")
             
-            # Show location information if available
-            if class_details:
-                location = None
-                for i in range(1, 15):  # Check rows 1-14 for dates
-                    date_key = f'date_{i}'
-                    location_key = f'date_{i}_location'
-                    
-                    if date_key in class_details and class_details[date_key] == date:
-                        location = class_details.get(location_key, '')
-                        break
-                
-                if location and location.strip():
-                    st.write(f"### 📍 Location: {location}")
-                else:
-                    st.write(f"### 📍 Location: Not specified")
+            # Where the class is that day. A date running at more than one location
+            # gets no heading: each option below names its own, and a single heading
+            # listing them all would read as though everyone attends every site.
+            date_locations = []
+            for i in date_indices(class_details):
+                if class_details.get(f'date_{i}') == date:
+                    date_locations = [option.get('location')
+                                      for option in (class_details.get(f'date_{i}_options') or [])
+                                      if option.get('location')]
+                    break
+
+            if len(date_locations) > 1:
+                st.write(f"### 📍 {len(date_locations)} locations — pick one below")
+            elif date_locations:
+                st.write(f"### 📍 Location: {date_locations[0]}")
+            else:
+                st.write("### 📍 Location: Not specified")
             
             # Check for track conflicts - for two-day classes, check both days
             conflict_info = None
@@ -146,7 +149,13 @@ class EnrollmentSessionComponents:
         
         # Check if this is a two-day class
         is_two_day = option.get('is_two_day', False)
-        
+
+        # On a date taught at several sites this is what tells the options apart, so
+        # it goes above each one. A date with a single location has already said so
+        # once, under the date, and repeating it on every session is noise.
+        if option.get('location') and option.get('_label_location', True):
+            st.markdown(f"**📍 {option['location']}**")
+
         if option['type'] == 'nurse_medic_separate':
             # Multiple sessions with nurse/medic separation (and possibly CCEMT)
             with st.container():
@@ -185,7 +194,8 @@ class EnrollmentSessionComponents:
                                 button_text, f"nurse_{option_key}",
                                 has_conflict, conflict_details,
                                 enrollment_manager, selected_staff, class_name,
-                                date, "Nurse", option.get('session_time')
+                                date, "Nurse", option.get('session_time'),
+                                option.get('location')
                             ):
                                 return  # Will trigger rerun
                         # If weekly limit blocked, don't show button at all
@@ -210,7 +220,8 @@ class EnrollmentSessionComponents:
                                 button_text, f"medic_{option_key}",
                                 has_conflict, conflict_details,
                                 enrollment_manager, selected_staff, class_name,
-                                date, "Medic", option.get('session_time')
+                                date, "Medic", option.get('session_time'),
+                                option.get('location')
                             ):
                                 return  # Will trigger rerun
                         # If weekly limit blocked, don't show button at all
@@ -236,7 +247,8 @@ class EnrollmentSessionComponents:
                                     button_text, f"ccemt_{option_key}",
                                     has_conflict, conflict_details,
                                     enrollment_manager, selected_staff, class_name,
-                                    date, "CCEMT", option.get('session_time')
+                                    date, "CCEMT", option.get('session_time'),
+                                option.get('location')
                                 ):
                                     return  # Will trigger rerun
                             # If weekly limit blocked, don't show button at all
@@ -282,7 +294,8 @@ class EnrollmentSessionComponents:
                             button_text, f"enroll_{option_key}",
                             has_conflict, conflict_details,
                             enrollment_manager, selected_staff, class_name,
-                            date, "General", option.get('session_time')
+                            date, "General", option.get('session_time'),
+                                option.get('location')
                         ):
                             return  # Will trigger rerun
                     # If weekly limit blocked, don't show button at all
@@ -338,7 +351,8 @@ class EnrollmentSessionComponents:
                             button_text, f"enroll_{option_key}",
                             has_conflict, conflict_details,
                             enrollment_manager, selected_staff, class_name,
-                            date, "General", None, option['meeting_type']
+                            date, "General", None, option['meeting_type'],
+                            option.get('location')
                         ):
                             return  # Will trigger rerun
                     # If weekly limit blocked, don't show button at all
@@ -413,7 +427,8 @@ class EnrollmentSessionComponents:
                                 button_text, f"nurse_{option_key}",
                                 has_conflict, conflict_details,
                                 enrollment_manager, selected_staff, class_name,
-                                date, "Nurse"
+                                date, "Nurse", option.get('session_time'), None,
+                                option.get('location')
                             ):
                                 return True
                         # If weekly limit blocked, don't show button at all
@@ -437,7 +452,8 @@ class EnrollmentSessionComponents:
                                 button_text, f"medic_{option_key}",
                                 has_conflict, conflict_details,
                                 enrollment_manager, selected_staff, class_name,
-                                date, "Medic"
+                                date, "Medic", option.get('session_time'), None,
+                                option.get('location')
                             ):
                                 return True
                         # If weekly limit blocked, don't show button at all
@@ -501,7 +517,8 @@ class EnrollmentSessionComponents:
                             button_text, f"enroll_{option_key}",
                             has_conflict, conflict_details,
                             enrollment_manager, selected_staff, class_name,
-                            date, "General"
+                            date, "General", option.get('session_time'), None,
+                            option.get('location')
                         ):
                             return True
                     # If weekly limit blocked, don't show button at all
@@ -582,7 +599,8 @@ class EnrollmentSessionComponents:
     @staticmethod
     def _handle_enrollment_button(button_label, button_key, has_conflict, conflict_details,
                             enrollment_manager, staff_name, class_name, date,
-                            role="General", session_time=None, meeting_type=None):
+                            role="General", session_time=None, meeting_type=None,
+                            location=None):
         """Handle enrollment button with conflict override dialog - UPDATED for two-day classes"""
         
         # Check if this is a Staff Meeting class
@@ -654,7 +672,8 @@ class EnrollmentSessionComponents:
                         EnrollmentSessionComponents._process_enrollment(
                             enrollment_manager, staff_name, class_name, date, role,
                             meeting_type, session_time, True, is_staff_meeting, is_two_day,
-                            button_key, duplicate_dialog_key, duplicate_data_key
+                            button_key, duplicate_dialog_key, duplicate_data_key,
+                            location
                         )
                 
                 with col2:
@@ -670,20 +689,23 @@ class EnrollmentSessionComponents:
                 EnrollmentSessionComponents._process_enrollment(
                     enrollment_manager, staff_name, class_name, date, role,
                     meeting_type, session_time, False, is_staff_meeting, is_two_day,
-                    button_key, duplicate_dialog_key, duplicate_data_key
+                    button_key, duplicate_dialog_key, duplicate_data_key,
+                    location
                 )
             return False
 
     @staticmethod
     def _process_enrollment(enrollment_manager, staff_name, class_name, date, role,
                           meeting_type, session_time, override_conflict, is_staff_meeting, 
-                          is_two_day, button_key, duplicate_dialog_key, duplicate_data_key):
+                          is_two_day, button_key, duplicate_dialog_key, duplicate_data_key,
+                          location=None):
         """Process enrollment with proper error handling"""
         with st.spinner("Processing enrollment..."):
             try:
                 result, data = enrollment_manager.enroll_staff(
                     staff_name, class_name, date, role,
-                    meeting_type, session_time, override_conflict
+                    meeting_type, session_time, override_conflict,
+                    location=location
                 )
                 
                 if result == "duplicate_found" and not is_staff_meeting:
