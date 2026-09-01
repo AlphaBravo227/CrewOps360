@@ -1681,17 +1681,28 @@ class AdminAccess:
         enrollments_df = pd.DataFrame(enrollments)
         signups_df = pd.DataFrame(signups)
 
+        from .admin_excel_functions import date_column_config, sortable_dates
+        class_date_cols = ['class_date']
+
         tab_enrol, tab_edu = st.tabs(["👥 Enrollments", "👨‍🏫 Educator Signups"])
         with tab_enrol:
             if enrollments_df.empty:
                 st.info(f"No active enrollments in {year}.")
             else:
-                st.dataframe(enrollments_df, use_container_width=True)
+                st.dataframe(
+                    sortable_dates(enrollments_df, class_date_cols),
+                    use_container_width=True,
+                    column_config=date_column_config(class_date_cols),
+                )
         with tab_edu:
             if signups_df.empty:
                 st.info(f"No active educator signups in {year}.")
             else:
-                st.dataframe(signups_df, use_container_width=True)
+                st.dataframe(
+                    sortable_dates(signups_df, class_date_cols),
+                    use_container_width=True,
+                    column_config=date_column_config(class_date_cols),
+                )
 
         st.markdown("---")
         stamp = datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M')
@@ -1875,8 +1886,12 @@ class AdminAccess:
                     f"neighbouring year — during a cutover it is easy to enrol "
                     f"someone into the year that happened to be selected."
                 )
-                st.dataframe(pd.DataFrame(out_of_span), use_container_width=True,
-                             hide_index=True)
+                from .admin_excel_functions import date_column_config, sortable_dates
+                st.dataframe(
+                    sortable_dates(pd.DataFrame(out_of_span), ['class_date']),
+                    use_container_width=True, hide_index=True,
+                    column_config=date_column_config(['class_date']),
+                )
             elif report.get('span_readable'):
                 st.success(
                     f"✅ Every {year} enrollment falls inside {report['start_date']} "
@@ -1919,7 +1934,12 @@ class AdminAccess:
                 'Class Date': e.get('class_date'),
                 'Role': e.get('role') or '',
             } for e in entries])
-            st.dataframe(audit_df, use_container_width=True, hide_index=True)
+            from .admin_excel_functions import date_column_config, sortable_dates
+            st.dataframe(
+                sortable_dates(audit_df, ['Class Date']),
+                use_container_width=True, hide_index=True,
+                column_config=date_column_config(['Class Date']),
+            )
             st.download_button(
                 "📥 Download audit trail (CSV)",
                 audit_df.to_csv(index=False),

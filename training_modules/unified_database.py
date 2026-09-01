@@ -70,6 +70,16 @@ def _parse_class_date(value):
     return None
 
 
+# SQLite sorts TEXT, and a class date is stored as MM/DD/YYYY, so `ORDER BY class_date`
+# compares the month first and the year last. In a training year that runs Oct 2026 to
+# Sep 2027 that puts every 2027 date *below* Oct-Dec 2026. Reordering the parts into
+# YYYYMMDD inside the query sorts chronologically without changing how the date is
+# stored or displayed.
+_CLASS_DATE_ORDER = (
+    "substr(class_date, 7, 4) || substr(class_date, 1, 2) || substr(class_date, 4, 2)"
+)
+
+
 class UnifiedDatabase:
     def __init__(self, db_path, excel_handler=None):
         '''
@@ -706,14 +716,14 @@ class UnifiedDatabase:
                 f"       session_time, conflict_override, enrollment_date, "
                 f"       COALESCE(training_year, ?) AS training_year "
                 f"FROM training_enrollments WHERE status = 'active' AND {_YEAR_MATCH} "
-                f"ORDER BY class_name, class_date, staff_name",
+                f"ORDER BY class_name, {_CLASS_DATE_ORDER}, staff_name",
                 (LEGACY_TRAINING_YEAR, year))
             enrollments = [dict(r) for r in self.cursor.fetchall()]
             self.cursor.execute(
                 f"SELECT staff_name, class_name, class_date, conflict_override, "
                 f"       signup_date, COALESCE(training_year, ?) AS training_year "
                 f"FROM training_educator_signups WHERE status = 'active' AND {_YEAR_MATCH} "
-                f"ORDER BY class_name, class_date, staff_name",
+                f"ORDER BY class_name, {_CLASS_DATE_ORDER}, staff_name",
                 (LEGACY_TRAINING_YEAR, year))
             signups = [dict(r) for r in self.cursor.fetchall()]
         finally:
@@ -1340,7 +1350,7 @@ class UnifiedDatabase:
                        conflict_details, signup_date, status
                 FROM training_educator_signups
                 WHERE class_name = ? AND status = 'active' AND {_YEAR_MATCH}
-                ORDER BY class_date, signup_date
+                ORDER BY {_CLASS_DATE_ORDER}, signup_date
             ''', (class_name, year))
         
         rows = self.cursor.fetchall()
@@ -1419,7 +1429,7 @@ class UnifiedDatabase:
                     override_acknowledged, enrollment_date, status, training_year
                 FROM training_enrollments
                 WHERE staff_name = ? AND status = 'active' AND {_YEAR_MATCH}
-                ORDER BY class_date
+                ORDER BY {_CLASS_DATE_ORDER}
             ''', (staff_name, year))
             
             rows = self.cursor.fetchall()
@@ -1703,7 +1713,7 @@ class UnifiedDatabase:
                     FROM training_enrollments
                     WHERE staff_name = ? AND conflict_override = 1 AND status = 'active'
                           AND {_YEAR_MATCH}
-                    ORDER BY class_date
+                    ORDER BY {_CLASS_DATE_ORDER}
                 ''', (staff_name, year))
             else:
                 self.cursor.execute(f'''
@@ -1711,7 +1721,7 @@ class UnifiedDatabase:
                         conflict_override, conflict_details, override_acknowledged
                     FROM training_enrollments
                     WHERE conflict_override = 1 AND status = 'active' AND {_YEAR_MATCH}
-                    ORDER BY staff_name, class_date
+                    ORDER BY staff_name, {_CLASS_DATE_ORDER}
                 ''', (year,))
                 
             rows = self.cursor.fetchall()
@@ -1753,7 +1763,7 @@ class UnifiedDatabase:
                     FROM training_educator_signups
                     WHERE staff_name = ? AND conflict_override = 1 AND status = 'active'
                           AND {_YEAR_MATCH}
-                    ORDER BY class_date
+                    ORDER BY {_CLASS_DATE_ORDER}
                 ''', (staff_name, year))
             else:
                 self.cursor.execute(f'''
@@ -1761,7 +1771,7 @@ class UnifiedDatabase:
                         conflict_details, override_acknowledged
                     FROM training_educator_signups
                     WHERE conflict_override = 1 AND status = 'active' AND {_YEAR_MATCH}
-                    ORDER BY staff_name, class_date
+                    ORDER BY staff_name, {_CLASS_DATE_ORDER}
                 ''', (year,))
                 
             rows = self.cursor.fetchall()
@@ -1800,7 +1810,7 @@ class UnifiedDatabase:
                     conflict_details, override_acknowledged, signup_date, status
                 FROM training_educator_signups
                 WHERE staff_name = ? AND status = 'active' AND {_YEAR_MATCH}
-                ORDER BY class_date
+                ORDER BY {_CLASS_DATE_ORDER}
             ''', (staff_name, year))
             
             rows = self.cursor.fetchall()

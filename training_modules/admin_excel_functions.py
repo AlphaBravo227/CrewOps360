@@ -49,6 +49,76 @@ def _write_report_year_sheet(writer, training_year, report_name):
         print(f"Could not add report info sheet: {e}")
 
 
+# Class dates come off the roster workbook as MM/DD/YYYY strings and are stored and
+# passed around in that form. Left as text, every table sorts them character by
+# character, so the month leads and the year is compared last: a training year that
+# runs Oct 2026 to Sep 2027 puts all of 2027 *below* Oct-Dec 2026. The helpers below
+# turn those strings back into real datetimes for display and sorting, and
+# `date_column_config` keeps them looking the way they always have.
+CLASS_DATE_FORMAT = '%m/%d/%Y'
+CLASS_DATE_DISPLAY = 'MM/DD/YYYY'
+TIMESTAMP_DISPLAY = 'MM/DD/YYYY hh:mm A'  # momentJS tokens; 'A' is the uppercase AM/PM
+
+# Trailing timezone abbreviation on a formatted timestamp ('... 03:22 PM EDT').
+_TZ_SUFFIX = re.compile(r'\s+[A-Za-z]{2,5}$')
+
+
+def parse_class_dates(series):
+    """A column of MM/DD/YYYY class dates as datetimes; unparseable values become NaT."""
+    text = series.astype(str).str.strip()
+    return pd.to_datetime(text, format=CLASS_DATE_FORMAT, errors='coerce')
+
+
+def parse_display_timestamps(series):
+    """A column of 'MM/DD/YYYY HH:MM AM EDT' stamps as naive datetimes.
+
+    The timezone abbreviation is dropped rather than parsed: EST and EDT rows would
+    otherwise carry different offsets and land back in an object column, which sorts
+    as text all over again. Wall-clock Eastern is what the column already displays.
+    """
+    text = series.astype(str).str.strip().str.replace(_TZ_SUFFIX, '', regex=True)
+    return pd.to_datetime(text, format='%m/%d/%Y %I:%M %p', errors='coerce')
+
+
+def sortable_dates(df, date_columns=(), timestamp_columns=()):
+    """A copy of `df` with the named text-date columns converted to real datetimes.
+
+    Returns a copy so the caller's frame keeps its original strings for CSV and
+    Excel exports, which downstream code and saved reports still expect.
+    """
+    display_df = df.copy()
+    for column in date_columns:
+        if column in display_df.columns:
+            display_df[column] = parse_class_dates(display_df[column])
+    for column in timestamp_columns:
+        if column in display_df.columns:
+            display_df[column] = parse_display_timestamps(display_df[column])
+    return display_df
+
+
+def date_column_config(date_columns=(), timestamp_columns=()):
+    """`column_config` that renders converted date columns in their usual format."""
+    config = {}
+    for column in date_columns:
+        config[column] = st.column_config.DateColumn(column, format=CLASS_DATE_DISPLAY)
+    for column in timestamp_columns:
+        config[column] = st.column_config.DatetimeColumn(column, format=TIMESTAMP_DISPLAY)
+    return config
+
+
+def sort_by_class_date(df, date_column='Date', then_by=()):
+    """`df` ordered chronologically by a MM/DD/YYYY text date column.
+
+    Sorts on a parsed copy of the column and drops it again, so the returned frame
+    still carries the original strings.
+    """
+    if df.empty or date_column not in df.columns:
+        return df
+    ordered = df.assign(_date_sort=parse_class_dates(df[date_column]))
+    ordered = ordered.sort_values(['_date_sort', *then_by], kind='stable')
+    return ordered.drop(columns='_date_sort')
+
+
 class ExcelAdminFunctions:
     def __init__(self, excel_handler, enrollment_manager, database, educator_manager=None):
         self.excel = excel_handler
@@ -1366,7 +1436,7 @@ class ExcelAdminFunctions:
             })
         
         df = pd.DataFrame(roster_data)
-        df = df.sort_values(['Date', 'Staff Name'])
+        df = sort_by_class_date(df, 'Date', then_by=['Staff Name'])
         
         return df, title
     
@@ -1397,7 +1467,7 @@ class ExcelAdminFunctions:
         
         df = pd.DataFrame(roster_data)
         if not df.empty:
-            df = df.sort_values(['Date', 'Educator Name'])
+            df = sort_by_class_date(df, 'Date', then_by=['Educator Name'])
         
         return df, title
     
@@ -1724,7 +1794,13 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                             st.metric("Educator Conflicts", conflict_types.get('Educator Signup', 0))
                     
                     st.warning(f"Found {len(conflict_df)} schedule conflicts requiring manual resolution")
-                    st.dataframe(conflict_df, use_container_width=True)
+                    conflict_date_cols = ['Class Date']
+                    conflict_stamp_cols = ['Override Date']
+                    st.dataframe(
+                        sortable_dates(conflict_df, conflict_date_cols, conflict_stamp_cols),
+                        use_container_width=True,
+                        column_config=date_column_config(conflict_date_cols, conflict_stamp_cols),
+                    )
                 else:
                     st.success("No schedule conflicts found!")
             except Exception as e:
@@ -1760,14 +1836,22 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                             st.metric("Avg Coverage", f"{avg_coverage:.1f}%")
                         
                         st.write("#### Educator Coverage by Class/Date")
-                        st.dataframe(coverage_df, use_container_width=True)
+                        st.dataframe(
+                            sortable_dates(coverage_df, ['Date']),
+                            use_container_width=True,
+                            column_config=date_column_config(['Date']),
+                        )
                         
                         # Classes needing educators
                         st.write("#### 🚨 Priority - Classes Still Needing Educators")
                         needs_educators_df = excel_admin_functions.get_classes_needing_educators_report()
                         
                         if not needs_educators_df.empty:
-                            st.dataframe(needs_educators_df, use_container_width=True)
+                            st.dataframe(
+                                sortable_dates(needs_educators_df, ['Date']),
+                                use_container_width=True,
+                                column_config=date_column_config(['Date']),
+                            )
                         else:
                             st.success("✅ All educator positions are filled!")
                         
