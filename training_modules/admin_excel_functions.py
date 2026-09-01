@@ -1195,40 +1195,44 @@ class ExcelAdminFunctions:
         return unused_classes
     
     def validate_excel_structure(self):
-        """Validate Excel file structure and identify issues"""
+        """Check the year's classes for the gaps that leave staff with nothing to book."""
         issues = []
-        
-        # Check if workbook loaded successfully
+
         if self.excel.load_error:
-            issues.append(f"Excel Loading Error: {self.excel.load_error}")
+            issues.append(f"Class catalog error: {self.excel.load_error}")
             return issues
-        
-        # Check staff list
+
         staff_list = self.excel.get_staff_list()
         if not staff_list:
-            issues.append("No staff members found in the roster")
-        
-        # Check for duplicate staff names
+            issues.append("No staff members found on the roster")
+
         duplicates = set([x for x in staff_list if staff_list.count(x) > 1])
         if duplicates:
             issues.append(f"Duplicate staff names found: {', '.join(duplicates)}")
-        
-        # Check class sheets
+
         all_classes = self.excel.get_all_classes()
+        if not all_classes:
+            issues.append("This training year has no classes. Build them in "
+                          "Training Admin > Build Classes, or import that year's "
+                          "roster workbook there.")
+
         for class_name in all_classes:
             class_details = self.excel.get_class_details(class_name)
-            
-            # Check if class sheet exists and has valid data
-            if not class_details or class_details == DEFAULT_CLASS_DETAILS:
-                issues.append(f"Class '{class_name}' has no detailed configuration sheet")
+
+            if not class_details or class_details.get('_missing_sheet'):
+                issues.append(f"Class '{class_name}' has no configuration")
                 continue
-            
-            # Check for dates
-            has_dates = any(class_details.get(f'date_{i}') for i in range(1, 9))
-            if not has_dates:
+
+            if not any(class_details.get(f'date_{i}')
+                       for i in date_indices(class_details)):
                 issues.append(f"Class '{class_name}' has no scheduled dates")
-        
-        return issues if issues else ["✅ Excel structure validation passed"]
+                continue
+
+            if not self._get_staff_assigned_to_class(class_name):
+                issues.append(f"Class '{class_name}' has nobody assigned to it, so "
+                              f"no staff member can see it")
+
+        return issues if issues else ["✅ Class configuration validation passed"]
 
     def get_individual_class_report(self, class_name):
         """Generate comprehensive report for a specific class"""
@@ -1406,16 +1410,28 @@ class ExcelAdminFunctions:
         return report
 
     def _get_staff_assigned_to_class(self, class_name):
-        """Get list of staff assigned to a specific class"""
-        all_staff = self.excel.get_staff_list()
-        assigned_staff = []
-        
-        for staff_name in all_staff:
-            assigned_classes = self.excel.get_assigned_classes(staff_name)
-            if class_name in assigned_classes:
-                assigned_staff.append(staff_name)
-        
-        return assigned_staff
+        """
+        Who is assigned to a class.
+
+        The catalog answers this in one query. Walking the staff roster and asking
+        per name, as this used to, cost a query a person and reported nobody at all
+        whenever the staff database was empty - which reads as a misconfigured class
+        rather than as a missing roster.
+
+        Assignments are still filtered to active staff, so somebody who has left
+        stops appearing. When the roster is empty there is nothing to filter against
+        and the assignments stand on their own.
+        """
+        if hasattr(self.excel, 'get_staff_assigned_to_class'):
+            assigned = self.excel.get_staff_assigned_to_class(class_name)
+        else:
+            assigned = [name for name in self.excel.get_staff_list()
+                        if class_name in self.excel.get_assigned_classes(name)]
+
+        active = set(self.excel.get_staff_list())
+        if not active:
+            return assigned
+        return [name for name in assigned if name in active]
     
     def export_class_roster(self, class_name, date_str=None):
         """Export roster for a specific class/date in printable format"""
@@ -1491,7 +1507,7 @@ class ExcelAdminFunctions:
             
             # Get all available dates for this class
             available_dates = []
-            for i in range(1, 9):
+            for i in date_indices(class_details):
                 date_key = f'date_{i}'
                 if date_key in class_details and class_details[date_key]:
                     available_dates.append(class_details[date_key])

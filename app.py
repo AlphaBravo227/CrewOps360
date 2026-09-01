@@ -84,13 +84,13 @@ from modules.track_data_admin_ui import display_track_data_admin
 try:
     from training_modules.unified_database import (
         UnifiedDatabase, get_active_roster_path, YEAR_STATUS_OPEN, YEAR_STATUS_DRAFT)
-    from training_modules.excel_handler import ExcelHandler
     from training_modules.enrollment_manager import EnrollmentManager
     from training_modules.ui_components import UIComponents as TrainingUIComponents  # Renamed to avoid conflict
     from training_modules.class_display_components import ClassDisplayComponents
     from training_modules.enrollment_session_components import EnrollmentSessionComponents
     from training_modules.staff_meeting_components import StaffMeetingComponents
     from training_modules.track_manager import TrainingTrackManager
+    from training_modules.class_catalog import ClassCatalog
     from training_modules.admin_access import AdminAccess, training_admin_is_authenticated
     from training_modules.admin_excel_functions import ExcelAdminFunctions, enhance_admin_reports
     TRAINING_MODULES_AVAILABLE = True
@@ -602,31 +602,30 @@ def display_training_events_app():
             st.session_state.training_loaded_year_signature = year_signature
             st.session_state.training_loaded_year = selected_year_label
 
-        # Initialize Excel handler
+        # The class catalog for the year being viewed. Classes used to be read out of
+        # that year's roster workbook here, on every render; they come from the
+        # database now, and a workbook is only opened when an admin imports one.
         if 'training_excel_handler' not in st.session_state:
-            if selected_year and selected_year.get('roster_filename'):
-                excel_path = os.path.join('training', 'upload',
-                                          selected_year['roster_filename'])
-            else:
-                excel_path = get_active_roster_path()
+            st.session_state.training_excel_handler = ClassCatalog(selected_year_label)
 
-            if not os.path.exists(excel_path):
-                st.error(f"Excel file not found: {excel_path}")
-                st.info("Please ensure the roster file is in the training/upload folder, or check the active Training Year's roster filename in Training Admin > Training Years")
-                _offer_training_year_escape(selected_year_label, default_year_label,
-                                            show_module_exit=admin_dashboard)
-                return
-            
-            st.session_state.training_excel_handler = ExcelHandler(excel_path)
-            
             if st.session_state.training_excel_handler.load_error:
-                st.error(f"Error loading Excel file: {st.session_state.training_excel_handler.load_error}")
-                # Same trap as a missing file: the roster failed to load, so nothing
-                # below renders, including the year selector that got us here.
+                st.error(f"Error opening the class catalog: "
+                         f"{st.session_state.training_excel_handler.load_error}")
+                # Nothing below renders without a catalog, including the year selector
+                # that got us here, so leave a way off the page.
                 st.session_state.pop('training_excel_handler', None)
                 _offer_training_year_escape(selected_year_label, default_year_label,
                                             show_module_exit=admin_dashboard)
                 return
+
+            # A year with no classes is what an unimported year looks like. Say so
+            # where it can be acted on rather than letting every staff member find an
+            # empty registration screen.
+            if not st.session_state.training_excel_handler.get_all_classes():
+                st.warning(
+                    f"⚠️ **{selected_year_label} has no classes yet.** Build them in "
+                    f"Training Admin > Build Classes, or import that year's roster "
+                    f"workbook there.")
 
         # Initialize Track Manager (existing code)
         if 'training_track_manager' not in st.session_state:
@@ -2204,14 +2203,13 @@ elif st.session_state.selected_module == "summer_leave":
     # track cohort would hand summer leave that cohort's tracks instead of the active
     # ones it needs.
     if 'summer_leave_excel_handler' not in st.session_state or st.session_state.summer_leave_excel_handler is None:
-        from training_modules.excel_handler import ExcelHandler
-        from training_modules.unified_database import get_active_roster_path
-        excel_path = get_active_roster_path()
-        if os.path.exists(excel_path):
-            st.session_state.summer_leave_excel_handler = ExcelHandler(excel_path)
-        else:
-            st.error(f"Excel file not found: {excel_path}")
-            st.stop()
+        # Summer leave only wants this for staff roles, which come from the staff
+        # database. It used to insist the roster workbook was on disk to get them,
+        # and stopped the page dead when it wasn't; the catalog needs no file.
+        from training_modules.class_catalog import ClassCatalog
+        active_year = st.session_state.unified_db.get_active_training_year()
+        st.session_state.summer_leave_excel_handler = ClassCatalog(
+            (active_year or {}).get('year_label'))
 
     if 'summer_leave_track_manager' not in st.session_state or st.session_state.summer_leave_track_manager is None:
         from training_modules.track_manager import TrainingTrackManager

@@ -5,30 +5,31 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytz
 import os
+from . import class_catalog as catalog
 
 _eastern_tz = pytz.timezone('America/New_York')
 
 # Update the AdminAccess class to include availability analyzer initialization
-@st.cache_data(show_spinner=False)
-def _roster_last_class_date(roster_path, _mtime):
-    """Latest class date in a roster workbook, or None.
+def _year_last_class_date(year_label):
+    """Latest class date in a training year, or None.
 
-    _mtime is part of the cache key only - editing the workbook re-reads it.
     A year whose end date falls before this still has classes to teach, and
     auto-close would freeze it with staff mid-way through them.
     """
-    from .excel_handler import ExcelHandler
     from datetime import datetime
+    from . import class_catalog as catalog
 
+    if not year_label:
+        return None
     try:
-        handler = ExcelHandler(roster_path)
-        if handler.load_error:
-            return None
         latest = None
-        for class_name in handler.get_all_classes():
-            for raw in handler.get_class_dates(class_name):
+        for class_name in catalog.get_class_names(year_label):
+            record = catalog.get_class_row(year_label, class_name)
+            if not record:
+                continue
+            for entry in catalog.get_dates_with_options(record['id']):
                 try:
-                    parsed = datetime.strptime(str(raw).strip(), '%m/%d/%Y').date()
+                    parsed = datetime.strptime(entry['class_date'], '%m/%d/%Y').date()
                 except (ValueError, TypeError):
                     continue
                 if latest is None or parsed > latest:
@@ -179,6 +180,7 @@ class AdminAccess:
         ("📈 Enrollment Reports", "enrollment_reports", "View and export enrollment data"),
         ("👥 Manage Staff", "manage_staff", "View staff enrollment status"),
         ("📚 Manage Classes", "manage_classes", "Configure class settings and schedules"),
+        ("➕ Build Classes", "build_classes", "Create and reconfigure classes and their dates"),
         ("🗓️ Training Years", "training_years", "Manage fiscal-year rosters and cutover"),
         ("📄 Data Export", "data_management", "Export training data"),
         ("📊 System Statistics", "system_stats", "View training system usage"),
@@ -435,6 +437,8 @@ class AdminAccess:
             self._show_manage_staff()
         elif function_key == "manage_classes":
             self._show_manage_classes()
+        elif function_key == "build_classes":
+            self._show_build_classes()
         elif function_key == "training_years":
             self._show_training_years()
         elif function_key == "data_management":
@@ -1096,6 +1100,261 @@ class AdminAccess:
         
         for item in roadmap_items:
             st.write(f"• {item}")
+
+    # ========================================================================
+    # BUILD CLASSES
+    # ========================================================================
+
+    def _show_build_classes(self):
+        """Create a class, reconfigure one, or import a year's classes from a workbook.
+
+        Classes used to be built in the roster workbook and read back on every render.
+        They are held in the database now, so this is where a class comes from - and
+        why a class can have any number of dates, and a date more than one location,
+        neither of which the spreadsheet layout could express.
+        """
+        from training_modules import class_catalog as catalog
+        from training_modules import class_editor_ui
+
+        st.subheader("➕ Build Classes")
+
+        year = self.current_training_year()
+        if not year:
+            st.error("No training year is selected, so there is nothing to add a "
+                     "class to. Pick one at the top of the dashboard.")
+            return
+
+        unified_db = st.session_state.get('unified_db')
+        writable = True
+        if unified_db:
+            try:
+                writable = unified_db.is_training_year_writable(year)
+            except Exception:
+                writable = True
+
+        st.caption(f"Classes belong to a training year. Everything below is **{year}** "
+                   f"— switch year at the top of the dashboard to build another one's.")
+
+        # A read-only or archived year refuses enrollment writes, and building classes
+        # in one is almost always the wrong year selected rather than the intent.
+        if not writable:
+            row = self._training_year_row(year) or {}
+            st.warning(
+                f"⚠️ **{year} is {row.get('status') or 'not open'}.** Classes can "
+                f"still be built here, but staff cannot enroll in them until the year "
+                f"is set to Open in Training Admin > Training Years.")
+
+        editing = st.session_state.get('training_class_editing')
+        creating = st.session_state.get('training_class_creating', False)
+
+        if creating or editing:
+            self._show_class_editor(year, editing, class_editor_ui)
+            return
+
+        tab_list, tab_import = st.tabs(["📋 Classes", "📥 Import from a workbook"])
+
+        with tab_list:
+            self._show_class_list(year, catalog)
+
+        with tab_import:
+            self._show_class_import(year, catalog)
+
+    def _show_class_editor(self, year, editing, class_editor_ui):
+        """The create/edit form, with a way back to the class list."""
+        if st.button("⬅️ Back to classes", key="class_editor_back"):
+            class_editor_ui.clear_draft()
+            st.session_state.pop('training_class_editing', None)
+            st.session_state.training_class_creating = False
+            st.rerun()
+
+        st.markdown(f"### {'Edit ' + editing if editing else 'New class'}")
+
+        def leave_editor():
+            st.session_state.pop('training_class_editing', None)
+            st.session_state.training_class_creating = False
+            # The catalog caches a class's details for the render it was read in;
+            # after an edit that copy describes the class as it used to be.
+            handler = st.session_state.get('training_excel_handler')
+            if handler is not None and hasattr(handler, 'invalidate'):
+                handler.invalidate()
+
+        class_editor_ui.render_class_form(year, editing, on_saved=leave_editor)
+
+    def _show_class_list(self, year, catalog):
+        """Every class in the year, with what it holds and a way into the editor."""
+        if st.button("➕ Create a new class", type="primary",
+                     key="class_list_create"):
+            st.session_state.training_class_creating = True
+            st.session_state.pop('training_class_editing', None)
+            st.rerun()
+
+        class_names = catalog.get_class_names(year)
+        if not class_names:
+            st.info(
+                f"{year} has no classes yet. Create one above, or import them from "
+                f"that year's roster workbook on the Import tab.")
+            return
+
+        st.write(f"**{len(class_names)} class(es) in {year}**")
+
+        for class_name in class_names:
+            record = catalog.load_class_for_editing(year, class_name)
+            if not record:
+                continue
+
+            dates = record['dates']
+            locations = sorted({option['location']
+                                for entry in dates for option in entry['options']
+                                if option['location']})
+            multi_site = [entry['class_date'] for entry in dates
+                          if len(entry['options']) > 1]
+
+            with st.container(border=True):
+                heading = st.columns([5, 1, 1])
+                with heading[0]:
+                    origin = ("imported from the workbook"
+                              if record['source'] == 'import' else "built here")
+                    st.markdown(f"**{class_name}**")
+                    st.caption(
+                        f"{len(dates)} date(s) · {len(record['assigned_staff'])} "
+                        f"staff assigned · {origin}")
+                with heading[1]:
+                    if st.button("Edit", key=f"class_edit_{class_name}",
+                                 use_container_width=True):
+                        st.session_state.training_class_editing = class_name
+                        st.session_state.training_class_creating = False
+                        st.rerun()
+                with heading[2]:
+                    if st.button("Delete", key=f"class_del_{class_name}",
+                                 use_container_width=True):
+                        st.session_state['training_class_deleting'] = class_name
+                        st.rerun()
+
+                if dates:
+                    first, last = dates[0]['class_date'], dates[-1]['class_date']
+                    span = first if first == last else f"{first} – {last}"
+                    st.caption(f"📅 {span}")
+                if locations:
+                    st.caption(f"📍 {', '.join(locations)}")
+                if multi_site:
+                    st.caption(f"🔀 {len(multi_site)} date(s) run at more than one "
+                               f"location: {', '.join(multi_site)}")
+
+                if st.session_state.get('training_class_deleting') == class_name:
+                    self._confirm_class_delete(year, class_name, catalog)
+
+    def _confirm_class_delete(self, year, class_name, catalog):
+        """Ask before deleting, and say what the deletion leaves behind."""
+        unified_db = st.session_state.get('unified_db')
+        enrolled = 0
+        if unified_db:
+            try:
+                enrolled = len(unified_db.get_class_enrollments(
+                    class_name, training_year=year))
+            except Exception:
+                enrolled = 0
+
+        if enrolled:
+            st.error(
+                f"**{class_name} has {enrolled} active enrollment(s) in {year}.** "
+                f"Deleting the class does not cancel them — they stay on record, but "
+                f"with no schedule behind them, so the staff who booked will see the "
+                f"class as unconfigured. Cancel the enrollments first if that isn't "
+                f"what you want.")
+        else:
+            st.warning(f"Delete **{class_name}** from {year}? This cannot be undone.")
+
+        confirm_columns = st.columns([2, 2, 6])
+        with confirm_columns[0]:
+            if st.button("Yes, delete it", key=f"class_del_yes_{class_name}",
+                         use_container_width=True):
+                try:
+                    catalog.delete_class(year, class_name)
+                    st.session_state.pop('training_class_deleting', None)
+                    handler = st.session_state.get('training_excel_handler')
+                    if handler is not None and hasattr(handler, 'invalidate'):
+                        handler.invalidate()
+                    st.success(f"Deleted {class_name}.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Could not delete the class: {e}")
+        with confirm_columns[1]:
+            if st.button("Keep it", key=f"class_del_no_{class_name}",
+                         use_container_width=True):
+                st.session_state.pop('training_class_deleting', None)
+                st.rerun()
+
+    def _show_class_import(self, year, catalog):
+        """Bring a fiscal year's classes in from its roster workbook, once."""
+        st.write("### Import from a roster workbook")
+        st.caption(
+            "The app does not read the workbook to run — classes live in the "
+            "database. This brings a spreadsheet's classes, dates and assignments "
+            "in, which is how a year built outside the app gets started.")
+
+        row = self._training_year_row(year) or {}
+        default_name = row.get('roster_filename') or ''
+        upload_folder = os.path.join('training', 'upload')
+
+        available = []
+        try:
+            available = sorted(name for name in os.listdir(upload_folder)
+                               if name.lower().endswith(('.xlsx', '.xlsm')))
+        except OSError as e:
+            st.error(f"Could not read {upload_folder}: {e}")
+            return
+
+        if not available:
+            st.info(f"No workbooks in {upload_folder}.")
+            return
+
+        default_index = (available.index(default_name)
+                         if default_name in available else 0)
+        chosen = st.selectbox("Workbook", options=available, index=default_index,
+                              key="class_import_file",
+                              help=f"{year}'s registered roster is "
+                                   f"'{default_name or 'not set'}'.")
+
+        existing = catalog.get_class_names(year)
+        overwrite = st.checkbox(
+            f"Replace classes already in {year}", value=False,
+            key="class_import_overwrite",
+            help="Off, a class already in the catalog is left exactly as it is, so a "
+                 "re-import adds what the workbook has gained without undoing edits "
+                 "made here. On, the workbook wins — dates, settings and assignments "
+                 "are all replaced.")
+
+        if existing and overwrite:
+            st.warning(
+                f"⚠️ This will overwrite all {len(existing)} class(es) already in "
+                f"{year}, including any dates or locations added in the app that the "
+                f"workbook does not have.")
+
+        if st.button("📥 Import", type="primary", key="class_import_run"):
+            path = os.path.join(upload_folder, chosen)
+            with st.spinner(f"Reading {chosen}…"):
+                try:
+                    report = catalog.import_workbook(path, year, overwrite=overwrite)
+                except Exception as e:
+                    st.error(f"Import failed: {e}")
+                    return
+
+            handler = st.session_state.get('training_excel_handler')
+            if handler is not None and hasattr(handler, 'invalidate'):
+                handler.invalidate()
+
+            if report['imported']:
+                st.success(f"Imported {len(report['imported'])} class(es) into {year}: "
+                           f"{', '.join(report['imported'])}")
+            if report['skipped']:
+                st.info(f"Left {len(report['skipped'])} class(es) alone because they "
+                        f"are already in {year}: {', '.join(report['skipped'])}. "
+                        f"Tick the box above to replace them.")
+            for warning in report['warnings']:
+                st.warning(warning)
+            if not report['imported'] and not report['skipped']:
+                st.warning("Nothing was imported — no class columns were found on the "
+                           "workbook's Class_Enrollment sheet.")
 
     def _show_manage_classes(self):
         """Show class management functionality"""
@@ -2012,19 +2271,30 @@ class AdminAccess:
                         "This is the active year - the one the registration screen opens on. "
                         "Promote another year before closing it."
                     )
+                # Classes come from the catalog, not this file. The filename is kept
+                # because it names the workbook the year's classes were imported from
+                # and the one Build Classes offers first, so a missing file is worth
+                # noting and no longer worth an error.
+                class_count = len(catalog.get_class_names(label))
+                if class_count:
+                    st.success(f"{class_count} class(es) configured for {label}")
+                else:
+                    st.warning(
+                        f"{label} has no classes yet. Build them in Training Admin > "
+                        f"Build Classes, or import a roster workbook there.")
+
                 roster_filename = ty.get('roster_filename') or ""
                 if roster_filename:
                     roster_path = os.path.join('training', 'upload', roster_filename)
-                    if os.path.exists(roster_path):
-                        st.success(f"Roster file found: `{roster_path}`")
-                    else:
-                        st.warning(f"Roster file not found on disk: `{roster_path}`")
-                else:
-                    st.warning("No roster filename set yet")
+                    if not os.path.exists(roster_path):
+                        st.caption(f"Import source `{roster_path}` is not on disk. "
+                                   f"That only matters if you want to import from it.")
 
                 u_roster = st.text_input(
                     "Roster filename (in training/upload/)", value=roster_filename,
-                    key=f"ty_roster_{label}"
+                    key=f"ty_roster_{label}",
+                    help="The workbook this year's classes are imported from. The app "
+                         "does not read it to run - classes are held in the database."
                 )
                 current_track = ty.get('linked_track_name') or ""
                 track_index = track_options.index(current_track) if current_track in track_options else 0
@@ -2096,36 +2366,32 @@ class AdminAccess:
                              "incorrect value freezes it early or leaves it open."
                     )
 
-                # An end date before the roster's last class means auto-close would
+                # An end date before the year's last class means auto-close would
                 # freeze the year while classes are still being taught.
-                if roster_filename:
-                    # roster_path was set above when the filename was checked
-                    if os.path.exists(roster_path):
-                        last_class = _roster_last_class_date(
-                            roster_path, os.path.getmtime(roster_path))
-                        if last_class:
-                            st.caption(f"Last class in this roster: **{last_class}**")
-                            end_raw = (u_end or "").strip()
-                            if end_raw:
-                                try:
-                                    end_parsed = datetime.strptime(end_raw, '%Y-%m-%d').date()
-                                except ValueError:
-                                    st.warning(
-                                        f"End date '{end_raw}' isn't a valid YYYY-MM-DD "
-                                        f"date, so this year will never auto-close."
-                                    )
-                                else:
-                                    if end_parsed < last_class:
-                                        st.warning(
-                                            f"⚠️ This year ends **{end_parsed}** but its "
-                                            f"roster has classes through **{last_class}**. "
-                                            f"It will go read-only while "
-                                            f"{(last_class - end_parsed).days} more day(s) "
-                                            f"of classes are still scheduled — staff won't "
-                                            f"be able to enroll in or cancel them. Either "
-                                            f"extend the end date past the last class, or "
-                                            f"move those dates to the next year's roster."
-                                        )
+                last_class = _year_last_class_date(label)
+                if last_class:
+                    st.caption(f"Last class in this year: **{last_class}**")
+                    end_raw = (u_end or "").strip()
+                    if end_raw:
+                        try:
+                            end_parsed = datetime.strptime(end_raw, '%Y-%m-%d').date()
+                        except ValueError:
+                            st.warning(
+                                f"End date '{end_raw}' isn't a valid YYYY-MM-DD "
+                                f"date, so this year will never auto-close."
+                            )
+                        else:
+                            if end_parsed < last_class:
+                                st.warning(
+                                    f"⚠️ This year ends **{end_parsed}** but has "
+                                    f"classes through **{last_class}**. "
+                                    f"It will go read-only while "
+                                    f"{(last_class - end_parsed).days} more day(s) "
+                                    f"of classes are still scheduled — staff won't "
+                                    f"be able to enroll in or cancel them. Either "
+                                    f"extend the end date past the last class, or "
+                                    f"move those dates into the next year."
+                                )
 
                 if st.button("Save", key=f"ty_save_{label}"):
                     ok, msg = unified_db.update_training_year(

@@ -4,6 +4,7 @@ Educator Signup Manager for the training module that handles educator signups
 with track conflict checking and proper 2-day class support.
 """
 from datetime import datetime, timedelta
+from .class_catalog import date_indices
 
 class EducatorManager:
     def __init__(self, unified_database, excel_handler, track_manager=None,
@@ -56,7 +57,7 @@ class EducatorManager:
                 
                 # Get all available dates for this class
                 base_dates = []
-                for i in range(1, 9):
+                for i in date_indices(class_details):
                     date_key = f'date_{i}'
                     if date_key in class_details and class_details[date_key]:
                         base_dates.append(class_details[date_key])
@@ -196,7 +197,7 @@ class EducatorManager:
             try:
                 current_date_obj = datetime.strptime(class_date, '%m/%d/%Y')
                 
-                for i in range(1, 9):
+                for i in date_indices(class_details):
                     date_key = f'date_{i}'
                     if date_key in class_details and class_details[date_key]:
                         base_date_obj = datetime.strptime(class_details[date_key], '%m/%d/%Y')
@@ -210,7 +211,7 @@ class EducatorManager:
                 print(f"Warning: Could not parse date {class_date}: {e}")
         else:
             # For single-day classes, find the matching date directly
-            for i in range(1, 9):
+            for i in date_indices(class_details):
                 date_key = f'date_{i}'
                 if date_key in class_details and class_details[date_key] == class_date:
                     can_work_n_prior = class_details.get(f'date_{i}_can_work_n_prior', False)
