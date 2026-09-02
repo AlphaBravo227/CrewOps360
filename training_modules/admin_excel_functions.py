@@ -436,6 +436,44 @@ class ExcelAdminFunctions:
         
         return df
     
+    def _schedule_cell_label(self, class_name, meeting_type='', is_educator=False):
+        """What one class is called in a day's cell on the schedule report.
+
+        The report is a grid of one narrow cell per staff member per day, so a full
+        class name is the wrong length for it. A class configured with a "Calendar
+        display" name in Training Admin > Build Classes prints that short label here
+        instead; the cell's comment still spells out the full class name, its time and
+        its location, so shortening the label loses nothing.
+
+        Without one, the old behaviour stands: a staff meeting collapses to SM and
+        everything else prints its own name.
+        """
+        label = ''
+        try:
+            if hasattr(self.excel, 'get_calendar_display'):
+                label = self.excel.get_calendar_display(class_name) or ''
+            else:
+                details = self.excel.get_class_details(class_name) or {}
+                label = (details.get('calendar_display') or '').strip()
+        except Exception as e:
+            print(f"Could not read the calendar display name for '{class_name}': {e}")
+            label = ''
+
+        if label:
+            # LIVE or VIRTUAL is chosen per enrollment, not per class, so an admin
+            # cannot have typed it into a single class's label. Append it when the
+            # label is generic ("SM"), and leave a label that already names an option
+            # ("SM (LIVE)") exactly as it was typed.
+            if meeting_type and '(' not in label:
+                label = f"{label} ({meeting_type})"
+        elif (' SM ' in class_name or class_name.startswith('SM ')
+                or class_name.endswith(' SM')):
+            label = f'SM ({meeting_type})' if meeting_type else 'SM'
+        else:
+            label = class_name
+
+        return f"EDU:{label}" if is_educator else label
+
     def get_comprehensive_education_schedule_report(self, start_date, end_date):
         """Generate comprehensive education schedule report for a date range - UPDATED to include all staff with roles"""
         try:
@@ -482,34 +520,16 @@ class ExcelAdminFunctions:
                     # Check for student enrollments on this date
                     enrollments_on_date = [e for e in staff_enrollments if e['class_date'] == full_date_str]
                     for enrollment in enrollments_on_date:
-                        class_name = enrollment['class_name']
-                        meeting_type = enrollment.get('meeting_type', '')
-                        
-                        # Display as "SM (LIVE)" or "SM (VIRTUAL)" if class name contains "SM"
-                        if ' SM ' in class_name or class_name.startswith('SM ') or class_name.endswith(' SM'):
-                            if meeting_type:
-                                display_name = f'SM ({meeting_type})'
-                            else:
-                                display_name = 'SM'
-                        else:
-                            display_name = class_name
-                        activities.append(display_name)
-                    
+                        activities.append(self._schedule_cell_label(
+                            enrollment['class_name'],
+                            enrollment.get('meeting_type', '')))
+
                     # Check for educator signups on this date
                     educator_signups_on_date = [e for e in staff_educator_signups if e['class_date'] == full_date_str]
                     for signup in educator_signups_on_date:
-                        class_name = signup['class_name']
-                        meeting_type = signup.get('meeting_type', '')
-                        
-                        # Display as "EDU:SM (LIVE)" or "EDU:SM (VIRTUAL)" if class name contains "SM"
-                        if ' SM ' in class_name or class_name.startswith('SM ') or class_name.endswith(' SM'):
-                            if meeting_type:
-                                display_name = f'EDU:SM ({meeting_type})'
-                            else:
-                                display_name = 'EDU:SM'
-                        else:
-                            display_name = f"EDU:{class_name}"
-                        activities.append(display_name)
+                        activities.append(self._schedule_cell_label(
+                            signup['class_name'], signup.get('meeting_type', ''),
+                            is_educator=True))
                     
                     # Join activities with comma if multiple, otherwise leave blank
                     row_data[date_str] = ', '.join(activities) if activities else ''
@@ -647,7 +667,7 @@ class ExcelAdminFunctions:
             worksheet.cell(row=legend_row, column=1, value='Legend:').font = Font(bold=True)
             worksheet.cell(row=legend_row + 1, column=1, value='Regular text = Student enrollment')
             worksheet.cell(row=legend_row + 2, column=1, value='EDU: prefix = Educator signup')
-            worksheet.cell(row=legend_row + 3, column=1, value='Purple triangles = Class time & location details (hover to view)')
+            worksheet.cell(row=legend_row + 3, column=1, value='Purple triangles = Full class name, time & location (hover to view)')
             worksheet.cell(row=legend_row + 4, column=1, value='Sort by Role column to group staff by their roles')
             
             # Save to BytesIO buffer
@@ -2288,6 +2308,9 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                     st.write("• **Regular text** = Student enrollment in class")
                     st.write("• **EDU:** prefix = Educator signup for class")
                     st.write("• **Multiple activities** = Separated by commas")
+                    st.write("• **Short labels** = A class's Calendar display "
+                             "name, set in Build Classes. Hover a cell in the Excel "
+                             "download for the full class name, time and location.")
                     st.write("• **Empty cells** = No scheduled activities")
                     
                 else:

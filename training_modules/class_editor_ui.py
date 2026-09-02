@@ -52,6 +52,11 @@ DRAFT_FOR_KEY = 'training_class_draft_for'
 WIDGET_PREFIX = 'class_editor_'
 TOKEN_KEY = 'training_class_widget_token'
 
+# How long a calendar display label may be. The schedule report's date columns are
+# 15 characters wide, so anything much past this is clipped in the very place the
+# field exists to tidy up.
+CALENDAR_DISPLAY_MAX = 20
+
 
 def wkey(name):
     """The session key for one of this form's widgets, under the current token."""
@@ -81,6 +86,7 @@ def _blank_draft():
     return {
         'class_name': '',
         'settings': {
+            'calendar_display': '',
             'students_per_class': 21,
             'classes_per_day': 1,
             'instructors_per_day': 0,
@@ -144,6 +150,7 @@ def _draft_from_class(record):
     draft['settings']['is_staff_meeting'] = (
         'SM' in record['class_name'].upper() if meeting is None else bool(meeting))
     draft['settings']['notes'] = settings.get('notes') or ''
+    draft['settings']['calendar_display'] = settings.get('calendar_display') or ''
 
     draft['dates'] = [{
         'class_date': _parse_date(entry['class_date']),
@@ -703,6 +710,19 @@ def render_class_form(training_year, class_name=None, db_path=catalog.DEFAULT_DB
         "Class name", value=draft['class_name'], key=wkey("name"),
         help="What staff see, and what enrollments are recorded against. Renaming an "
              "existing class carries its enrollments and educator signups with it.")
+
+    # The schedule report puts one cell per staff member per day, so a full class name
+    # widens every date column to fit a label nobody reads across. This is the short
+    # form printed there instead; the cell's comment still carries the full name, the
+    # time and the location, so nothing is lost by shortening it.
+    draft['settings']['calendar_display'] = st.text_input(
+        "Calendar display", value=draft['settings'].get('calendar_display') or '',
+        key=wkey("calendar_display"), max_chars=CALENDAR_DISPLAY_MAX,
+        placeholder="e.g. SM (Virtual), SM (LIVE), Clinical",
+        help="A short, generic label for this class on the Comprehensive Education "
+             "Schedule Report — that report's day cells are narrow, so a full class "
+             "name does not fit. The hover note on each cell keeps showing the full "
+             "class name, time and location. Leave it blank to print the class name.")
 
     _render_settings(draft)
     st.markdown("---")

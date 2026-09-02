@@ -68,6 +68,7 @@ DEFAULT_CLASS_DETAILS = {
     'session_length': None,
     'is_count_exempt': False,
     'has_ccemt': 'No',
+    'calendar_display': '',
     'date_count': 0,
 }
 
@@ -79,6 +80,7 @@ CLASS_SETTING_COLUMNS = (
     'students_per_class', 'nurses_medic_separate', 'classes_per_day',
     'is_two_day_class', 'time_1_start', 'time_1_end', 'time_2_start', 'time_2_end',
     'time_3_start', 'time_3_end', 'time_4_start', 'time_4_end', 'instructors_per_day',
+    'calendar_display',
 )
 
 
@@ -223,6 +225,7 @@ def initialize_catalog_tables(db_path=DEFAULT_DB_PATH):
             time_4_end TEXT,
             instructors_per_day INTEGER DEFAULT 0,
             is_staff_meeting INTEGER,
+            calendar_display TEXT,
             assignment_source TEXT,
             source TEXT DEFAULT 'app',
             notes TEXT,
@@ -271,6 +274,13 @@ def initialize_catalog_tables(db_path=DEFAULT_DB_PATH):
             FOREIGN KEY (class_id) REFERENCES training_classes(id) ON DELETE CASCADE
         )
     ''')
+
+    # Added after the catalog was already in use, so a database built before it needs
+    # the column adding rather than the table recreating.
+    existing_columns = {row[1] for row in
+                        cursor.execute("PRAGMA table_info(training_classes)")}
+    if 'calendar_display' not in existing_columns:
+        cursor.execute('ALTER TABLE training_classes ADD COLUMN calendar_display TEXT')
 
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_class_year '
                    'ON training_classes(training_year)')
@@ -346,6 +356,11 @@ def save_class(training_year, class_name, settings=None, dates=None, assigned_st
             'is_two_day_class': int(parse_checkbox(settings.get('is_two_day_class'))),
             'instructors_per_day': parse_int(settings.get('instructors_per_day'), 0),
             'notes': settings.get('notes') or None,
+            # The short label the comprehensive schedule report prints in a day's
+            # cell. NULL when the admin left it blank, which is what tells the report
+            # to fall back to the full class name.
+            'calendar_display': (str(settings.get('calendar_display')).strip() or None
+                                 if settings.get('calendar_display') else None),
             'assignment_source': (json.dumps(assignment_source)
                                   if assignment_source is not None else None),
         }
@@ -611,7 +626,7 @@ def load_class_for_editing(training_year, class_name, db_path=DEFAULT_DB_PATH):
     row = get_class_row(training_year, class_name, db_path=db_path)
     if not row:
         return None
-    settings = {key: row[key] for key in CLASS_SETTING_COLUMNS}
+    settings = {key: row[key] for key in CLASS_SETTING_COLUMNS if key in row}
     settings['is_staff_meeting'] = row['is_staff_meeting']
     settings['notes'] = row['notes']
     try:
@@ -734,6 +749,8 @@ class ClassCatalog:
                 'classes_per_day': row['classes_per_day'] or 1,
                 'is_two_day_class': 'Yes' if row['is_two_day_class'] else 'No',
                 'instructors_per_day': row['instructors_per_day'] or 0,
+                'calendar_display': (row['calendar_display'] or ''
+                                     if 'calendar_display' in row.keys() else ''),
                 'date_count': len(dates),
                 '_class_id': row['id'],
             }
@@ -761,6 +778,15 @@ class ClassCatalog:
             return unconfigured('_error')
         finally:
             conn.close()
+
+    def get_calendar_display(self, class_name):
+        """The short label a class shows on the comprehensive schedule report.
+
+        Empty when the admin never set one — the report then prints the full class
+        name, which is what every class did before the field existed.
+        """
+        details = self.get_class_details(class_name)
+        return (details.get('calendar_display') or '').strip()
 
     def has_class_data(self, class_name):
         """True when a class is configured with at least one date."""

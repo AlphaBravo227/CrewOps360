@@ -1219,6 +1219,11 @@ class AdminAccess:
                     st.caption(
                         f"{len(dates)} date(s) · {len(record['assigned_staff'])} "
                         f"staff assigned · {origin}")
+                    calendar_display = (record['settings'].get('calendar_display')
+                                        or '').strip()
+                    if calendar_display:
+                        st.caption(f"🗓️ Shows as \"{calendar_display}\" on the "
+                                   f"schedule report")
                 with heading[1]:
                     if st.button("Edit", key=f"class_edit_{position}",
                                  use_container_width=True):
