@@ -735,7 +735,18 @@ class EnrollmentSessionComponents:
         for enrollment in user_enrollments:
             if enrollment['class_date'] != date:
                 continue
-            
+
+            # A date taught at two sites is two separate bookings, and matching on the
+            # date alone reported the one they hold at both of them - the other site
+            # then showed them enrolled in a session they had not signed up for, and
+            # counted them into its roster. An enrollment recorded before locations
+            # were bookable carries none, and still matches either site, which is the
+            # same allowance the seat counting makes for those rows.
+            if option.get('_location_distinguishes'):
+                enrollment_location = enrollment.get('location') or ''
+                if enrollment_location and enrollment_location != (option.get('location') or ''):
+                    continue
+
             # Check based on option type
             if option['type'] == 'staff_meeting':
                 if enrollment.get('meeting_type') == option['meeting_type']:

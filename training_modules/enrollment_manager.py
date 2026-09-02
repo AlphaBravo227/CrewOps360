@@ -790,16 +790,21 @@ class EnrollmentManager:
                 class_name, class_date, option=None, location=location,
                 count_by_location=False)
             # The date heading already names the one location; labelling every session
-            # under it with the same place adds nothing.
+            # under it with the same place adds nothing. Nor does the location tell two
+            # bookings apart when there is only one of them - the same reason seats are
+            # counted unfiltered here, so rows written before locations existed count.
             for session in single:
                 session['_label_location'] = False
+                session['_location_distinguishes'] = False
             return single
 
         options = []
         for date_option in date_options:
-            options.extend(self._session_options_for_location(
-                class_name, class_date, option=date_option,
-                location=date_option['location'], count_by_location=True))
+            for session in self._session_options_for_location(
+                    class_name, class_date, option=date_option,
+                    location=date_option['location'], count_by_location=True):
+                session['_location_distinguishes'] = True
+                options.append(session)
         return options
 
     def _session_options_for_location(self, class_name, class_date, option=None,
