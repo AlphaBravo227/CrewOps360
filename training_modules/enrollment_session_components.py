@@ -155,13 +155,14 @@ class EnrollmentSessionComponents:
             facts.append("📅 Two-day class")
         st.caption(" • ".join(facts))
 
-        # A conflict is measured against the user's own track, so the column means
-        # nothing to someone without one and is left out rather than shown empty.
-        shows_conflicts = bool(track_manager and track_manager.has_track_data(selected_staff))
+        # A track conflict is measured against the user's own track, so the column
+        # means nothing to someone without one. The weekly class limit needs no
+        # track, so the column still appears for a date it blocks.
+        has_track = bool(track_manager and track_manager.has_track_data(selected_staff))
 
         rows = []
         shows_night_prior = False
-        has_a_conflict = False
+        flag_reasons = set()
         for date in available_dates:
             attributes = enrollment_manager.excel.get_date_attributes(class_name, date) \
                 if hasattr(enrollment_manager.excel, 'get_date_attributes') else {}
@@ -171,16 +172,30 @@ class EnrollmentSessionComponents:
                 date_label += " 🌙"
                 shows_night_prior = True
 
-            # The mark only says a conflict is there. What it is stays with the
-            # enrollment options, next to the override that answers it.
+            # The mark only says something is in the way. What it is stays with the
+            # enrollment options, next to the override or the explanation for it.
             conflict_cell = ""
-            if shows_conflicts:
+            if has_track:
                 conflict_info = EnrollmentSessionComponents._conflict_for_date(
                     enrollment_manager, track_manager, selected_staff, class_name,
                     date, is_two_day)
                 if conflict_info and conflict_info[0]:
                     conflict_cell = "🟡"
-                    has_a_conflict = True
+                    flag_reasons.add('track')
+
+            # The one-class-a-week rule medics are held to blocks a date outright -
+            # there is no override for it - so a date it rules out is worth as much
+            # warning as a shift is. The check answers "clear" for anyone the rule
+            # does not cover, and a date the user already holds a seat on is not
+            # blocked by their own enrollment in it.
+            already_enrolled_on_date = any(e['class_date'] == date
+                                           for e in user_class_enrollments)
+            if not conflict_cell and not already_enrolled_on_date:
+                can_enroll, _, _ = enrollment_manager._check_weekly_enrollment_limit(
+                    selected_staff, date, class_name)
+                if not can_enroll:
+                    conflict_cell = "🟡"
+                    flag_reasons.add('weekly')
 
             options = enrollment_manager.get_available_session_options(class_name, date)
             if not options:
@@ -215,7 +230,7 @@ class EnrollmentSessionComponents:
             return
 
         columns = ["Date", "Location", "Times", "Availability", "Conflict", "You"]
-        if not shows_conflicts:
+        if not (has_track or flag_reasons):
             conflict_column = columns.index("Conflict")
             columns.pop(conflict_column)
             rows = [row[:conflict_column] + row[conflict_column + 1:] for row in rows]
@@ -231,8 +246,12 @@ class EnrollmentSessionComponents:
         legend = []
         if shows_night_prior:
             legend.append("🌙 = night shift prior OK")
-        if has_a_conflict:
+        if flag_reasons == {'track'}:
             legend.append("🟡 = conflicts with your track - see the date below to override")
+        elif flag_reasons == {'weekly'}:
+            legend.append("🟡 = you already have a class that week - see the date below")
+        elif flag_reasons:
+            legend.append("🟡 = schedule conflict or weekly class limit - see the date below")
         if legend:
             st.caption(" • ".join(legend))
 
