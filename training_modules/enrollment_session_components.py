@@ -247,9 +247,9 @@ class EnrollmentSessionComponents:
         if shows_night_prior:
             legend.append("🌙 = night shift prior OK")
         if flag_reasons == {'track'}:
-            legend.append("🟡 = conflicts with your track - see the date below to override")
+            legend.append("🟡 = conflicts with your track - see the date below for details")
         elif flag_reasons == {'weekly'}:
-            legend.append("🟡 = you already have a class that week - see the date below")
+            legend.append("🟡 = you already have a class that week - see the date below for details")
         elif flag_reasons:
             legend.append("🟡 = schedule conflict or weekly class limit - see the date below")
         if legend:
