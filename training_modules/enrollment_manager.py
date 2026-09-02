@@ -164,6 +164,24 @@ class EnrollmentManager:
             print(f"Error checking weekly limit for {staff_name}: {e}")
             return True, None, None  # Allow enrollment if error occurs
 
+    def _notification_location(self, class_name, class_date, enrolled_location=None):
+        """The location to name in a notification about one enrollment.
+
+        A date can run at more than one site, and the catalog's text for it then
+        lists them all ("BIN / CHB"), which is the right answer for a date and the
+        wrong one for a person: they are going to one of them. So the site recorded
+        on the enrollment wins, and the date's own text is the fallback for the
+        enrollments that carry none - a single-location date, or a row written
+        before locations were bookable.
+        """
+        if enrolled_location and str(enrolled_location).strip():
+            return str(enrolled_location).strip()
+
+        location = ''
+        if hasattr(self.excel, 'get_date_attributes'):
+            location = self.excel.get_date_attributes(class_name, class_date).get('location', '')
+        return location.strip() if location else "Location not specified"
+
     def enroll_staff(self, staff_name, class_name, class_date, role='General',
                     meeting_type=None, session_time=None, override_conflict=False,
                     override_capacity=False, replace_existing=False, existing_enrollment_id=None,
@@ -308,16 +326,9 @@ class EnrollmentManager:
                     else:
                         class_time = "Time not specified"
                 
-                # Get class location for the specific date
-                class_location = "Location not specified"
-                for i in date_indices(class_details):  # Check rows 1-14 for dates
-                    date_key = f'date_{i}'
-                    location_key = f'date_{i}_location'
-                    
-                    if date_key in class_details and class_details[date_key] == enrollment_dates[0]:
-                        location = class_details.get(location_key, '')
-                        class_location = location.strip() if location else "Location not specified"
-                        break
+                # The site this person enrolled at, not every site the date runs at
+                class_location = self._notification_location(
+                    class_name, enrollment_dates[0], location)
                 
                 # Get total enrollment count for this class/date
                 class_enrollments = self.db.get_class_enrollments(class_name, training_year=self.training_year)
@@ -427,16 +438,9 @@ class EnrollmentManager:
                     else:
                         class_time = "Time not specified"
                 
-                # Get class location for the specific date
-                class_location = "Location not specified"
-                for i in date_indices(class_details):  # Check rows 1-14 for dates
-                    date_key = f'date_{i}'
-                    location_key = f'date_{i}_location'
-                    
-                    if date_key in class_details and class_details[date_key] == class_date:
-                        location = class_details.get(location_key, '')
-                        class_location = location.strip() if location else "Location not specified"
-                        break
+                # The site they had booked, not every site the date runs at
+                class_location = self._notification_location(
+                    class_name, class_date, enrollment.get('location'))
                 
                 # Get remaining enrollment count for this class/date
                 class_enrollments = self.db.get_class_enrollments(class_name, training_year=self.training_year)
