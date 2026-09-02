@@ -164,6 +164,62 @@ class EnrollmentManager:
             print(f"Error checking weekly limit for {staff_name}: {e}")
             return True, None, None  # Allow enrollment if error occurs
 
+    def _notification_time(self, class_name, class_date, session_time=None,
+                           enrolled_location=None):
+        """The hours to name in a notification: when this person has to be there.
+
+        A session they picked says it outright. Otherwise the class runs a single
+        block that day, and on a date taught at several sites each site can keep its
+        own hours - so the answer is the booked site's, and the class-level time is
+        what a site without its own hours already resolves to.
+        """
+        if session_time:
+            return session_time
+
+        start_time = end_time = None
+        if hasattr(self.excel, 'get_date_options'):
+            date_options = self.excel.get_date_options(class_name, class_date) or []
+            booked = None
+            if enrolled_location:
+                booked = next((option for option in date_options
+                               if option.get('location') == enrolled_location), None)
+            elif len(date_options) == 1:
+                # One site, so there is nothing to tell apart - the enrollments that
+                # carry no location are still asking about that one.
+                booked = date_options[0]
+            if booked:
+                start_time = booked.get('start_time')
+                end_time = booked.get('end_time')
+
+        if not (start_time and end_time):
+            class_details = self.excel.get_class_details(class_name) or {}
+            start_time = start_time or class_details.get('time_1_start')
+            end_time = end_time or class_details.get('time_1_end')
+
+        if start_time and end_time:
+            return f"{start_time} - {end_time}"
+        if start_time:
+            return f"Starts: {start_time}"
+        return "Time not specified"
+
+    def _notification_location(self, class_name, class_date, enrolled_location=None):
+        """The location to name in a notification about one enrollment.
+
+        A date can run at more than one site, and the catalog's text for it then
+        lists them all ("BIN / CHB"), which is the right answer for a date and the
+        wrong one for a person: they are going to one of them. So the site recorded
+        on the enrollment wins, and the date's own text is the fallback for the
+        enrollments that carry none - a single-location date, or a row written
+        before locations were bookable.
+        """
+        if enrolled_location and str(enrolled_location).strip():
+            return str(enrolled_location).strip()
+
+        location = ''
+        if hasattr(self.excel, 'get_date_attributes'):
+            location = self.excel.get_date_attributes(class_name, class_date).get('location', '')
+        return location.strip() if location else "Location not specified"
+
     def enroll_staff(self, staff_name, class_name, class_date, role='General',
                     meeting_type=None, session_time=None, override_conflict=False,
                     override_capacity=False, replace_existing=False, existing_enrollment_id=None,
@@ -290,34 +346,13 @@ class EnrollmentManager:
             
             # ===== SEND EMAIL NOTIFICATION WITH TIME AND LOCATION =====
             try:
-                # Get class details for time and location
-                class_details = self.excel.get_class_details(class_name)
-                
-                # Get class time
-                if session_time:
-                    # Use specific session time if enrolled in a session
-                    class_time = session_time
-                else:
-                    # Use general class time
-                    start_time = class_details.get('time_1_start')
-                    end_time = class_details.get('time_1_end')
-                    if start_time and end_time:
-                        class_time = f"{start_time} - {end_time}"
-                    elif start_time:
-                        class_time = f"Starts: {start_time}"
-                    else:
-                        class_time = "Time not specified"
-                
-                # Get class location for the specific date
-                class_location = "Location not specified"
-                for i in date_indices(class_details):  # Check rows 1-14 for dates
-                    date_key = f'date_{i}'
-                    location_key = f'date_{i}_location'
-                    
-                    if date_key in class_details and class_details[date_key] == enrollment_dates[0]:
-                        location = class_details.get(location_key, '')
-                        class_location = location.strip() if location else "Location not specified"
-                        break
+                # When this person has to be there, at the site they picked
+                class_time = self._notification_time(
+                    class_name, enrollment_dates[0], session_time, location)
+
+                # The site this person enrolled at, not every site the date runs at
+                class_location = self._notification_location(
+                    class_name, enrollment_dates[0], location)
                 
                 # Get total enrollment count for this class/date
                 class_enrollments = self.db.get_class_enrollments(class_name, training_year=self.training_year)
@@ -410,33 +445,14 @@ class EnrollmentManager:
         # ===== SEND CANCELLATION EMAIL NOTIFICATION WITH TIME AND LOCATION =====
         if cancellation_successful:
             try:
-                # Get class details for time and location
-                class_details = self.excel.get_class_details(class_name)
-                
-                # Get class time
-                enrollment_session_time = enrollment.get('session_time')
-                if enrollment_session_time:
-                    class_time = enrollment_session_time
-                else:
-                    start_time = class_details.get('time_1_start')
-                    end_time = class_details.get('time_1_end')
-                    if start_time and end_time:
-                        class_time = f"{start_time} - {end_time}"
-                    elif start_time:
-                        class_time = f"Starts: {start_time}"
-                    else:
-                        class_time = "Time not specified"
-                
-                # Get class location for the specific date
-                class_location = "Location not specified"
-                for i in date_indices(class_details):  # Check rows 1-14 for dates
-                    date_key = f'date_{i}'
-                    location_key = f'date_{i}_location'
-                    
-                    if date_key in class_details and class_details[date_key] == class_date:
-                        location = class_details.get(location_key, '')
-                        class_location = location.strip() if location else "Location not specified"
-                        break
+                # The hours they had booked, at the site they had booked them at
+                class_time = self._notification_time(
+                    class_name, class_date, enrollment.get('session_time'),
+                    enrollment.get('location'))
+
+                # The site they had booked, not every site the date runs at
+                class_location = self._notification_location(
+                    class_name, class_date, enrollment.get('location'))
                 
                 # Get remaining enrollment count for this class/date
                 class_enrollments = self.db.get_class_enrollments(class_name, training_year=self.training_year)
