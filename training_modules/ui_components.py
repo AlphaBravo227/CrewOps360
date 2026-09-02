@@ -1,4 +1,5 @@
 # training_modules/ui_components.py - Core UI Components
+import html
 import streamlit as st
 from datetime import datetime, timedelta
 
@@ -193,9 +194,49 @@ class UIComponents:
 
     # A full class is a couple of dozen people, and printing every name turned a
     # handful of enrollments into a page that scrolled for screens. Show a couple
-    # of names so the row still says who else is going, and put the rest one click
-    # away.
-    COLLEAGUE_PREVIEW_COUNT = 2
+    # of names so the list still says who is going, and put the rest one click away.
+    NAME_PREVIEW_COUNT = 2
+
+    @staticmethod
+    def display_collapsible_names(names, highlight=None, preview_count=None):
+        """A list of people with only the first couple of names in view.
+
+        Written as an HTML disclosure rather than st.expander because Enroll in
+        Classes draws these lists inside the expander a class already lives in, and
+        Streamlit will not nest one expander in another. It also opens without a
+        rerun, so reading a roster cannot disturb anything else on the page.
+        """
+        if not names:
+            return
+
+        names = list(names)
+        if highlight in names:
+            # Finding your own name is what most people read a list like this for,
+            # so it is never the name that ends up hidden.
+            names.remove(highlight)
+            names.insert(0, highlight)
+
+        # Hiding a single name behind a click costs more than it saves.
+        if preview_count is None:
+            preview_count = UIComponents.NAME_PREVIEW_COUNT
+        if len(names) <= preview_count + 1:
+            preview_count = len(names)
+
+        for name in names[:preview_count]:
+            if highlight is not None and name == highlight:
+                st.markdown("• **You** ✅")
+            else:
+                st.write(f"• {name}")
+
+        remaining = names[preview_count:]
+        if remaining:
+            hidden = "".join(f"<div style='margin-left:0.75rem'>• {html.escape(name)}</div>"
+                             for name in remaining)
+            st.markdown(
+                "<details><summary style='cursor:pointer;color:var(--primary-color,#0068c9)'>"
+                f"Show {len(remaining)} more</summary>{hidden}</details>",
+                unsafe_allow_html=True
+            )
 
     @staticmethod
     def _format_colleague(colleague):
@@ -207,25 +248,10 @@ class UIComponents:
 
     @staticmethod
     def _display_colleague_list(colleagues):
-        """Show who else is in the session without printing the whole roster.
-
-        Hiding one name behind a click would cost more than it saves, so a list
-        only collapses once there is more than one name to hide.
-        """
-        total = len(colleagues)
-        st.write(f"**Also enrolled ({total}):**")
-
-        preview_count = total if total <= UIComponents.COLLEAGUE_PREVIEW_COUNT + 1 \
-            else UIComponents.COLLEAGUE_PREVIEW_COUNT
-
-        for colleague in colleagues[:preview_count]:
-            st.write(f"• {UIComponents._format_colleague(colleague)}")
-
-        remaining = colleagues[preview_count:]
-        if remaining:
-            with st.expander(f"Show {len(remaining)} more"):
-                for colleague in remaining:
-                    st.write(f"• {UIComponents._format_colleague(colleague)}")
+        """Show who else is in the session without printing the whole roster."""
+        st.write(f"**Also enrolled ({len(colleagues)}):**")
+        UIComponents.display_collapsible_names(
+            [UIComponents._format_colleague(colleague) for colleague in colleagues])
 
     @staticmethod
     def get_detailed_times(class_details):

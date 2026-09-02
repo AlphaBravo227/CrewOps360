@@ -3,6 +3,7 @@ import streamlit as st
 from datetime import datetime, timedelta
 from .staff_meeting_components import EnrollmentDialogComponents
 from .class_catalog import date_indices
+from .ui_components import UIComponents
 
 class EnrollmentSessionComponents:
     
@@ -756,14 +757,14 @@ class EnrollmentSessionComponents:
             if role_filter is None or user_enrollment.get('role') == role_filter:
                 all_participants.add(selected_staff)
         
-        if all_participants:
-            for participant in sorted(all_participants):
-                if participant == selected_staff:
-                    st.markdown("  • **You** ✅")
-                else:
-                    st.write(f"  • {participant}")
-        else:
+        if not all_participants:
             st.write("  • *No one enrolled yet*")
+            return
+
+        # A full class is two dozen names, and printing them all pushed the enroll
+        # button below a roster nobody opened the class to read.
+        UIComponents.display_collapsible_names(sorted(all_participants),
+                                               highlight=selected_staff)
 
     @staticmethod
     def _is_user_enrolled_in_session(user_enrollments, date, option):
