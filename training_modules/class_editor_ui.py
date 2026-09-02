@@ -98,7 +98,8 @@ def _blank_draft():
         },
         'dates': [_blank_date()],
         'assigned_staff': [],
-        'assignment_source': {'education_groups': [], 'or_groups': []},
+        'assignment_source': {'education_groups': [], 'or_groups': [],
+                              'roles': []},
     }
 
 
@@ -118,8 +119,12 @@ def _draft_from_class(record):
     draft = _blank_draft()
     draft['class_name'] = record['class_name']
     draft['assigned_staff'] = list(record['assigned_staff'])
-    draft['assignment_source'] = (record.get('assignment_source')
-                                  or {'education_groups': [], 'or_groups': []})
+    # A class saved before roles were selectable carries no 'roles' key. Merged onto
+    # the blank shape rather than used as-is, so the picker gets a list either way.
+    stored_source = record.get('assignment_source') or {}
+    draft['assignment_source'] = {**draft['assignment_source'],
+                                  **{key: value for key, value in stored_source.items()
+                                     if value is not None}}
 
     for key in ('students_per_class', 'classes_per_day', 'instructors_per_day',
                 'session_length'):
@@ -188,16 +193,55 @@ def clear_draft():
 # Staff selection
 # ---------------------------------------------------------------------------
 
-def _group_members(education_groups, or_groups):
+def selectable_roles():
+    """The roles a class can be picked by, as the staff database spells them.
+
+    Read off the database's own list rather than written out here, so a role added
+    there appears in the picker rather than being quietly unselectable. UNASSIGNED is
+    included on purpose: those are people on the roster whose role nobody has resolved
+    yet, and leaving them out of the picker is how they end up in no class at all.
     """
-    Everyone in the chosen education groups and OR groups, as one list.
+    if staffdb is None:
+        return []
+    return list(staffdb.STAFF_ROLES) + [staffdb.UNASSIGNED_ROLE]
+
+
+def role_label(role):
+    """A role as a person would write it.
+
+    Title case suits the roles that are words and mangles the ones that are acronyms:
+    CCEMT is not Ccemt. The database spells them all in caps, which is right for a
+    stored value and shouty in a picker, so the acronyms are named here and everything
+    else is title-cased.
+    """
+    text = str(role or '').strip()
+    if staffdb is not None and text.upper() == staffdb.UNASSIGNED_ROLE:
+        return "Unassigned role"
+    if text.upper() in ('CCEMT', 'ATP', 'AMT'):
+        return text.upper()
+    return text.title()
+
+
+def _members_matching(education_groups, or_groups, roles):
+    """
+    Who the chosen groups and roles come to.
 
     The two groupings are independent placements, so picking "Group 2" and "4 OR"
     means everyone in either — a class taught to a cohort plus everyone who owes four
     OR days, not only the people who are both.
+
+    Roles narrow that rather than widening it: "Group 2" and "NURSE" together means
+    the nurses in group 2. Narrowing is the useful reading — a class taught to one
+    cohort's nurses is a real thing to schedule, where "everyone in group 2, plus
+    every nurse in the department" is not. A role on its own selects everyone who
+    holds it, which is how a class for all medics gets built.
+
+    Inactive staff are left out. Somebody who has left should not be pulled into a
+    class by a group they are still recorded against.
     """
     if staffdb is None:
         return []
+
     names = []
     for group in education_groups:
         try:
@@ -209,6 +253,25 @@ def _group_members(education_groups, or_groups):
             names.extend(staffdb.get_or_group_members(group))
         except Exception as e:
             print(f"Error reading OR group {group}: {e}")
+
+    if roles:
+        try:
+            with_role = set(staffdb.get_staff_names(roles=list(roles)))
+        except Exception as e:
+            print(f"Error reading staff by role: {e}")
+            with_role = set()
+        # No group picked means the roles stand alone and select everyone holding one.
+        names = list(with_role) if not (education_groups or or_groups) else [
+            name for name in names if name in with_role]
+
+    try:
+        active = set(staffdb.get_staff_names())
+    except Exception as e:
+        print(f"Error reading the active roster: {e}")
+        active = None
+    if active is not None:
+        names = [name for name in names if name in active]
+
     return sorted(dict.fromkeys(names))
 
 
@@ -217,17 +280,17 @@ def _render_staff_assignment(draft):
     st.markdown("#### Assigned staff")
     st.caption(
         "Assigned staff are the people who see this class on their registration "
-        "screen. Pick groups to fill the list quickly, then add or remove "
+        "screen. Pick groups or roles to fill the list quickly, then add or remove "
         "individuals — the list below is what gets saved, so a later change to "
-        "somebody's group placement leaves this class alone.")
+        "somebody's group or role leaves this class alone.")
 
     if staffdb is None:
         st.error("The staff database is unavailable, so staff cannot be assigned.")
         return
 
-    source = draft.get('assignment_source') or {'education_groups': [], 'or_groups': []}
+    source = draft.get('assignment_source') or {}
 
-    group_columns = st.columns(2)
+    group_columns = st.columns(3)
     with group_columns[0]:
         education_groups = st.multiselect(
             "Education groups", options=staffdb.EDUCATION_GROUPS,
@@ -245,32 +308,59 @@ def _render_staff_assignment(draft):
             key=wkey("or_groups"),
             help="How many OR classes a staff member signs up for over the year. "
                  "'No OR' is a real placement — those people are required to take none.")
+    with group_columns[2]:
+        role_options = selectable_roles()
+        roles = st.multiselect(
+            "Roles", options=role_options,
+            default=[r for r in source.get('roles', []) if r in role_options],
+            format_func=role_label,
+            key=wkey("roles"),
+            help="A role on its own picks everyone who holds it. Combined with a "
+                 "group it narrows to that group's holders of the role — 'Group 2' "
+                 "and 'Nurse' together means group 2's nurses.")
 
     draft['assignment_source'] = {'education_groups': education_groups,
-                                  'or_groups': or_groups}
+                                  'or_groups': or_groups,
+                                  'roles': roles}
 
-    matched = _group_members(education_groups, or_groups)
-    if education_groups or or_groups:
-        st.caption(f"Those groups hold **{len(matched)}** staff right now.")
+    matched = _members_matching(education_groups, or_groups, roles)
+    if education_groups or or_groups or roles:
+        # Say who that actually is, not just how many. The rule that roles narrow
+        # rather than widen is only obvious once you can see the answer it gives.
+        described = []
+        if education_groups:
+            described.append("group " + " or ".join(sorted(education_groups)))
+        if or_groups:
+            described.append(" or ".join("No OR" if g == 0 else f"{g} OR"
+                                         for g in sorted(or_groups)))
+        criteria = " or ".join(described) if described else ""
+        if roles:
+            role_text = " or ".join(role_label(r) for r in sorted(roles))
+            criteria = f"{criteria}, limited to {role_text}" if criteria else role_text
+
+        st.caption(f"**{len(matched)}** active staff match {criteria}.")
+        if matched:
+            with st.expander(f"Show the {len(matched)}"):
+                st.write(", ".join(matched))
+        else:
+            st.caption("Nothing to add — check the combination, since roles narrow "
+                       "a group rather than adding to it.")
+
         fill_columns = st.columns(2)
         with fill_columns[0]:
-            if st.button("➕ Add everyone in those groups", use_container_width=True,
-                         key=wkey("add_groups")):
+            if st.button("➕ Add all of them", use_container_width=True,
+                         disabled=not matched, key=wkey("add_groups")):
                 draft['assigned_staff'] = sorted(
                     dict.fromkeys(list(draft['assigned_staff']) + matched))
                 reset_widget_state()
                 st.rerun()
         with fill_columns[1]:
-            if st.button("➖ Remove everyone in those groups", use_container_width=True,
-                         key=wkey("remove_groups")):
+            if st.button("➖ Remove all of them", use_container_width=True,
+                         disabled=not matched, key=wkey("remove_groups")):
                 draft['assigned_staff'] = [name for name in draft['assigned_staff']
                                            if name not in set(matched)]
                 reset_widget_state()
                 st.rerun()
-
-        unplaced = [name for name in matched if name not in set(staffdb.get_staff_names())]
-        if unplaced:
-            st.caption(f"{len(unplaced)} of them are inactive on the roster.")
 
     everyone = staffdb.get_staff_names()
     # Somebody assigned to the class who has since been marked inactive still belongs

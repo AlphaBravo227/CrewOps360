@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytz
 import os
+import re
 from . import class_catalog as catalog
 
 _eastern_tz = pytz.timezone('America/New_York')
@@ -2010,6 +2011,103 @@ class AdminAccess:
                 )
             except Exception as e:
                 st.error(f"Could not build the workbook: {e}")
+
+        st.markdown("---")
+        self._show_roster_export()
+
+    def _show_roster_export(self):
+        """A whole fiscal year's training rosters as one Excel workbook.
+
+        Separate from the raw data export above, and with its own year picker: this is
+        the one people print and mail around, and wanting last year's copy is not a
+        reason to move the whole dashboard onto last year.
+        """
+        from . import roster_export
+
+        st.subheader("📚 Training rosters (Excel)")
+        st.caption(
+            "One workbook per fiscal year: a summary of every class, the rosters of "
+            "who enrolled and where, educator signups, the full schedule, and the "
+            "staff-by-class assignment grid.")
+
+        unified_db = st.session_state.get('unified_db')
+        if not unified_db:
+            st.error("Training database not initialized")
+            return
+
+        try:
+            years = [row['year_label']
+                     for row in unified_db.get_admin_visible_training_years()]
+        except Exception as e:
+            st.error(f"Could not list the training years: {e}")
+            return
+
+        current = self.current_training_year()
+        if current and current not in years:
+            years.insert(0, current)
+        if not years:
+            st.info("No training years are configured yet.")
+            return
+
+        controls = st.columns([2, 3, 2])
+        with controls[0]:
+            chosen = st.selectbox(
+                "Fiscal year", options=years,
+                index=years.index(current) if current in years else 0,
+                key="roster_export_year")
+        with controls[1]:
+            per_class = st.checkbox(
+                "Add a printable sheet per class", value=False,
+                key="roster_export_per_class",
+                help="A tab for each class with its schedule and its roster. Handy "
+                     "for printing; a year with twenty classes gains twenty tabs.")
+        with controls[2]:
+            st.write("")
+            build = st.button("📊 Build workbook", type="primary",
+                              use_container_width=True, key="roster_export_build")
+
+        class_count = len(catalog.get_class_names(chosen))
+        if not class_count:
+            st.warning(
+                f"{chosen} has no classes, so its workbook would be empty. Build them "
+                f"in Training Admin > Build Classes, or import that year's roster "
+                f"workbook there.")
+
+        # Built on demand rather than on every render: a year with twenty classes is a
+        # few hundred queries, and a download button needs its bytes up front.
+        if build:
+            with st.spinner(f"Building {chosen}'s rosters…"):
+                try:
+                    st.session_state['roster_export_file'] = {
+                        'year': chosen,
+                        'per_class': per_class,
+                        'bytes': roster_export.build_roster_workbook(
+                            chosen, unified_db=unified_db,
+                            per_class_sheets=per_class),
+                        'built': datetime.now(_eastern_tz).strftime('%I:%M %p'),
+                    }
+                except Exception as e:
+                    st.session_state.pop('roster_export_file', None)
+                    st.error(f"Could not build the workbook: {e}")
+
+        ready = st.session_state.get('roster_export_file')
+        if ready:
+            stale = (ready['year'] != chosen or ready['per_class'] != per_class)
+            if stale:
+                st.info(
+                    f"The workbook below is **{ready['year']}**"
+                    + (" with per-class sheets" if ready['per_class'] else "")
+                    + ", built at {}. Press Build workbook again for the current "
+                      "selection.".format(ready['built']))
+            stamp = datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M')
+            prefix = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(ready['year']).strip())
+            st.download_button(
+                f"📥 Download {ready['year']} training rosters",
+                ready['bytes'],
+                f"{prefix}_training_rosters_{stamp}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="roster_export_download")
 
     def _show_system_stats(self):
         """Usage statistics for the selected year, and across every year."""

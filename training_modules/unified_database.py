@@ -727,9 +727,9 @@ class UnifiedDatabase:
         self.connect()
         try:
             self.cursor.execute(
-                f"SELECT staff_name, class_name, class_date, role, meeting_type, "
-                f"       session_time, conflict_override, enrollment_date, "
-                f"       COALESCE(training_year, ?) AS training_year "
+                f"SELECT staff_name, class_name, class_date, role, location, "
+                f"       meeting_type, session_time, conflict_override, "
+                f"       enrollment_date, COALESCE(training_year, ?) AS training_year "
                 f"FROM training_enrollments WHERE status = 'active' AND {_YEAR_MATCH} "
                 f"ORDER BY class_name, {_CLASS_DATE_ORDER}, staff_name",
                 (LEGACY_TRAINING_YEAR, year))
