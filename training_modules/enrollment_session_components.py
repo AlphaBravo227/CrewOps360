@@ -47,7 +47,7 @@ class EnrollmentSessionComponents:
         # scrolling past every one of them to find out what the others even were.
         EnrollmentSessionComponents.display_class_schedule_summary(
             enrollment_manager, class_name, available_dates, selected_staff,
-            class_details, is_two_day
+            track_manager, class_details, is_two_day
         )
 
         # Only one date's options are drawn at a time. Which date is a choice the
@@ -99,33 +99,10 @@ class EnrollmentSessionComponents:
                 st.write("### 📍 Location: Not specified")
             
             # Check for track conflicts - for two-day classes, check both days
-            conflict_info = None
-            if track_manager and track_manager.has_track_data(selected_staff):
-                if is_two_day:
-                    # Check conflicts for both days and combine them
-                    both_days = EnrollmentSessionComponents._get_two_day_dates(date)
-                    combined_conflicts = []
-                    
-                    for i, day in enumerate(both_days):
-                        has_conflict, conflict_details = enrollment_manager.check_enrollment_conflict(
-                            selected_staff, class_name, day
-                        )
-                        if has_conflict:
-                            day_label = f"Day {i+1} ({day})"
-                            combined_conflicts.append(f"{day_label}: {conflict_details}")
-                    
-                    if combined_conflicts:
-                        combined_message = "; ".join(combined_conflicts)
-                        conflict_info = (True, combined_message)
-                    else:
-                        conflict_info = (False, "No conflicts for either day")
-                else:
-                    # Single day conflict check
-                    has_conflict, conflict_details = enrollment_manager.check_enrollment_conflict(
-                        selected_staff, class_name, date
-                    )
-                    conflict_info = (has_conflict, conflict_details)
-            
+            conflict_info = EnrollmentSessionComponents._conflict_for_date(
+                enrollment_manager, track_manager, selected_staff, class_name, date, is_two_day
+            )
+
             # Get session options for this date
             session_options = enrollment_manager.get_available_session_options(class_name, date)
             
@@ -152,7 +129,8 @@ class EnrollmentSessionComponents:
 
     @staticmethod
     def display_class_schedule_summary(enrollment_manager, class_name, available_dates,
-                                       selected_staff, class_details=None, is_two_day=None):
+                                       selected_staff, track_manager=None,
+                                       class_details=None, is_two_day=None):
         """A Class Details-style read of what this class offers and what is still open.
 
         One row per date and location - the same unit a person enrolls in - so the
@@ -176,8 +154,13 @@ class EnrollmentSessionComponents:
             facts.append("📅 Two-day class")
         st.caption(" • ".join(facts))
 
+        # A conflict is measured against the user's own track, so the column means
+        # nothing to someone without one and is left out rather than shown empty.
+        shows_conflicts = bool(track_manager and track_manager.has_track_data(selected_staff))
+
         rows = []
         shows_night_prior = False
+        has_a_conflict = False
         for date in available_dates:
             attributes = enrollment_manager.excel.get_date_attributes(class_name, date) \
                 if hasattr(enrollment_manager.excel, 'get_date_attributes') else {}
@@ -187,10 +170,21 @@ class EnrollmentSessionComponents:
                 date_label += " 🌙"
                 shows_night_prior = True
 
+            # The mark only says a conflict is there. What it is stays with the
+            # enrollment options, next to the override that answers it.
+            conflict_cell = ""
+            if shows_conflicts:
+                conflict_info = EnrollmentSessionComponents._conflict_for_date(
+                    enrollment_manager, track_manager, selected_staff, class_name,
+                    date, is_two_day)
+                if conflict_info and conflict_info[0]:
+                    conflict_cell = "🟡"
+                    has_a_conflict = True
+
             options = enrollment_manager.get_available_session_options(class_name, date)
             if not options:
                 rows.append([date_label, attributes.get('location') or "—",
-                             "—", "No slots available", ""])
+                             "—", "No slots available", conflict_cell, ""])
                 continue
 
             # Grouped the way the options below are grouped: a date taught at two sites
@@ -206,6 +200,10 @@ class EnrollmentSessionComponents:
                     location or "Not specified",
                     EnrollmentSessionComponents._summary_time_text(location_options),
                     EnrollmentSessionComponents._summary_availability_text(location_options),
+                    # Repeated on every location of the date rather than left blank
+                    # below the first: a conflict is with the day, and an empty cell
+                    # would read as "this site is clear".
+                    conflict_cell,
                     EnrollmentSessionComponents._summary_enrolled_text(
                         user_class_enrollments, date, location, len(by_location) > 1)
                 ])
@@ -215,15 +213,53 @@ class EnrollmentSessionComponents:
             st.warning("No dates configured for this class.")
             return
 
-        header = "| Date | Location | Times | Availability | You |\n|---|---|---|---|---|\n"
+        columns = ["Date", "Location", "Times", "Availability", "Conflict", "You"]
+        if not shows_conflicts:
+            conflict_column = columns.index("Conflict")
+            columns.pop(conflict_column)
+            rows = [row[:conflict_column] + row[conflict_column + 1:] for row in rows]
+
+        header = ("| " + " | ".join(columns) + " |\n"
+                  + "|" + "---|" * len(columns) + "\n")
         body = "\n".join(
             "| " + " | ".join(str(cell).replace("|", "\\|") for cell in row) + " |"
             for row in rows
         )
         st.markdown(header + body)
 
+        legend = []
         if shows_night_prior:
-            st.caption("🌙 = night shift prior OK")
+            legend.append("🌙 = night shift prior OK")
+        if has_a_conflict:
+            legend.append("🟡 = conflicts with your track - see the date below to override")
+        if legend:
+            st.caption(" • ".join(legend))
+
+    @staticmethod
+    def _conflict_for_date(enrollment_manager, track_manager, selected_staff,
+                           class_name, date, is_two_day):
+        """The track conflict for one date, or None when there is no track to check.
+
+        A two-day class is booked once and worked twice, so both of its days are
+        checked and reported as one answer.
+        """
+        if not (track_manager and track_manager.has_track_data(selected_staff)):
+            return None
+
+        if not is_two_day:
+            return enrollment_manager.check_enrollment_conflict(selected_staff, class_name, date)
+
+        conflicts = []
+        for day_number, day in enumerate(
+                EnrollmentSessionComponents._get_two_day_dates(date), start=1):
+            has_conflict, conflict_details = enrollment_manager.check_enrollment_conflict(
+                selected_staff, class_name, day)
+            if has_conflict:
+                conflicts.append(f"Day {day_number} ({day}): {conflict_details}")
+
+        if conflicts:
+            return (True, "; ".join(conflicts))
+        return (False, "No conflicts for either day")
 
     @staticmethod
     def _date_label(date, is_two_day):
