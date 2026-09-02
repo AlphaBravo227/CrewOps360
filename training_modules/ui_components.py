@@ -163,12 +163,7 @@ class UIComponents:
             )
             
             if colleagues:
-                st.write("**Also enrolled:**")
-                for colleague in colleagues:
-                    name_display = colleague['name']
-                    if colleague['role'] != 'General':
-                        name_display += f" ({colleague['role']})"
-                    st.write(f"• {name_display}")
+                UIComponents._display_colleague_list(colleagues)
             else:
                 st.write("*No one else enrolled*")
         
@@ -195,6 +190,42 @@ class UIComponents:
             cancel_text = "Cancel Both Days" if is_two_day else "Cancel"
             
             return st.button(cancel_text, key=unique_key)
+
+    # A full class is a couple of dozen people, and printing every name turned a
+    # handful of enrollments into a page that scrolled for screens. Show a couple
+    # of names so the row still says who else is going, and put the rest one click
+    # away.
+    COLLEAGUE_PREVIEW_COUNT = 2
+
+    @staticmethod
+    def _format_colleague(colleague):
+        """One colleague as a line - the role only when it distinguishes them."""
+        name_display = colleague['name']
+        if colleague['role'] != 'General':
+            name_display += f" ({colleague['role']})"
+        return name_display
+
+    @staticmethod
+    def _display_colleague_list(colleagues):
+        """Show who else is in the session without printing the whole roster.
+
+        Hiding one name behind a click would cost more than it saves, so a list
+        only collapses once there is more than one name to hide.
+        """
+        total = len(colleagues)
+        st.write(f"**Also enrolled ({total}):**")
+
+        preview_count = total if total <= UIComponents.COLLEAGUE_PREVIEW_COUNT + 1 \
+            else UIComponents.COLLEAGUE_PREVIEW_COUNT
+
+        for colleague in colleagues[:preview_count]:
+            st.write(f"• {UIComponents._format_colleague(colleague)}")
+
+        remaining = colleagues[preview_count:]
+        if remaining:
+            with st.expander(f"Show {len(remaining)} more"):
+                for colleague in remaining:
+                    st.write(f"• {UIComponents._format_colleague(colleague)}")
 
     @staticmethod
     def get_detailed_times(class_details):

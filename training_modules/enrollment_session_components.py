@@ -41,9 +41,35 @@ class EnrollmentSessionComponents:
         # For two-day classes, show combined conflict information
         if is_two_day:
             st.info("📅 **Two-Day Class**: Enrollment covers consecutive days. You only need to enroll once for both days.")
-        
+
+        # What is on offer, before the options for booking it. Each date's options run
+        # to most of a screen, so a class with several dates could not be read without
+        # scrolling past every one of them to find out what the others even were.
+        EnrollmentSessionComponents.display_class_schedule_summary(
+            enrollment_manager, class_name, available_dates, selected_staff,
+            class_details, is_two_day
+        )
+
+        # Only one date's options are drawn at a time. Which date is a choice the
+        # summary above has already given the user enough to make.
+        dates_to_show = available_dates
+        if len(available_dates) > 1:
+            st.markdown("---")
+            enrolled_dates = [e['class_date'] for e in user_class_enrollments]
+            default_index = next(
+                (i for i, date in enumerate(available_dates) if date in enrolled_dates), 0)
+            selected_date = st.radio(
+                "**Enroll in:**",
+                options=available_dates,
+                index=default_index,
+                format_func=lambda date: EnrollmentSessionComponents._date_label(date, is_two_day),
+                horizontal=True,
+                key=f"enroll_date_choice_{class_name}"
+            )
+            dates_to_show = [selected_date]
+
         # Iterate through available dates and show enrollment options
-        for date in available_dates:
+        for date in dates_to_show:
             # For two-day classes, show the expanded date range
             if is_two_day:
                 both_days = EnrollmentSessionComponents._get_two_day_dates(date)
@@ -123,6 +149,153 @@ class EnrollmentSessionComponents:
             st.markdown("---")
         
         return enrolled_sessions
+
+    @staticmethod
+    def display_class_schedule_summary(enrollment_manager, class_name, available_dates,
+                                       selected_staff, class_details=None, is_two_day=None):
+        """A Class Details-style read of what this class offers and what is still open.
+
+        One row per date and location - the same unit a person enrolls in - so the
+        dates, their locations, their times and their remaining seats can be compared
+        without opening any of them.
+        """
+        if class_details is None:
+            class_details = enrollment_manager.excel.get_class_details(class_name) or {}
+        if is_two_day is None:
+            is_two_day = EnrollmentSessionComponents._is_two_day_class(enrollment_manager, class_name)
+
+        user_class_enrollments = [e for e in enrollment_manager.get_staff_enrollments(selected_staff)
+                                  if e['class_name'] == class_name]
+
+        facts = [f"👥 Max {class_details.get('students_per_class', 21)} per session"]
+        if class_details.get('nurses_medic_separate', 'No').lower() == 'yes':
+            facts.append("👩‍⚕️/🚑 Separate Nurse and Medic slots")
+        if class_details.get('is_staff_meeting', False):
+            facts.append("🔴 LIVE / 💻 Virtual options")
+        if is_two_day:
+            facts.append("📅 Two-day class")
+        st.caption(" • ".join(facts))
+
+        rows = []
+        shows_night_prior = False
+        for date in available_dates:
+            attributes = enrollment_manager.excel.get_date_attributes(class_name, date) \
+                if hasattr(enrollment_manager.excel, 'get_date_attributes') else {}
+
+            date_label = EnrollmentSessionComponents._date_label(date, is_two_day)
+            if attributes.get('can_work_n_prior'):
+                date_label += " 🌙"
+                shows_night_prior = True
+
+            options = enrollment_manager.get_available_session_options(class_name, date)
+            if not options:
+                rows.append([date_label, attributes.get('location') or "—",
+                             "—", "No slots available", ""])
+                continue
+
+            # Grouped the way the options below are grouped: a date taught at two sites
+            # is two separate rooms that fill separately, so it reads as two rows.
+            by_location = {}
+            for option in options:
+                by_location.setdefault(option.get('location') or '', []).append(option)
+
+            first_row_for_date = True
+            for location, location_options in by_location.items():
+                rows.append([
+                    date_label if first_row_for_date else "",
+                    location or "Not specified",
+                    EnrollmentSessionComponents._summary_time_text(location_options),
+                    EnrollmentSessionComponents._summary_availability_text(location_options),
+                    EnrollmentSessionComponents._summary_enrolled_text(
+                        user_class_enrollments, date, location, len(by_location) > 1)
+                ])
+                first_row_for_date = False
+
+        if not rows:
+            st.warning("No dates configured for this class.")
+            return
+
+        header = "| Date | Location | Times | Availability | You |\n|---|---|---|---|---|\n"
+        body = "\n".join(
+            "| " + " | ".join(str(cell).replace("|", "\\|") for cell in row) + " |"
+            for row in rows
+        )
+        st.markdown(header + body)
+
+        if shows_night_prior:
+            st.caption("🌙 = night shift prior OK")
+
+    @staticmethod
+    def _date_label(date, is_two_day):
+        """A date as the user books it - a two-day class books a pair of days."""
+        if not is_two_day:
+            return date
+        both_days = EnrollmentSessionComponents._get_two_day_dates(date)
+        return f"{both_days[0]} - {both_days[1]}" if len(both_days) == 2 else date
+
+    @staticmethod
+    def _summary_time_text(options):
+        """The times on offer, collapsed to a span once there are too many to list."""
+        times = []
+        for option in options:
+            if option['type'] == 'staff_meeting':
+                label = option.get('meeting_type', '')
+            else:
+                label = option.get('session_time') or option.get('display_time') or ''
+                label = label.split(' (')[0].strip()
+            if label and label not in times:
+                times.append(label)
+
+        if not times:
+            return "Time not specified"
+        if len(times) <= 2:
+            return " / ".join(times)
+
+        first = times[0].split('-')[0].strip()
+        last = times[-1].split('-')[-1].strip()
+        return f"{len(times)} sessions ({first} - {last})"
+
+    @staticmethod
+    def _summary_availability_text(options):
+        """What is left. Role-split sessions count seats per role, not per session,
+        so they are reported as the sessions that still have room in them."""
+        seat_counts = [max(0, option['available_slots']) for option in options
+                       if option.get('available_slots') is not None]
+        if seat_counts:
+            # A staff meeting's LIVE and Virtual options are two ways into the same
+            # meeting drawing on the same capacity, so their seats do not add up the
+            # way two sessions of a class do.
+            all_staff_meeting = all(option['type'] == 'staff_meeting' for option in options)
+            open_seats = max(seat_counts) if all_staff_meeting else sum(seat_counts)
+            return f"🟢 {open_seats} open" if open_seats else "🔴 Full"
+
+        role_keys = [('nurse_available', 'Nurse'), ('medic_available', 'Medic'),
+                     ('ccemt_available', 'CCEMT')]
+        open_sessions = sum(1 for option in options
+                            if any(option.get(key) for key, _ in role_keys))
+        if not open_sessions:
+            return "🔴 Full"
+
+        open_roles = [label for key, label in role_keys
+                      if any(option.get(key) for option in options)]
+        session_text = ("1 session" if open_sessions == 1
+                        else f"{open_sessions} of {len(options)} sessions")
+        return f"🟢 {session_text} ({'/'.join(open_roles)})"
+
+    @staticmethod
+    def _summary_enrolled_text(user_class_enrollments, date, location, multiple_locations):
+        """Whether the user already holds a seat on this date, and in which session."""
+        for enrollment in user_class_enrollments:
+            if enrollment['class_date'] != date:
+                continue
+            # A location only tells rows apart when the date runs at more than one,
+            # and enrollments recorded before locations were bookable carry none.
+            enrollment_location = enrollment.get('location') or ''
+            if multiple_locations and enrollment_location and enrollment_location != location:
+                continue
+            detail = enrollment.get('session_time') or enrollment.get('meeting_type') or ''
+            return f"✅ {detail}" if detail else "✅ Enrolled"
+        return ""
 
     @staticmethod
     def _display_session_option_with_conflict(option, option_key, enrollment_manager, 
