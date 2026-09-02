@@ -9,15 +9,16 @@ Runs the Excel import into a throwaway database and verifies two things:
      app to the database does not change behavior.
   2. Roster management — add, update, activate/deactivate, rename (including
      propagation of a name change into other tables) and delete all behave.
-  3. Educational groupings — the placement sheets seed onto the roster, round-trip
-     through the getters, and report the same name mismatches they did when they were
-     transcribed.
+  3. Staff groupings — creating them, moving staff in and out from either side, and
+     the one-time migration of the old education_group / or_group columns into them.
 
 Usage:
     python scripts/check_staff_database.py
 """
 
+import json
 import os
+import sqlite3
 import sys
 import tempfile
 
@@ -25,9 +26,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd  # noqa: E402
 
-from modules import educational_groupings as groupings  # noqa: E402
-
 from modules import staff_database as staffdb  # noqa: E402
+from modules import staff_groupings as groupings  # noqa: E402
 from modules.staff_import import (  # noqa: E402
     DEFAULT_PREFERENCES_PATH,
     DEFAULT_REQUIREMENTS_PATH,
@@ -407,119 +407,219 @@ def check_roster_issues():
           not issues['missing_requirements'], str(issues['missing_requirements']))
 
 
-def check_educational_groupings():
-    """The placement sheets seed onto the roster and read back unchanged."""
-    print("\nEducational groupings")
+def check_groupings():
+    """Groupings are created, filled from either side, and read back as a class would."""
+    print("\nStaff groupings")
 
-    placements, unmatched, duplicated = groupings.collect()
+    success, message, cohort = groupings.create_grouping(
+        'Cohort A', description='Self-check cohort', changed_by='self-check')
+    check("a grouping can be created", success, message)
+    check("a duplicate name is refused, whatever its casing",
+          not groupings.create_grouping('cohort a')[0])
+    check("a grouping needs a name", not groupings.create_grouping('  ')[0])
 
-    check("no name is listed in two columns of the same sheet",
-          not duplicated, str(duplicated))
+    nurses = staffdb.get_staff_names(roles=['NURSE'])
+    groupings.set_members(cohort, nurses[:5] + ['Nobody At All'], changed_by='self-check')
+    check("membership saves, and a name that is not on the roster is ignored",
+          groupings.get_members(cohort) == sorted(nurses[:5]),
+          str(groupings.get_members(cohort)))
 
-    unmatched_names = [name for _, _, name in unmatched]
-    check("Wheeler is on the OR sheet but on no roster",
-          'Wheeler' in unmatched_names, str(unmatched_names))
-    # Grotton, Lurie and McWeeney joined on the FY27 roster, so they go unmatched when
-    # this runs against FY26 — the import default. Anything beyond those four means a
-    # sheet name has stopped lining up with the roster.
-    check("no other sheet name has come adrift from the roster",
-          set(unmatched_names) <= {'Wheeler', 'Grotton', 'Lurie', 'McWeeney'},
-          str(unmatched_names))
+    _, _, medics_group = groupings.create_grouping(
+        'Medics on call', members=staffdb.get_staff_names(roles=['MEDIC'])[:4],
+        changed_by='self-check')
+    check("a grouping can be created with its members in one call",
+          len(groupings.get_members(medics_group)) == 4)
 
-    outcome = groupings.apply_placements(placements, changed_by='self-check')
-    check("seeding the groupings reports no errors", not outcome['errors'],
-          str(outcome['errors']))
-    check("every matched placement was written",
-          outcome['unchanged'] == 0
-          and len(outcome['changes']) == sum(len(p) for p in placements.values()),
-          f"{len(outcome['changes'])} written, {outcome['unchanged']} unchanged")
+    # Picking two groupings means everyone in either — the rule the class editor
+    # depends on to assign a class to a cohort plus a role group.
+    union = groupings.get_members_of_many([cohort, medics_group])
+    check("two groupings union rather than intersect",
+          set(union) == set(groupings.get_members(cohort))
+          | set(groupings.get_members(medics_group)),
+          f"{len(union)} names")
+    check("the union comes back in roster order and without duplicates",
+          union == sorted(dict.fromkeys(union)))
 
-    # Every column should hold exactly the staff it listed, less any name the roster
-    # this ran against does not carry.
-    def missing_from(sheet, column):
-        return sum(1 for s, c, _ in unmatched if s == sheet and c == column)
+    # A staff member belongs to as many groupings as makes sense.
+    both = groupings.get_members(cohort)[0]
+    groupings.add_members(medics_group, [both], changed_by='self-check')
+    check("a staff member can be in more than one grouping",
+          len(groupings.get_groupings_for_staff(both)) == 2,
+          str([g['name'] for g in groupings.get_groupings_for_staff(both)]))
+    check("the mapping lists every grouping a staff member holds",
+          set(groupings.get_grouping_mapping()[both]) == {'Cohort A', 'Medics on call'},
+          str(groupings.get_grouping_mapping()[both]))
 
-    education_sizes = {group: (len(staffdb.get_education_group_members(
-                                   group, include_inactive=True)),
-                               len(names) - missing_from('Group', group))
-                       for group, names in groupings.EDUCATION_GROUP_SHEET.items()}
-    or_sizes = {group: (len(staffdb.get_or_group_members(group, include_inactive=True)),
-                        len(names) - missing_from('OR', group))
-                for group, names in groupings.OR_GROUP_SHEET.items()}
-    check("every education group holds the staff its column listed",
-          all(got == expected for got, expected in education_sizes.values()),
-          str(education_sizes))
-    check("every OR grouping holds the staff its column listed",
-          all(got == expected for got, expected in or_sizes.values()), str(or_sizes))
+    groupings.remove_members(medics_group, [both], changed_by='self-check')
+    check("a member can be removed without disturbing the rest",
+          both not in groupings.get_members(medics_group)
+          and len(groupings.get_members(medics_group)) == 4)
 
-    # The two placements are independent: more staff hold an OR placement than a
-    # cohort, so neither can be derived from the other.
-    education = staffdb.get_education_group_mapping(include_inactive=True)
-    or_groups = staffdb.get_or_group_mapping(include_inactive=True)
-    check("the two groupings are independent of one another",
-          len(education) == sum(e for _, e in education_sizes.values())
-          and len(or_groups) == sum(e for _, e in or_sizes.values())
-          and set(education) != set(or_groups),
-          f"{len(education)} in a cohort, {len(or_groups)} with an OR placement")
+    # The staff-side edit is the same membership from the other direction. Somebody
+    # in neither grouping to begin with, so what it adds and removes is unambiguous.
+    placed = set(groupings.get_members(cohort)) | set(groupings.get_members(medics_group))
+    someone = next(name for name in staffdb.get_staff_names() if name not in placed)
+    groupings.set_groupings_for_staff(someone, [cohort, medics_group],
+                                      changed_by='self-check')
+    check("the staff-side edit puts somebody in both groupings",
+          {g['id'] for g in groupings.get_groupings_for_staff(someone)}
+          == {cohort, medics_group})
+    groupings.set_groupings_for_staff(someone, [cohort], changed_by='self-check')
+    check("the staff-side edit removes them from the one left out",
+          [g['id'] for g in groupings.get_groupings_for_staff(someone)] == [cohort])
 
-    # 0 is the "No OR" placement and has to survive the round trip as a value, not as
-    # the falsy stand-in for "unplaced".
-    check("a No OR placement reads back as 0, not as unplaced",
-          staffdb.get_or_group('Ahlstedt') == 0
-          and 'Ahlstedt' in staffdb.get_or_group_mapping(include_inactive=True),
-          repr(staffdb.get_or_group('Ahlstedt')))
-    check("an unplaced staff member reads back as None",
-          staffdb.get_or_group('Johnson') is None
-          and staffdb.get_education_group('Johnson') is None)
-    check("the sheets' own column headings resolve",
-          staffdb.get_or_group_members('No OR') == staffdb.get_or_group_members(0)
-          and (staffdb.get_education_group_members('Group 1')
-               == staffdb.get_education_group_members('1')))
+    # Archiving is how a superseded cohort is retired: out of the pickers, membership
+    # intact, and immune to a staff-side edit that never saw it.
+    groupings.update_grouping(medics_group, is_active=False, changed_by='self-check')
+    check("an archived grouping leaves the pickers",
+          medics_group not in [g['id'] for g in groupings.get_groupings()]
+          and medics_group in [g['id']
+                               for g in groupings.get_groupings(include_archived=True)])
+    check("an archived grouping keeps its membership",
+          len(groupings.get_members(medics_group)) == 4,
+          str(groupings.get_members(medics_group)))
+    kept = groupings.get_members(medics_group)[0]
+    groupings.set_groupings_for_staff(kept, [], changed_by='self-check')
+    check("the staff-side edit does not empty a grouping it cannot see",
+          kept in groupings.get_members(medics_group))
+    groupings.update_grouping(medics_group, is_active=True, changed_by='self-check')
 
-    # The sheets place the clinical roster; management, the non-clinical roles and the
-    # newest hires are the expected blanks.
-    issues = staffdb.get_roster_issues(include_inactive=True)
-    check("only Johnson works tracks with neither placement",
-          issues['missing_or_group'] == ['Johnson'], str(issues['missing_or_group']))
+    # Inactive staff are excluded, so somebody who has left is not pulled into a class.
+    member = groupings.get_members(cohort)[0]
+    staffdb.update_staff(member, is_active=False, changed_by='self-check')
+    check("an inactive staff member drops out of a grouping's members",
+          member not in groupings.get_members(cohort)
+          and member in groupings.get_members(cohort, include_inactive=True))
+    check("they are not counted either",
+          groupings.member_counts()[cohort] == len(groupings.get_members(cohort)))
+    staffdb.update_staff(member, is_active=True, changed_by='self-check')
 
-    # Re-running must be a no-op, since it is how a re-seed is done.
-    again = groupings.apply_placements(placements, changed_by='self-check')
-    check("re-seeding the groupings changes nothing",
-          not again['changes'] and not again['errors'], str(again['changes']))
+    # Membership follows the roster's own edits.
+    renamed = groupings.get_members(cohort)[-1]
+    staffdb.rename_staff(renamed, renamed + ' II', changed_by='self-check')
+    check("a rename carries into grouping membership",
+          renamed + ' II' in groupings.get_members(cohort),
+          str(groupings.get_members(cohort)))
+    staffdb.rename_staff(renamed + ' II', renamed, changed_by='self-check')
 
-    # Placements already on file are not overwritten unless asked.
-    staffdb.update_staff('Bach', education_group='1', changed_by='self-check')
-    guarded = groupings.apply_placements(placements, changed_by='self-check')
-    check("a placement already on file is reported, not overwritten",
-          staffdb.get_education_group('Bach') == '1'
-          and ('Bach', 'education_group', '1', '3') in guarded['conflicts'],
-          str(guarded['conflicts']))
-    forced = groupings.apply_placements(placements, overwrite=True, changed_by='self-check')
-    check("overwrite lets the sheet win",
-          staffdb.get_education_group('Bach') == '3' and not forced['conflicts'])
+    check("being in a grouping does not block deleting a staff member",
+          'staff_grouping_members.staff_name'
+          not in staffdb.count_staff_references(groupings.get_members(cohort)[0]))
 
-    # seed_groupings() is what both entry points call — the admin page's button and the
-    # command line — so the whole path, report included, is exercised here.
-    preview = groupings.seed_groupings(dry_run=True, changed_by='self-check')
-    check("a preview reports no work left on an already-seeded roster",
-          not preview['changes'] and not preview['errors']
-          and preview['matched'] == len(placements), str(preview['changes']))
-    check("the preview still reports the mismatches",
-          preview['unmatched'] == unmatched
-          and preview['working_unplaced'] == ['Johnson'],
-          f"{preview['unmatched']}, {preview['working_unplaced']}")
-    check("the seed report renders",
-          any('Sheet entries read' in line
-              for line in groupings.format_seed_report(preview)))
+    check("membership changes are recorded against the staff member",
+          any(row['action'] == 'grouping_added'
+              for row in staffdb.get_audit_log(limit=500)))
 
-    # An empty roster is the one condition the button has to refuse rather than
-    # silently do nothing.
-    staffdb.update_staff('Bach', education_group=None, changed_by='self-check')
-    reseed = groupings.seed_groupings(changed_by='self-check')
-    check("seeding fills a placement that was cleared",
-          staffdb.get_education_group('Bach') == '3'
-          and ('Bach', 'education_group', None, '3') in reseed['changes'],
-          str(reseed['changes']))
+    ungrouped = set(groupings.get_ungrouped_staff())
+    check("staff in no grouping are reported",
+          ungrouped and not (ungrouped & set(groupings.get_members(cohort))),
+          f"{len(ungrouped)} ungrouped")
+    check("the roster issues flag only track-working staff without a grouping",
+          set(staffdb.get_roster_issues()['missing_grouping']) <= ungrouped,
+          str(staffdb.get_roster_issues()['missing_grouping']))
+
+    success, message = groupings.delete_grouping(cohort, changed_by='self-check')
+    check("a grouping can be deleted outright", success, message)
+    check("its memberships go with it",
+          not groupings.get_groupings_for_staff(both)
+          or all(g['id'] != cohort for g in groupings.get_groupings_for_staff(both)))
+    groupings.delete_grouping(medics_group, changed_by='self-check')
+
+
+LEGACY_STAFF_DDL = """
+CREATE TABLE staff (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    staff_name TEXT NOT NULL UNIQUE COLLATE NOCASE, role TEXT NOT NULL,
+    is_management INTEGER NOT NULL DEFAULT 0, is_dual INTEGER NOT NULL DEFAULT 0,
+    is_educator_at INTEGER NOT NULL DEFAULT 0, no_matrix INTEGER NOT NULL DEFAULT 0,
+    seniority INTEGER, shifts_per_pay_period INTEGER, night_minimum INTEGER,
+    weekend_minimum INTEGER, weekend_group TEXT, education_group TEXT,
+    or_group INTEGER, email TEXT, is_active INTEGER NOT NULL DEFAULT 1, notes TEXT,
+    created_date TEXT NOT NULL, modified_date TEXT NOT NULL);
+CREATE INDEX idx_staff_education_group ON staff(education_group);
+CREATE INDEX idx_staff_or_group ON staff(or_group);
+CREATE TABLE training_classes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, class_name TEXT, assignment_source TEXT);
+"""
+
+
+def check_legacy_migration():
+    """
+    The old education_group / or_group columns become groupings, once.
+
+    This runs against a database built the way the previous version of the app left
+    one — the columns, their indexes, and a class whose assignment_source names them —
+    because that migration only ever gets one chance to be right.
+    """
+    print("\nMigration off the legacy grouping columns")
+
+    previous_path = staffdb.get_db_path()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, 'legacy.db')
+        staffdb.set_db_path(db_path)
+
+        conn = sqlite3.connect(db_path)
+        conn.executescript(LEGACY_STAFF_DDL)
+        placed = [('Ahlstedt', 'NURSE', '1', 0), ('Bell', 'NURSE', '1', 2),
+                  ('Bowman', 'MEDIC', '1', 3), ('Bach', 'MEDIC', '3', 4),
+                  ('Johnson', 'NURSE', None, None)]
+        for name, role, education, or_group in placed:
+            conn.execute(
+                "INSERT INTO staff (staff_name, role, shifts_per_pay_period, "
+                "education_group, or_group, created_date, modified_date) "
+                "VALUES (?, ?, 6, ?, ?, '2026-01-01', '2026-01-01')",
+                (name, role, education, or_group))
+        conn.execute(
+            "INSERT INTO training_classes (class_name, assignment_source) VALUES (?, ?)",
+            ('OR Day', json.dumps({'education_groups': ['1'], 'or_groups': [0, 4],
+                                   'roles': ['NURSE']})))
+        conn.commit()
+        conn.close()
+
+        staffdb.invalidate_cache()
+        staffdb.initialize_staff_tables()
+
+        by_name = {g['name']: g for g in groupings.get_groupings(with_counts=True)}
+        check("every legacy placement became a grouping",
+              set(by_name) == {'Group 1', 'Group 3', 'No OR', '2 OR', '3 OR', '4 OR'},
+              str(sorted(by_name)))
+        check("the cohorts sort above the OR groupings",
+              [g['name'] for g in groupings.get_groupings()][:2] == ['Group 1', 'Group 3'],
+              str([g['name'] for g in groupings.get_groupings()]))
+        check("membership carried over intact",
+              groupings.get_members(by_name['Group 1']['id'])
+              == ['Ahlstedt', 'Bell', 'Bowman'],
+              str(groupings.get_members(by_name['Group 1']['id'])))
+        # 0 was a placement meaning "no OR classes required", not a blank, so it has to
+        # arrive as a grouping with a member in it.
+        check("the No OR placement became a grouping rather than vanishing",
+              groupings.get_members(by_name['No OR']['id']) == ['Ahlstedt'])
+        check("an unplaced staff member joins no grouping",
+              not groupings.get_groupings_for_staff('Johnson'))
+
+        conn = sqlite3.connect(db_path)
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(staff)")]
+        check("the legacy columns were dropped",
+              'education_group' not in columns and 'or_group' not in columns,
+              str(columns))
+        source = json.loads(conn.execute(
+            "SELECT assignment_source FROM training_classes").fetchone()[0])
+        check("a saved class's assignment source was rewritten to grouping ids",
+              set(source['groupings']) == {by_name['Group 1']['id'],
+                                           by_name['No OR']['id'],
+                                           by_name['4 OR']['id']}
+              and 'education_groups' not in source and 'or_groups' not in source,
+              str(source))
+        check("the roles it was assigned by are untouched",
+              source['roles'] == ['NURSE'], str(source))
+        conn.close()
+
+        again = groupings.migrate_legacy_groupings()
+        check("the migration refuses to run a second time",
+              not again['ran'] and len(groupings.get_groupings()) == 6)
+
+    staffdb.set_db_path(previous_path)
+    staffdb.invalidate_cache()
 
 
 def main():
@@ -558,7 +658,7 @@ def main():
         check_parity()
         check_requirements_parity()
         check_roster_issues()
-        check_educational_groupings()
+        check_groupings()
         check_roster_management()
         check_requirements_editing()
 
@@ -570,6 +670,8 @@ def main():
         check("re-importing changes nothing",
               before == after and not second['added'] and not second['updated'],
               f"added={second['added']}, updated={second['updated']}")
+
+        check_legacy_migration()
 
         staffdb.set_db_path(None)
 

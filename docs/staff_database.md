@@ -36,8 +36,6 @@ Table `staff` (in `data/medflight_tracks.db`):
 | `night_minimum` | Minimum night shifts per cycle. |
 | `weekend_minimum` | Minimum weekend shifts per cycle. |
 | `weekend_group` | Weekend group A–E, or `NULL`. |
-| `education_group` | Educational cohort `1`–`4`, or `NULL` when unplaced. |
-| `or_group` | OR classes required for the year: `0` ("No OR"), `2`, `3` or `4`, or `NULL` when unplaced. |
 | `email` | Used for bid notifications and confirmations. |
 | `is_active` | Inactive staff keep their history but disappear from staff pickers. |
 | `notes`, `created_date`, `modified_date` | Housekeeping. |
@@ -60,55 +58,86 @@ Because a number input cannot express "empty", these three fields are typed as t
 the admin form and parsed on save. A value that is neither blank nor a number is
 rejected rather than silently clearing the field.
 
-### Educational groupings
+### Groupings
 
-Two placements decide which education a staff member is scheduled for, and they are
-independent of each other:
+Which staff a training class is for does not come from a column on the staff row. It
+comes from **groupings**: named lists of staff, kept in their own two tables and
+maintained on the admin page's **Groupings** tab.
 
-- **`education_group`** — the cohort they attend recurring education with: group 1, 2, 3
-  or 4. Stored as a label rather than a count.
-- **`or_group`** — how many OR classes they have to sign up for over the year: 0
-  ("No OR"), 2, 3 or 4. It is a count of required signups, not a cohort label: a 2 signs
-  up for two OR classes, a 4 for four, and a 0 for none. A staff member on 0 should not
-  see the OR class among the ones they need, and it should add nothing to their yearly
-  class total.
+| Table | Holds |
+|---|---|
+| `staff_groupings` | The grouping: `name`, `description`, `is_active`, `sort_order`. |
+| `staff_grouping_members` | One row per membership: `grouping_id` + `staff_name`. |
 
-Both are `NULL` until someone is placed. For the OR grouping the blank-is-not-zero rule
-above applies again, and matters more here than anywhere else: `0` means *placed, and
-required to sign up for none*, while `NULL` means *nobody has placed them yet*.
+A grouping means nothing beyond its membership — nothing derives a requirement, a count
+or a schedule from its name. "Group 1", "4 OR", "New Hires 2027" and "CCEMT Refresher"
+are all the same kind of object, so a new way of carving up the roster is a row in a
+table rather than a column, a validator, a picker and a migration.
 
-That distinction is the one thing to get right when class generation reads this field.
-Test for placement against `None`, and use the value itself as the count — testing it
-for truthiness silently treats a required count of zero as an unplaced staff member:
+Membership is many-to-many and unconstrained: a staff member can be in as many
+groupings as makes sense, and being in one says nothing about the others. Groupings are
+global rather than per training year. When a cohort reshuffles, edit its membership; when
+one is superseded, **archive** it — archived groupings keep their membership and stay
+readable on the classes that used them, but drop out of the pickers.
 
-```python
-required = staffdb.get_or_group(name)
-if required is None:
-    ...                  # nobody has placed them — a gap to flag, not a zero
-else:
-    ...                  # they sign up for exactly `required` OR classes; 0 means none
-```
-
-They are read back either per staff member or as whole cohorts:
+Membership is stored by staff name, the join key the rest of the database uses, so a
+rename on the Edit tab carries into groupings automatically. Deleting a staff member
+takes their memberships with them, and — unlike a track or an enrollment — being in a
+grouping never blocks that delete: membership is part of the roster entry, not a record
+of something that happened.
 
 ```python
-staffdb.get_education_group('Bach')            # '3'
-staffdb.get_or_group('Ahlstedt')               # 0
+from modules import staff_groupings
 
-staffdb.get_education_group_members('Group 1') # the cohort, in roster order
-staffdb.get_or_group_members('No OR')          # same, by OR placement
-staffdb.get_education_group_mapping()          # {name: group} for everyone placed
-staffdb.get_or_group_mapping()
+staff_groupings.get_groupings(with_counts=True)     # for a picker
+staff_groupings.get_members(grouping_id)            # active members, roster order
+staff_groupings.get_members_of_many([3, 7])         # the union — what a class picker gets
+staff_groupings.get_groupings_for_staff('Bach')     # from the staff side
+staff_groupings.get_grouping_mapping()              # {name: [grouping names]}
+staff_groupings.get_ungrouped_staff()               # in no grouping at all
 ```
 
-The membership helpers and the normalizers accept the placement sheets' own spellings
-("Group 1", "No OR", "2 OR") as well as plain values, so a heading can be passed
-straight through.
+Reads exclude inactive staff unless `include_inactive=True` is passed, so somebody who
+has left is never pulled into a class by a grouping they are still recorded against.
 
-Only clinical staff are placed. Management, the non-clinical roles (COMMS, CCEMT, ATP,
-AMT) and the newest hires are expected blanks, so the admin page and
-`get_roster_issues()` flag an unplaced staff member only when they actually work tracks
-— a clinical role with a shift requirement on file.
+Membership is edited from either side, and both write the same rows:
+
+```python
+staff_groupings.set_members(grouping_id, names)          # from the grouping
+staff_groupings.add_members(grouping_id, names)
+staff_groupings.remove_members(grouping_id, names)
+staff_groupings.set_groupings_for_staff(name, ids)       # from the staff member
+```
+
+`set_groupings_for_staff()` only touches groupings a picker can offer: an archived
+grouping the staff member is in is left alone, since its absence from the caller's list
+is not a request to remove them from it. Every membership change is written to
+`staff_audit_log` against the staff member, so it shows up on the History tab beside
+their other edits.
+
+Being in no grouping is normal for management and the non-clinical roles, so the admin
+page and `get_roster_issues()['missing_grouping']` flag it only for staff who actually
+work tracks — a clinical role with a shift requirement on file. Those are the people who
+would otherwise be assigned no classes at all.
+
+#### What this replaced
+
+Two fixed columns on the `staff` table: `education_group` (cohort `1`–`4`) and
+`or_group` (OR classes owed for the year: `0`, `2`, `3`, `4`). They were the only
+groupings the app could express, they were seeded from name lists transcribed into the
+source, and a third kind of grouping meant another column everywhere.
+
+`staff_groupings.migrate_legacy_groupings()` runs once, the first time the grouping
+tables come up, and needs nothing from an admin. It turns each value in use into an
+ordinary grouping — `'2'` becomes "Group 2", `0` becomes "No OR" — moves the staff who
+held it into that grouping, rewrites saved classes' `assignment_source` from the old
+`education_groups` / `or_groups` keys to grouping ids, and then drops the columns and
+their indexes. Classes keep their `assigned_staff` lists throughout: those are
+materialized at save time and were never derived from the columns.
+
+A marker in `staff_groupings_meta` is what stops it running twice, rather than the
+columns being gone — dropping a column needs SQLite 3.35 or newer, and on an older one
+the migration still completes and simply leaves the unread columns in place.
 
 ### Role vs. dual
 
@@ -133,21 +162,19 @@ Shewan.
 ## Maintaining the roster
 
 Clinical Track Hub → sidebar **Admin Area** → **Manage Staff Database**. The page is
-admin-password gated and has five tabs:
+admin-password gated and has six tabs:
 
-- **Roster** — filter by name/role/active/management/educational grouping, and download
-  as CSV.
-- **Add Staff** — new hires, including their shift requirements.
-- **Edit / Rename / Remove** — attributes, requirements, active status, name changes,
-  deletion.
-- **Import from Excel** — first-time seed and later refreshes, plus seeding the
-  educational groupings.
+- **Roster** — filter by name/role/active/management/grouping, and download as CSV.
+- **Groupings** — create a grouping, decide who is in it, archive or delete it.
+- **Add Staff** — new hires, including their shift requirements and groupings.
+- **Edit / Rename / Remove** — attributes, requirements, groupings, active status, name
+  changes, deletion.
+- **Import from Excel** — first-time seed and later refreshes.
 - **History** — the audit log and past name changes.
 
 The page also flags anything needing attention: staff with no role, clinical staff with
 no seniority, duplicate seniority ranks, non-management clinical staff with no shift
-requirement, bidding staff with no email, and track-working staff with no educational
-grouping.
+requirement, bidding staff with no email, and track-working staff in no grouping.
 
 ### Someone leaves
 
@@ -202,50 +229,43 @@ Behavior worth knowing:
   lost when the spreadsheet stops being consulted. Preferences a staff member has
   already saved in the app are not touched unless `--overwrite-preferences` is passed.
 
-### Seeding the educational groupings
+### Building and editing groupings
 
-The two placement sheets are two flat columns-of-names with no staff key of their own —
-there is nothing to key an import on and nothing to re-read later — so they are
-transcribed into `modules/educational_groupings.py` rather than read from a workbook.
-Seeding them places everyone the sheets name in one pass, so the groupings never have
-to be entered by hand.
+Groupings are not imported from anywhere — there is no workbook that describes them, and
+they change more often than the roster does. They are built on the admin page's
+**Groupings** tab:
 
-Once the roster exists, from the admin page: **Import from Excel** tab →
-**Seed Educational Groupings**. *Preview* reports what would change without writing;
-*Seed groupings* applies it. Or on the command line:
+- **Create a grouping** — a name, an optional description, and optionally everyone in a
+  role or two to start it off. The role is a shortcut for filling the list; nothing
+  stays tied to it afterwards.
+- **Members** — a picker of the whole active roster, plus an "add everyone in these
+  roles" shortcut and an "empty the grouping" button. Staff already in the grouping who
+  have since been marked inactive stay in the picker, so saving does not silently
+  remove them.
+- **Settings** — rename it, reword it, move it in the picker order, archive it, or
+  delete it outright. Archiving keeps the membership; deleting loses the record of who
+  was in it, so archive unless the grouping was a mistake.
 
-```bash
-python scripts/seed_educational_groupings.py --dry-run    # report only
-python scripts/seed_educational_groupings.py              # apply
-python scripts/seed_educational_groupings.py --overwrite  # let the sheets win
-```
+One staff member's groupings are also editable from the **Add Staff** and
+**Edit / Rename / Remove** tabs, which is the easier direction for a single new hire.
+Both write the same rows.
 
-Both run the same `seed_groupings()`, and neither needs the app to be stopped.
+Editing a grouping's membership does not reach back into classes that have already been
+built: a class's assigned staff are materialized when it is saved. Re-open the class in
+the class editor and press the grouping's **Add all of them** to pick up a change.
 
-Like the roster import, a placement already on file is reported rather than overwritten
-unless overwrite is asked for, so a re-seed never quietly undoes an edit made on the
-Edit tab. The report names every entry that does not line up: sheet names with no roster
-row, names listed in two columns of the same sheet, staff who work tracks but appear on
-neither sheet, and staff on one sheet but not the other.
+### Assigning a class to a grouping
 
-As transcribed, against the FY27 roster, that is:
+Training & Events admin → **Build Classes** → the class form's **Assigned staff**
+section. Pick any number of **Groupings** and any number of **Roles**:
 
-| | |
-| --- | --- |
-| On a sheet, not on the roster | `Wheeler` (No OR) — no such staff member exists in any source |
-| Works tracks, on neither sheet | `Johnson` |
-| OR placement but no cohort | `Farkas`, `Frakes`, `Muszalski` (management); `Grotton`, `Lurie`, `McWeeney` (new hires); `O'Flaherty`, `Phelan`, `VanderKooi` (0 shifts) |
-| Cohort but no OR placement | `Powers` (management) |
+- Groupings union: "Group 2" and "4 OR" means everyone in either.
+- Roles narrow rather than widen: "Group 2" plus "Nurse" means group 2's nurses. A role
+  on its own selects everyone who holds it.
 
-Five sheet spellings, covering four staff members, differ from the roster and are
-mapped in the script's `ALIASES`: `Hanley` → `Hanley-McCarthy`, `Steck`/`Steckewicz` → `Steckevicz`,
-`Murphy E` → `Murphy`, `Parkas` → `Farkas`. Case, spacing and punctuation are folded
-away separately, which is what lets the sheets' `O'Donnell` and `Vanderkooi` reach the
-roster's `O’Donnell` and `VanderKooi`.
-
-Everything left over is a decision rather than data entry, and belongs on the **Edit**
-tab: `Wheeler`, `Johnson`, and whichever of the partly-placed staff should hold the
-other placement.
+The result is listed by name before it is added, and what gets saved on the class is the
+staff list itself, plus the picks that produced it (`assignment_source`) so re-opening
+the form shows what it was built from.
 
 ## Reading the roster in code
 
@@ -255,13 +275,15 @@ from modules.staff_database import (
     get_role, get_clinical_role, get_effective_role,
     is_management, is_dual, is_educator_at, get_no_matrix, get_seniority,
     get_shifts_per_pay_period, get_night_minimum, get_weekend_minimum,
-    get_weekend_group, get_email, get_education_group, get_or_group,
-    get_education_group_members, get_or_group_members,
+    get_weekend_group, get_email,
     get_role_mapping, get_seniority_mapping, get_no_matrix_mapping,
-    get_requirements_map, get_education_group_mapping, get_or_group_mapping,
+    get_requirements_map,
     build_preferences_df, build_requirements_df,
 )
 ```
+
+Groupings are read from `modules/staff_groupings.py` rather than from here — see
+[Groupings](#groupings) above.
 
 `build_preferences_df()` and `build_requirements_df()` return DataFrames with
 Preferences v6's and Requirements' exact column layouts, built from the database. They
@@ -291,7 +313,11 @@ Imports the spreadsheets into a throwaway database and verifies that every attri
 round-trips identically, that `build_preferences_df()` and `build_requirements_df()`
 match the spreadsheets' layouts and values (including blank-vs-zero), and that
 add/update/activate/rename/delete behave — including that a rename follows the staff
-member into other tables. It also seeds the educational groupings and checks that every
-column places the staff it lists, that a `No OR` placement survives as `0` rather than
-collapsing into "unplaced", and that the sheets' name mismatches are still the ones
-listed above.
+member into other tables.
+
+It also exercises the groupings: creating them, filling them from either side, the
+union two groupings come to, archiving, and that a rename or a deactivation on the
+roster reaches membership. Finally it builds a database the way the previous version of
+the app left one — the `education_group` / `or_group` columns, their indexes and a class
+assigned from them — and checks that the one-time migration turns all of it into
+groupings, rewrites the class, drops the columns, and refuses to run twice.

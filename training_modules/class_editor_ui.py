@@ -25,8 +25,10 @@ from training_modules import class_catalog as catalog
 
 try:
     from modules import staff_database as staffdb
+    from modules import staff_groupings
 except Exception as e:  # pragma: no cover
     staffdb = None
+    staff_groupings = None
     print(f"Staff database unavailable to the class editor: {e}")
 
 
@@ -98,8 +100,7 @@ def _blank_draft():
         },
         'dates': [_blank_date()],
         'assigned_staff': [],
-        'assignment_source': {'education_groups': [], 'or_groups': [],
-                              'roles': []},
+        'assignment_source': {'groupings': [], 'roles': []},
     }
 
 
@@ -121,6 +122,8 @@ def _draft_from_class(record):
     draft['assigned_staff'] = list(record['assigned_staff'])
     # A class saved before roles were selectable carries no 'roles' key. Merged onto
     # the blank shape rather than used as-is, so the picker gets a list either way.
+    # Grouping ids come back from JSON as whatever was stored; the picker matches them
+    # against the live grouping list, so anything stale simply drops out.
     stored_source = record.get('assignment_source') or {}
     draft['assignment_source'] = {**draft['assignment_source'],
                                   **{key: value for key, value in stored_source.items()
@@ -222,37 +225,31 @@ def role_label(role):
     return text.title()
 
 
-def _members_matching(education_groups, or_groups, roles):
+def _members_matching(grouping_ids, roles):
     """
-    Who the chosen groups and roles come to.
+    Who the chosen groupings and roles come to.
 
-    The two groupings are independent placements, so picking "Group 2" and "4 OR"
-    means everyone in either — a class taught to a cohort plus everyone who owes four
-    OR days, not only the people who are both.
+    Groupings union: picking "Group 2" and "4 OR" means everyone in either — a class
+    taught to a cohort plus everyone who owes four OR days, not only the people in
+    both.
 
     Roles narrow that rather than widening it: "Group 2" and "NURSE" together means
     the nurses in group 2. Narrowing is the useful reading — a class taught to one
-    cohort's nurses is a real thing to schedule, where "everyone in group 2, plus
+    grouping's nurses is a real thing to schedule, where "everyone in group 2, plus
     every nurse in the department" is not. A role on its own selects everyone who
     holds it, which is how a class for all medics gets built.
 
     Inactive staff are left out. Somebody who has left should not be pulled into a
-    class by a group they are still recorded against.
+    class by a grouping they are still recorded against.
     """
-    if staffdb is None:
+    if staffdb is None or staff_groupings is None:
         return []
 
-    names = []
-    for group in education_groups:
-        try:
-            names.extend(staffdb.get_education_group_members(group))
-        except Exception as e:
-            print(f"Error reading education group {group}: {e}")
-    for group in or_groups:
-        try:
-            names.extend(staffdb.get_or_group_members(group))
-        except Exception as e:
-            print(f"Error reading OR group {group}: {e}")
+    try:
+        names = staff_groupings.get_members_of_many(grouping_ids)
+    except Exception as e:
+        print(f"Error reading grouping members: {e}")
+        names = []
 
     if roles:
         try:
@@ -260,8 +257,8 @@ def _members_matching(education_groups, or_groups, roles):
         except Exception as e:
             print(f"Error reading staff by role: {e}")
             with_role = set()
-        # No group picked means the roles stand alone and select everyone holding one.
-        names = list(with_role) if not (education_groups or or_groups) else [
+        # No grouping picked means the roles stand alone and select everyone holding one.
+        names = list(with_role) if not grouping_ids else [
             name for name in names if name in with_role]
 
     try:
@@ -280,9 +277,9 @@ def _render_staff_assignment(draft):
     st.markdown("#### Assigned staff")
     st.caption(
         "Assigned staff are the people who see this class on their registration "
-        "screen. Pick groups or roles to fill the list quickly, then add or remove "
-        "individuals — the list below is what gets saved, so a later change to "
-        "somebody's group or role leaves this class alone.")
+        "screen. Pick groupings or roles to fill the list quickly, then add or remove "
+        "individuals — the list below is what gets saved, so a later change to a "
+        "grouping's membership or somebody's role leaves this class alone.")
 
     if staffdb is None:
         st.error("The staff database is unavailable, so staff cannot be assigned.")
@@ -290,25 +287,39 @@ def _render_staff_assignment(draft):
 
     source = draft.get('assignment_source') or {}
 
-    group_columns = st.columns(3)
-    with group_columns[0]:
-        education_groups = st.multiselect(
-            "Education groups", options=staffdb.EDUCATION_GROUPS,
-            default=[g for g in source.get('education_groups', [])
-                     if g in staffdb.EDUCATION_GROUPS],
-            format_func=lambda g: f"Group {g}",
-            key=wkey("education_groups"),
-            help="The cohort a staff member attends recurring education with.")
-    with group_columns[1]:
-        or_groups = st.multiselect(
-            "OR groups", options=staffdb.OR_GROUPS,
-            default=[g for g in source.get('or_groups', [])
-                     if g in staffdb.OR_GROUPS],
-            format_func=lambda g: "No OR" if g == 0 else f"{g} OR",
-            key=wkey("or_groups"),
-            help="How many OR classes a staff member signs up for over the year. "
-                 "'No OR' is a real placement — those people are required to take none.")
-    with group_columns[2]:
+    try:
+        available = staff_groupings.get_groupings(with_counts=True)
+    except Exception as e:
+        print(f"Error reading the groupings: {e}")
+        available = []
+    grouping_names = {g['id']: g['name'] for g in available}
+    grouping_counts = {g['id']: g.get('member_count', 0) for g in available}
+
+    if not available:
+        st.info(
+            "No staff groupings have been set up yet. Create them on the Staff "
+            "Database admin page (**Groupings** tab) to assign a class to a cohort "
+            "in one click — or pick staff individually below.")
+
+    picker_columns = st.columns(2)
+    with picker_columns[0]:
+        # Archived groupings are deliberately absent from the options. A class that
+        # was built from one keeps its assigned staff either way, since the list below
+        # is what gets saved.
+        stored_ids = []
+        for value in source.get('groupings', []):
+            try:
+                stored_ids.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        groupings = st.multiselect(
+            "Groupings", options=list(grouping_names),
+            default=[g for g in stored_ids if g in grouping_names],
+            format_func=lambda g: f"{grouping_names[g]} ({grouping_counts.get(g, 0)})",
+            key=wkey("groupings"),
+            help="A named list of staff, maintained on the Staff Database admin page. "
+                 "Picking more than one means everyone in any of them.")
+    with picker_columns[1]:
         role_options = selectable_roles()
         roles = st.multiselect(
             "Roles", options=role_options,
@@ -316,24 +327,17 @@ def _render_staff_assignment(draft):
             format_func=role_label,
             key=wkey("roles"),
             help="A role on its own picks everyone who holds it. Combined with a "
-                 "group it narrows to that group's holders of the role — 'Group 2' "
-                 "and 'Nurse' together means group 2's nurses.")
+                 "grouping it narrows to that grouping's holders of the role — "
+                 "'Group 2' and 'Nurse' together means group 2's nurses.")
 
-    draft['assignment_source'] = {'education_groups': education_groups,
-                                  'or_groups': or_groups,
-                                  'roles': roles}
+    draft['assignment_source'] = {'groupings': groupings, 'roles': roles}
 
-    matched = _members_matching(education_groups, or_groups, roles)
-    if education_groups or or_groups or roles:
+    matched = _members_matching(groupings, roles)
+    if groupings or roles:
         # Say who that actually is, not just how many. The rule that roles narrow
         # rather than widen is only obvious once you can see the answer it gives.
-        described = []
-        if education_groups:
-            described.append("group " + " or ".join(sorted(education_groups)))
-        if or_groups:
-            described.append(" or ".join("No OR" if g == 0 else f"{g} OR"
-                                         for g in sorted(or_groups)))
-        criteria = " or ".join(described) if described else ""
+        criteria = " or ".join(grouping_names[g] for g in groupings
+                               if g in grouping_names)
         if roles:
             role_text = " or ".join(role_label(r) for r in sorted(roles))
             criteria = f"{criteria}, limited to {role_text}" if criteria else role_text
@@ -344,7 +348,7 @@ def _render_staff_assignment(draft):
                 st.write(", ".join(matched))
         else:
             st.caption("Nothing to add — check the combination, since roles narrow "
-                       "a group rather than adding to it.")
+                       "a grouping rather than adding to it.")
 
         fill_columns = st.columns(2)
         with fill_columns[0]:

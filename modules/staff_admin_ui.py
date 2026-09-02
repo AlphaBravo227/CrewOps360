@@ -17,7 +17,7 @@ import pytz
 import streamlit as st
 
 from . import staff_database as staffdb
-from .educational_groupings import format_seed_report, seed_groupings
+from . import staff_groupings
 from .security import check_admin_access
 from .staff_import import (
     DEFAULT_PREFERENCES_PATH,
@@ -40,39 +40,41 @@ _SHIFTS_HELP = ("Required shifts per 14-day pay period. Leave blank for manageme
 _EMAIL_HELP = ("Used to notify this staff member when their bid opens, and to send bid "
                "confirmations.")
 
-_EDUCATION_GROUP_HELP = ("Education cohort 1-4. Classes are scheduled against these "
-                         "groupings. Leave blank for staff who are not placed.")
+_GROUPING_HELP = ("The named lists of staff this person belongs to. Training classes "
+                  "are assigned by grouping, so this is what decides which classes "
+                  "reach them. Someone can be in as many as makes sense, or none.")
 
-_OR_GROUP_HELP = ("How many OR classes this staff member has to sign up for over the "
-                  "year. \"No OR\" means none are required — the class will not appear "
-                  "for them at all. That is a real placement, and is different from "
-                  "blank, which means they have not been placed yet.")
-
-# The OR grouping is an int where 0 is meaningful, so it is carried through the widgets
-# as the sheet's own labels — '' for unplaced, 'No OR' for 0 — and parsed back on save.
-# Keeping every cell a string also keeps the roster table Arrow-serializable, which a
-# column mixing '' with ints is not.
-_OR_GROUP_UNPLACED = ''
-_OR_GROUP_NO_OR = 'No OR'
+# Bumped whenever a grouping or its membership is written, so the widgets on the
+# Groupings tab re-read the database instead of returning the value the browser still
+# holds from before the save. Same problem — and same fix — as the class editor's
+# widget token.
+_GROUPING_NONCE = 'staff_db_grouping_nonce'
 
 
-def _or_group_options():
-    return [_OR_GROUP_UNPLACED] + [_OR_GROUP_NO_OR if g == 0 else str(g)
-                                   for g in staffdb.OR_GROUPS]
+def _grouping_key(name, *parts):
+    """A session key for a Groupings-tab widget, under the current nonce."""
+    suffix = '_'.join(str(part) for part in parts)
+    nonce = st.session_state.get(_GROUPING_NONCE, 0)
+    return f"staff_db_grouping_{name}_{suffix}_{nonce}" if suffix \
+        else f"staff_db_grouping_{name}_{nonce}"
 
 
-def _or_group_label(value):
-    """Selectbox label for a stored OR grouping (None -> unplaced)."""
-    if value is None:
-        return _OR_GROUP_UNPLACED
-    return _OR_GROUP_NO_OR if int(value) == 0 else str(int(value))
+def _grouping_changed():
+    """Re-key the Groupings tab's widgets after a write."""
+    st.session_state[_GROUPING_NONCE] = st.session_state.get(_GROUPING_NONCE, 0) + 1
 
 
-def _parse_or_group(label):
-    """Selectbox label back to a stored OR grouping, or None when unplaced."""
-    if not label:
-        return None
-    return 0 if label == _OR_GROUP_NO_OR else int(label)
+def _grouping_label(grouping):
+    """How a grouping reads in a picker — archived ones say so."""
+    return grouping['name'] if grouping['is_active'] \
+        else f"{grouping['name']} (archived)"
+
+
+def _grouping_options(include_archived=True, with_counts=False):
+    """({id: grouping}, [ids in picker order]) for building a selectbox."""
+    groupings = staff_groupings.get_groupings(include_archived=include_archived,
+                                              with_counts=with_counts)
+    return {g['id']: g for g in groupings}, [g['id'] for g in groupings]
 
 
 def _optional_number_input(label, value, key, help_text=None, placeholder="blank"):
@@ -177,13 +179,11 @@ def _display_summary():
         st.info(
             f"ℹ️ No email on file for: {', '.join(issues['missing_email'])}. "
             "They cannot be auto-notified when their bid opens.")
-    unplaced = sorted(set(issues['missing_education_group'])
-                      | set(issues['missing_or_group']))
-    if unplaced:
+    if issues['missing_grouping']:
         st.info(
-            f"ℹ️ No educational grouping on file for: {', '.join(unplaced)}. "
-            "Classes are scheduled against the education and OR groupings, so staff "
-            "who work tracks without one get nothing assigned.")
+            f"ℹ️ In no grouping: {', '.join(issues['missing_grouping'])}. "
+            "Training classes are assigned by grouping, so staff who work tracks "
+            "without one get nothing assigned.")
 
 
 def _roster_tab():
@@ -204,17 +204,12 @@ def _roster_tab():
         management_only = st.checkbox("Management only", value=False,
                                       key="staff_db_mgmt_only")
 
-    group_cols = st.columns([2, 2])
-    with group_cols[0]:
-        education_groups = st.multiselect(
-            "Educational group", options=staffdb.EDUCATION_GROUPS,
-            key="staff_db_education_group_filter",
-            help="Who attends education with which cohort.")
-    with group_cols[1]:
-        or_groups = st.multiselect(
-            "OR grouping", options=_or_group_options()[1:],
-            key="staff_db_or_group_filter",
-            help="How many OR classes each staff member has to sign up for.")
+    by_id, option_ids = _grouping_options()
+    grouping_filter = st.multiselect(
+        "Grouping", options=option_ids,
+        format_func=lambda g: _grouping_label(by_id[g]),
+        key="staff_db_grouping_filter",
+        help="Show only staff in one of these groupings.")
 
     records = staffdb.get_all_staff(include_inactive=show_inactive,
                                     roles=roles or None,
@@ -222,16 +217,17 @@ def _roster_tab():
     if search:
         needle = search.strip().lower()
         records = [r for r in records if needle in r['staff_name'].lower()]
-    if education_groups:
-        records = [r for r in records if r['education_group'] in education_groups]
-    if or_groups:
-        wanted = {_parse_or_group(label) for label in or_groups}
-        records = [r for r in records if r['or_group'] in wanted]
+    if grouping_filter:
+        in_filter = {name.lower() for name in
+                     staff_groupings.get_members_of_many(grouping_filter,
+                                                         include_inactive=True)}
+        records = [r for r in records if r['staff_name'].lower() in in_filter]
 
     if not records:
         st.info("No staff match these filters.")
         return
 
+    memberships = staff_groupings.get_grouping_mapping(include_inactive=True)
     table = pd.DataFrame([{
         'Staff Name': r['staff_name'],
         'Role': r['role'],
@@ -248,9 +244,7 @@ def _roster_tab():
         'Night Min': r['night_minimum'],
         'Weekend Min': r['weekend_minimum'],
         'Weekend Group': r['weekend_group'] or '',
-        'Education Group': r['education_group'] or '',
-        # Blank means unplaced; 0 is the "No OR" placement, so it must still print.
-        'OR Group': _or_group_label(r['or_group']),
+        'Groupings': ', '.join(memberships.get(r['staff_name'], [])),
         'Email': r['email'] or '',
         'Active': r['is_active'],
         'Notes': r['notes'] or '',
@@ -268,6 +262,255 @@ def _roster_tab():
         file_name=f"staff_roster_{datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M%S')}.csv",
         mime="text/csv",
     )
+
+
+def _groupings_tab():
+    """Create groupings, and decide who is in them."""
+    st.markdown("#### Staff Groupings")
+    st.caption(
+        "A grouping is a named list of staff — an education cohort, the people who owe "
+        "four OR days, a class of new hires. Training classes are assigned by "
+        "grouping, so this is where you decide who a class reaches. A staff member can "
+        "be in as many groupings as makes sense, and a grouping can be edited at any "
+        "time: classes already built keep the staff list they were saved with.")
+
+    staff_groupings.initialize_grouping_tables()
+    groupings = staff_groupings.get_groupings(include_archived=True, with_counts=True)
+
+    _grouping_create_form()
+
+    if not groupings:
+        st.info("No groupings yet. Create the first one above.")
+        return
+
+    st.markdown("---")
+    _grouping_overview(groupings)
+
+    st.markdown("---")
+    _grouping_editor(groupings)
+
+
+def _grouping_create_form():
+    """Create a grouping, optionally seeded from a role."""
+    with st.expander("➕ Create a grouping", expanded=False):
+        with st.form("staff_db_grouping_create", clear_on_submit=True):
+            name = st.text_input(
+                "Grouping name *", placeholder="e.g. Group 1, 4 OR, New Hires 2027",
+                help="What this grouping is called everywhere else in the app — the "
+                     "class editor's picker, the roster table.")
+            description = st.text_input(
+                "Description", placeholder="Optional — what this grouping is for.")
+            seed_roles = st.multiselect(
+                "Start it with everyone in these roles", options=_selectable_roles(),
+                help="Optional shortcut. You can add and remove individuals "
+                     "afterwards; nothing is locked to the role.")
+            created = st.form_submit_button("Create grouping", type="primary",
+                                            use_container_width=True)
+
+        if created:
+            members = (staffdb.get_staff_names(roles=list(seed_roles))
+                       if seed_roles else None)
+            success, message, _ = staff_groupings.create_grouping(
+                name, description=description, members=members, changed_by='admin')
+            if success:
+                _grouping_changed()
+                st.success(f"✅ {message}")
+                st.rerun()
+            else:
+                st.error(f"❌ {message}")
+
+
+def _selectable_roles():
+    """The roles a grouping can be seeded from — every role on the roster."""
+    return staffdb.STAFF_ROLES + [staffdb.UNASSIGNED_ROLE]
+
+
+def _grouping_overview(groupings):
+    """Every grouping, its size and its state, plus who is in none of them."""
+    st.markdown("##### All groupings")
+    table = pd.DataFrame([{
+        'Grouping': g['name'],
+        'Members': g.get('member_count', 0),
+        'Status': 'Active' if g['is_active'] else 'Archived',
+        'Description': g['description'] or '',
+        'Last Modified': g['modified_date'],
+    } for g in groupings])
+    st.dataframe(table, use_container_width=True, hide_index=True)
+
+    active = [g for g in groupings if g['is_active']]
+    st.caption(f"{len(active)} active grouping(s), "
+               f"{len(groupings) - len(active)} archived.")
+
+    # Staff in no grouping at all see no class that is assigned by grouping, which is
+    # the failure this page exists to make visible.
+    ungrouped = staff_groupings.get_ungrouped_staff()
+    if ungrouped:
+        with st.expander(f"⚠️ {len(ungrouped)} active staff are in no grouping"):
+            st.write(", ".join(ungrouped))
+            st.caption("Normal for management and the non-clinical roles. Anyone else "
+                       "here gets no class assigned by grouping.")
+
+
+def _grouping_editor(groupings):
+    """Membership, then the grouping's own name and state."""
+    st.markdown("##### Edit a grouping")
+
+    by_id = {g['id']: g for g in groupings}
+    chosen_id = st.selectbox(
+        "Grouping", options=list(by_id),
+        format_func=lambda g: (f"{_grouping_label(by_id[g])} — "
+                               f"{by_id[g].get('member_count', 0)} member(s)"),
+        key="staff_db_grouping_choice")
+    grouping = by_id[chosen_id]
+
+    if not grouping['is_active']:
+        st.info("This grouping is archived. It keeps its membership and stays readable "
+                "on the classes that used it, but it is not offered when a class is "
+                "assigned. Restore it below to use it again.")
+
+    _grouping_membership_editor(grouping)
+    st.markdown("---")
+    _grouping_settings_editor(grouping)
+
+
+def _grouping_membership_editor(grouping):
+    """Who is in one grouping."""
+    st.markdown(f"**Members of {grouping['name']}**")
+
+    current = staff_groupings.get_members(grouping['id'], include_inactive=True)
+    # Inactive members stay in the options: dropping them would silently remove
+    # somebody from the grouping the next time anybody pressed Save.
+    options = sorted(dict.fromkeys(list(staffdb.get_staff_names()) + list(current)))
+
+    role_columns = st.columns([3, 2])
+    with role_columns[0]:
+        roles = st.multiselect(
+            "Add everyone in these roles", options=_selectable_roles(),
+            key=_grouping_key('roles', grouping['id']),
+            help="A shortcut for filling the list. The staff are copied in — nothing "
+                 "stays tied to the role afterwards.")
+    with role_columns[1]:
+        st.write("")
+        if st.button("➕ Add them", use_container_width=True, disabled=not roles,
+                     key=_grouping_key('add_roles', grouping['id'])):
+            success, message = staff_groupings.add_members(
+                grouping['id'], staffdb.get_staff_names(roles=list(roles)),
+                changed_by='admin')
+            _grouping_changed()
+            if success:
+                st.success(f"✅ {message}")
+            else:
+                st.error(f"❌ {message}")
+            st.rerun()
+
+    members = st.multiselect(
+        f"Staff in this grouping ({len(current)})",
+        options=options,
+        default=current,
+        key=_grouping_key('members', grouping['id']))
+
+    save_columns = st.columns([2, 2, 3])
+    with save_columns[0]:
+        if st.button("💾 Save membership", type="primary", use_container_width=True,
+                     key=_grouping_key('save_members', grouping['id'])):
+            success, message = staff_groupings.set_members(
+                grouping['id'], members, changed_by='admin')
+            _grouping_changed()
+            if success:
+                st.success(f"✅ {message}")
+                st.rerun()
+            else:
+                st.error(f"❌ {message}")
+    with save_columns[1]:
+        if st.button("🧹 Empty the grouping", use_container_width=True,
+                     disabled=not current,
+                     key=_grouping_key('clear_members', grouping['id'])):
+            success, message = staff_groupings.set_members(grouping['id'], [],
+                                                           changed_by='admin')
+            _grouping_changed()
+            if success:
+                st.success(f"✅ {message}")
+            else:
+                st.error(f"❌ {message}")
+            st.rerun()
+    with save_columns[2]:
+        st.caption("Membership changes take effect for classes assigned from now on. "
+                   "A class already saved keeps the staff list it was built with.")
+
+
+def _grouping_settings_editor(grouping):
+    """The grouping's name, description, order and archived state — and deleting it."""
+    st.markdown(f"**Settings for {grouping['name']}**")
+
+    with st.form(_grouping_key('settings', grouping['id'])):
+        setting_columns = st.columns([3, 3, 1])
+        with setting_columns[0]:
+            name = st.text_input("Name", value=grouping['name'])
+        with setting_columns[1]:
+            description = st.text_input("Description",
+                                        value=grouping['description'] or '')
+        with setting_columns[2]:
+            sort_order = st.number_input(
+                "Order", value=int(grouping['sort_order']), step=10,
+                help="Where this grouping sits in the pickers. Lower comes first.")
+        saved = st.form_submit_button("💾 Save settings", use_container_width=True)
+
+    if saved:
+        success, message = staff_groupings.update_grouping(
+            grouping['id'], name=name, description=description,
+            sort_order=sort_order, changed_by='admin')
+        _grouping_changed()
+        if success:
+            st.success(f"✅ {message}")
+            st.rerun()
+        else:
+            st.error(f"❌ {message}")
+
+    state_columns = st.columns(2)
+    with state_columns[0]:
+        if grouping['is_active']:
+            if st.button(f"📦 Archive {grouping['name']}", use_container_width=True,
+                         key=_grouping_key('archive', grouping['id'])):
+                success, message = staff_groupings.update_grouping(
+                    grouping['id'], is_active=False, changed_by='admin')
+                _grouping_changed()
+                if success:
+                    st.success(f"✅ {message}")
+                else:
+                    st.error(f"❌ {message}")
+                st.rerun()
+            st.caption("Archiving keeps the membership and takes the grouping out of "
+                       "the class editor's picker. This is the right way to retire a "
+                       "cohort that has been superseded.")
+        else:
+            if st.button(f"♻️ Restore {grouping['name']}", use_container_width=True,
+                         key=_grouping_key('restore', grouping['id'])):
+                success, message = staff_groupings.update_grouping(
+                    grouping['id'], is_active=True, changed_by='admin')
+                _grouping_changed()
+                if success:
+                    st.success(f"✅ {message}")
+                else:
+                    st.error(f"❌ {message}")
+                st.rerun()
+
+    with state_columns[1]:
+        confirm = st.checkbox(
+            f"Yes, delete {grouping['name']} permanently",
+            key=_grouping_key('confirm_delete', grouping['id']))
+        if st.button(f"🗑️ Delete {grouping['name']}", use_container_width=True,
+                     disabled=not confirm,
+                     key=_grouping_key('delete', grouping['id'])):
+            success, message = staff_groupings.delete_grouping(grouping['id'],
+                                                               changed_by='admin')
+            _grouping_changed()
+            if success:
+                st.success(f"✅ {message}")
+                st.rerun()
+            else:
+                st.error(f"❌ {message}")
+        st.caption("Deleting loses the record of who was in it. Archive instead unless "
+                   "the grouping was a mistake.")
 
 
 def _add_tab():
@@ -310,16 +553,11 @@ def _add_tab():
                                         options=[''] + staffdb.WEEKEND_GROUPS,
                                         key="staff_db_add_group")
 
-        st.markdown("**Educational Groupings**")
-        edu_cols = st.columns(2)
-        with edu_cols[0]:
-            education_group = st.selectbox(
-                "Educational group", options=[''] + staffdb.EDUCATION_GROUPS,
-                key="staff_db_add_education_group", help=_EDUCATION_GROUP_HELP)
-        with edu_cols[1]:
-            or_group_label = st.selectbox(
-                "OR grouping", options=_or_group_options(),
-                key="staff_db_add_or_group", help=_OR_GROUP_HELP)
+        add_by_id, add_option_ids = _grouping_options(include_archived=False)
+        add_groupings = st.multiselect(
+            "Groupings", options=add_option_ids,
+            format_func=lambda g: add_by_id[g]['name'],
+            key="staff_db_add_groupings", help=_GROUPING_HELP)
 
         email = st.text_input("Email", key="staff_db_add_email", help=_EMAIL_HELP)
         notes = st.text_input("Notes", placeholder="Optional")
@@ -348,13 +586,16 @@ def _add_tab():
             night_minimum=nights,
             weekend_minimum=weekends,
             weekend_group=weekend_group or None,
-            education_group=education_group or None,
-            or_group=_parse_or_group(or_group_label),
             email=email or None,
             is_active=is_active,
             notes=notes or None,
             changed_by='admin',
         )
+        if success and add_groupings:
+            placed, grouping_message = staff_groupings.set_groupings_for_staff(
+                name, add_groupings, changed_by='admin')
+            message = f"{message} {grouping_message}" if placed \
+                else f"{message} (groupings not saved: {grouping_message})"
         if success:
             st.success(f"✅ {message}")
         else:
@@ -448,26 +689,21 @@ def _edit_tab():
                 "Weekend group", options=group_options,
                 index=group_options.index(current_group), key="staff_db_edit_group")
 
-        st.markdown("**Educational Groupings**")
-        edu_cols = st.columns(2)
-        with edu_cols[0]:
-            education_options = [''] + staffdb.EDUCATION_GROUPS
-            current_education = record['education_group'] or ''
-            if current_education not in education_options:
-                education_options.append(current_education)
-            education_group = st.selectbox(
-                "Educational group", options=education_options,
-                index=education_options.index(current_education),
-                key="staff_db_edit_education_group", help=_EDUCATION_GROUP_HELP)
-        with edu_cols[1]:
-            or_options = _or_group_options()
-            current_or = _or_group_label(record['or_group'])
-            if current_or not in or_options:
-                or_options.append(current_or)
-            or_group_label = st.selectbox(
-                "OR grouping", options=or_options,
-                index=or_options.index(current_or),
-                key="staff_db_edit_or_group", help=_OR_GROUP_HELP)
+        # Only the groupings a picker can offer are editable here; an archived
+        # grouping this staff member is still in is listed underneath instead, since
+        # its absence from the picker is not a request to take them out of it.
+        edit_by_id, edit_option_ids = _grouping_options(include_archived=False)
+        held = [g['id'] for g in staff_groupings.get_groupings_for_staff(
+            record['staff_name'])]
+        edit_groupings = st.multiselect(
+            "Groupings", options=edit_option_ids,
+            default=[g for g in held if g in edit_by_id],
+            format_func=lambda g: edit_by_id[g]['name'],
+            key=f"staff_db_edit_groupings_{record['id']}", help=_GROUPING_HELP)
+        archived_held = [g['name'] for g in staff_groupings.get_groupings_for_staff(
+            record['staff_name']) if not g['is_active']]
+        if archived_held:
+            st.caption("Also in archived grouping(s): " + ", ".join(archived_held))
 
         email = st.text_input("Email", value=record['email'] or '',
                               key="staff_db_edit_email", help=_EMAIL_HELP)
@@ -497,15 +733,20 @@ def _edit_tab():
             night_minimum=nights,
             weekend_minimum=weekends,
             weekend_group=weekend_group or None,
-            education_group=education_group or None,
-            or_group=_parse_or_group(or_group_label),
             email=email or None,
             notes=notes,
             changed_by='admin',
         )
-        if success:
-            st.success(f"✅ {message}")
+        # Groupings are saved whether or not any other field changed — update_staff()
+        # reports "no changes" for an edit that only moved somebody between groupings,
+        # and that must not read as a failure.
+        placed, grouping_message = staff_groupings.set_groupings_for_staff(
+            record['staff_name'], edit_groupings, changed_by='admin')
+        if success and placed:
+            st.success(f"✅ {message} {grouping_message}")
             st.rerun()
+        elif success:
+            st.warning(f"⚠️ {message} The groupings were not saved: {grouping_message}")
         else:
             st.error(f"❌ {message}")
 
@@ -688,67 +929,6 @@ def _import_tab():
                                                           or report['skipped'])):
             st.code("\n".join(format_import_report(report)), language=None)
 
-    st.markdown("---")
-    _groupings_seed_section()
-
-
-def _groupings_seed_section():
-    """Seed the educational groupings onto the roster from the placement sheets."""
-    st.markdown("#### Seed Educational Groupings")
-    st.markdown(
-        "The **education cohort** (1-4) and the **OR grouping** (No OR, 2, 3, 4) come "
-        "from two placement sheets that are flat columns of names — there is no staff "
-        "key to import on, so they are transcribed in "
-        "`modules/educational_groupings.py`. This places everyone the sheets name in "
-        "one pass, so the groupings do not have to be entered by hand. Afterwards they "
-        "are maintained per staff member on the **Edit** tab."
-    )
-
-    overwrite = st.checkbox(
-        "Let the sheets overwrite placements already on file", value=False,
-        key="staff_db_groupings_overwrite",
-        help="Off by default, so a re-seed never undoes an edit made on the Edit tab. "
-             "Placements that disagree are reported either way.")
-
-    action_cols = st.columns(2)
-    preview = action_cols[0].button("🔍 Preview groupings (no changes)",
-                                    use_container_width=True,
-                                    key="staff_db_groupings_preview")
-    apply_seed = action_cols[1].button("🎓 Seed groupings", type="primary",
-                                       use_container_width=True,
-                                       key="staff_db_groupings_apply")
-
-    if not (preview or apply_seed):
-        return
-
-    with st.spinner("Placing staff into their groupings…"):
-        report = seed_groupings(overwrite=overwrite, dry_run=preview,
-                                changed_by='admin')
-
-    if report['errors']:
-        st.error("❌ The seed reported errors — see the details below.")
-    elif preview:
-        st.info("🔍 Preview only — nothing was written.")
-    else:
-        st.success("✅ Groupings seeded.")
-
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("Placements " + ("to set" if preview else "set"),
-                          len(report['changes']))
-    metric_cols[1].metric("Already correct", report['unchanged'])
-    metric_cols[2].metric("Left alone", len(report['conflicts']))
-    # Names on a sheet with no roster row, and staff who work tracks but appear on
-    # neither sheet — the two that need a person to decide something.
-    metric_cols[3].metric("Need attention",
-                          len(report['unmatched']) + len(report['working_unplaced']))
-
-    # Anything a person has to act on opens the details by default; a clean run does not.
-    needs_attention = bool(report['errors'] or report['unmatched']
-                           or report['duplicated'] or report['conflicts']
-                           or report['working_unplaced'])
-    with st.expander("Seed details", expanded=needs_attention):
-        st.code("\n".join(format_seed_report(report)), language=None)
-
 
 def _history_tab():
     """Audit log and name-change history."""
@@ -833,12 +1013,14 @@ def display_staff_database_admin():
 
     st.markdown("---")
 
-    roster_tab, add_tab, edit_tab, import_tab, history_tab = st.tabs(
-        ["📋 Roster", "➕ Add Staff", "✏️ Edit / Rename / Remove", "📥 Import from Excel",
-         "🕓 History"])
+    roster_tab, groupings_tab, add_tab, edit_tab, import_tab, history_tab = st.tabs(
+        ["📋 Roster", "👪 Groupings", "➕ Add Staff", "✏️ Edit / Rename / Remove",
+         "📥 Import from Excel", "🕓 History"])
 
     with roster_tab:
         _roster_tab()
+    with groupings_tab:
+        _groupings_tab()
     with add_tab:
         _add_tab()
     with edit_tab:
