@@ -47,17 +47,22 @@ DEFAULT_DB = 'data/medflight_tracks.db'
 MEETING_TYPES = ('LIVE', 'Virtual')
 
 
-def catalog_for(year, cache):
-    """The class catalog for one training year, read once per year."""
+def catalog_for(year, cache, db_path):
+    """The class catalog for one training year, read once per year.
+
+    Out of the same database the enrollments came from: the catalog otherwise
+    reads its own default path, and a run against a copy or a backup would have
+    judged those rows against whatever schedule happened to be live.
+    """
     if year not in cache:
-        catalog = ClassCatalog(year)
+        catalog = ClassCatalog(year, db_path=db_path)
         cache[year] = None if catalog.load_error else catalog
         if catalog.load_error:
             print(f"  {year}: catalog unavailable ({catalog.load_error}) - skipping")
     return cache[year]
 
 
-def plan_repairs(conn):
+def plan_repairs(conn, db_path):
     """What to change, and what needs a human.
 
     Returns (repairs, unclear). A repair is (row, new_meeting_type, new_location,
@@ -74,7 +79,7 @@ def plan_repairs(conn):
     ).fetchall()
 
     for row in rows:
-        catalog = catalog_for(row['year'], cache)
+        catalog = catalog_for(row['year'], cache, db_path)
         if catalog is None:
             continue
 
@@ -140,7 +145,7 @@ def main():
     conn.row_factory = sqlite3.Row
 
     print("Reading the class catalog for each training year:")
-    repairs, unclear = plan_repairs(conn)
+    repairs, unclear = plan_repairs(conn, args.db)
 
     if unclear:
         print(f"\n{len(unclear)} staff meeting enrollment(s) need a meeting type set by "
