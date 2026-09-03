@@ -211,31 +211,39 @@ class EnrollmentSessionComponents:
                 continue
 
             # Grouped the way the options below are grouped: a date taught at two sites
-            # is two separate rooms that fill separately, so it reads as two rows.
-            by_location = {}
+            # is two separate rooms that fill separately, and a staff meeting's LIVE and
+            # Virtual options are two independently-capped ways into it - so each gets
+            # its own row rather than one row hiding the other's true seat count behind
+            # whichever number happened to be larger.
+            by_row = {}
+            row_order = []
             for option in options:
-                by_location.setdefault(option.get('location') or '', []).append(option)
+                meeting_type = (option.get('meeting_type')
+                                if option['type'] == 'staff_meeting' else None)
+                key = (option.get('location') or '', meeting_type)
+                if key not in by_row:
+                    by_row[key] = []
+                    row_order.append(key)
+                by_row[key].append(option)
+            multiple_locations = len({key[0] for key in row_order}) > 1
 
             first_row_for_date = True
-            for location, location_options in by_location.items():
+            for location, meeting_type in row_order:
+                row_options = by_row[(location, meeting_type)]
                 rows.append({
                     "Date": date_label if first_row_for_date else "",
                     "Location": location,
-                    # How the session is attended, which for a staff meeting is the
-                    # room or a screen. It shared the Times column with the meeting's
-                    # hours, and being the only one of the two a meeting's options
-                    # carried, it displaced them: the column read "Virtual / LIVE" and
-                    # a meeting's start time appeared nowhere on the screen.
-                    "Type": EnrollmentSessionComponents._summary_type_text(location_options),
-                    "Times": EnrollmentSessionComponents._summary_time_text(location_options),
+                    "Type": meeting_type or "",
+                    "Times": EnrollmentSessionComponents._summary_time_text(row_options),
                     "Availability": EnrollmentSessionComponents._summary_availability_text(
-                        location_options),
-                    # Repeated on every location of the date rather than left blank
-                    # below the first: a conflict is with the day, and an empty cell
-                    # would read as "this site is clear".
+                        row_options),
+                    # Repeated on every row of the date rather than left blank below
+                    # the first: a conflict is with the day, and an empty cell would
+                    # read as "this row is clear".
                     "Conflict": conflict_cell,
                     "You": EnrollmentSessionComponents._summary_enrolled_text(
-                        user_class_enrollments, date, location, len(by_location) > 1),
+                        user_class_enrollments, date, location, meeting_type,
+                        multiple_locations),
                 })
                 first_row_for_date = False
 
@@ -340,30 +348,19 @@ class EnrollmentSessionComponents:
         return f"{len(times)} sessions ({first} - {last})"
 
     @staticmethod
-    def _summary_type_text(options):
-        """How the session is attended - LIVE and/or Virtual for a staff meeting. Other
-        class types have no attendance-mode split, so they report nothing here."""
-        types = []
-        for option in options:
-            if option['type'] != 'staff_meeting':
-                continue
-            label = option.get('meeting_type', '')
-            if label and label not in types:
-                types.append(label)
-        return " / ".join(types)
-
-    @staticmethod
     def _summary_availability_text(options):
         """What is left. Role-split sessions count seats per role, not per session,
-        so they are reported as the sessions that still have room in them."""
+        so they are reported as the sessions that still have room in them.
+
+        Every option reaching this call already shares one location and, for a staff
+        meeting, one meeting type - the caller having split LIVE and Virtual into
+        separate rows - so their seats always add up to one real number rather than
+        needing to be guessed at.
+        """
         seat_counts = [max(0, option['available_slots']) for option in options
                        if option.get('available_slots') is not None]
         if seat_counts:
-            # A staff meeting's LIVE and Virtual options are two ways into the same
-            # meeting drawing on the same capacity, so their seats do not add up the
-            # way two sessions of a class do.
-            all_staff_meeting = all(option['type'] == 'staff_meeting' for option in options)
-            open_seats = max(seat_counts) if all_staff_meeting else sum(seat_counts)
+            open_seats = sum(seat_counts)
             return f"🟢 {open_seats} open" if open_seats else "🔴 Full"
 
         role_keys = [('nurse_available', 'Nurse'), ('medic_available', 'Medic'),
@@ -380,10 +377,20 @@ class EnrollmentSessionComponents:
         return f"🟢 {session_text} ({'/'.join(open_roles)})"
 
     @staticmethod
-    def _summary_enrolled_text(user_class_enrollments, date, location, multiple_locations):
-        """Whether the user already holds a seat on this date, and in which session."""
+    def _summary_enrolled_text(user_class_enrollments, date, location, meeting_type,
+                               multiple_locations):
+        """Whether the user already holds a seat on this date, in this row specifically.
+
+        An enrollment recorded before meeting types existed carries none, and can't be
+        pinned to one of several rows retroactively - it is shown on whichever row asks
+        about it, rather than on none of them.
+        """
         for enrollment in user_class_enrollments:
             if enrollment['class_date'] != date:
+                continue
+            enrollment_type = enrollment.get('meeting_type')
+            if (meeting_type is not None and enrollment_type is not None
+                    and enrollment_type != meeting_type):
                 continue
             # A location only tells rows apart when the date runs at more than one,
             # and enrollments recorded before locations were bookable carry none.

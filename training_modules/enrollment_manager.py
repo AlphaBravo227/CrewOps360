@@ -665,25 +665,38 @@ class EnrollmentManager:
             
         # Check available slots
         max_students = int(class_details.get('students_per_class', 21))
+        live_capacity = None
 
         # On a date taught at several sites the seats belong to the location, not to
         # the date: the room being booked has its own capacity, and the people in the
         # other room are not in it. Counting is filtered to match, so a full site
         # can't consume the seats at an empty one. A date with a single location
         # counts as it always did, unfiltered, which keeps rows written before
-        # locations were bookable in the count.
+        # locations were bookable in the count - but its own seat counts (already
+        # resolved against the class settings) still apply, same as a multi-location
+        # date's do.
         count_location = None
-        if location and hasattr(self.excel, 'get_date_options'):
-            date_options = self.excel.get_date_options(class_name, class_date)
-            if len(date_options) > 1:
-                count_location = location
-                for date_option in date_options:
-                    if date_option['location'] == location and date_option.get('capacity'):
-                        max_students = int(date_option['capacity'])
-                        break
+        date_options = (self.excel.get_date_options(class_name, class_date)
+                        if hasattr(self.excel, 'get_date_options') else [])
+        if location and len(date_options) > 1:
+            count_location = location
+            for date_option in date_options:
+                if date_option['location'] == location:
+                    max_students = int(date_option['capacity'])
+                    live_capacity = date_option.get('live_capacity')
+                    break
+        elif len(date_options) == 1:
+            max_students = int(date_options[0]['capacity'])
+            live_capacity = date_options[0].get('live_capacity')
 
         # For staff meetings, we need to check meeting type specific slots
         if self.excel.is_staff_meeting(class_name) and meeting_type:
+            # LIVE and Virtual are two independently-sized rooms, not one seat count
+            # split between them - a LIVE room seats however many it seats regardless
+            # of who else joins by Virtual. See get_available_session_options for the
+            # same split applied to what staff are shown before they enroll.
+            if meeting_type == 'LIVE':
+                max_students = int(live_capacity or max_students)
             # The seats a date offering one meeting type has left are counted over the
             # same people its roster shows, the ones recorded without a type included.
             current_enrollment = self.db.get_enrollment_count(
@@ -839,10 +852,14 @@ class EnrollmentManager:
 
         if len(date_options) <= 1:
             # One location, or a class whose catalog entry predates them. Counting
-            # stays unfiltered so rows written before the location column still show.
-            location = date_options[0]['location'] if date_options else ''
+            # stays unfiltered so rows written before the location column still show,
+            # but the location's own times/seats/LIVE-seats still apply when set - they
+            # are already resolved against the class settings, so passing them through
+            # changes nothing for a date that left them blank.
+            single_option = date_options[0] if date_options else None
+            location = single_option['location'] if single_option else ''
             single = self._session_options_for_location(
-                class_name, class_date, option=None, location=location,
+                class_name, class_date, option=single_option, location=location,
                 count_by_location=False)
             # The date heading already names the one location; labelling every session
             # under it with the same place adds nothing. Nor does the location tell two
@@ -887,6 +904,8 @@ class EnrollmentManager:
                 class_details['time_1_end'] = option['end_time']
             if option.get('capacity'):
                 class_details['students_per_class'] = option['capacity']
+            if option.get('live_capacity'):
+                class_details['live_capacity'] = option['live_capacity']
 
         count_location = location if count_by_location else None
 
@@ -1111,12 +1130,21 @@ class EnrollmentManager:
             end_time = class_details.get('time_1_end', '')
             meeting_time = f"{start_time}-{end_time}" if start_time and end_time else ''
 
+            # LIVE and Virtual are two independently-sized rooms, not one 27-seat room
+            # split between them: a LIVE room seats however many it seats regardless of
+            # who else joins by Virtual. `students_per_class` (the "Seats" field) caps
+            # Virtual, same as it always has; `live_capacity` - unset unless an admin
+            # gave the LIVE room its own number - caps LIVE, falling back to the same
+            # cap Virtual has when nobody has said otherwise.
+            live_capacity = int(class_details.get('live_capacity') or max_students)
+
             for meeting_type in meeting_types:
+                capacity = live_capacity if meeting_type == 'LIVE' else max_students
                 all_enrollments = self.get_session_enrollments(
                     class_name, class_date, None, meeting_type,
                     location=count_location, include_untyped=absorbs_untyped)
                 enrolled_names = [e['staff_name'] for e in all_enrollments]
-                available_slots = max_students - len(enrolled_names)
+                available_slots = capacity - len(enrolled_names)
 
                 session_options.append({
                     'meeting_type': meeting_type,

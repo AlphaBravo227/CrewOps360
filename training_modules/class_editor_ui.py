@@ -74,7 +74,8 @@ def reset_widget_state():
 
 
 def _blank_option():
-    return {'location': '', 'start_time': '', 'end_time': '', 'capacity': None}
+    return {'location': '', 'start_time': '', 'end_time': '', 'capacity': None,
+            'live_capacity': None}
 
 
 def _blank_date():
@@ -159,7 +160,8 @@ def _draft_from_class(record):
         'options': [{'location': option['location'],
                      'start_time': option['start_time'] or '',
                      'end_time': option['end_time'] or '',
-                     'capacity': option['capacity']}
+                     'capacity': option['capacity'],
+                     'live_capacity': option.get('live_capacity')}
                     for option in entry['options']] or [_blank_option()],
     } for entry in record['dates']] or [_blank_date()]
     return draft
@@ -436,9 +438,15 @@ def _render_dates(draft):
                     entry['has_live'] = False
 
             st.markdown("**Locations**")
+            # A LIVE seat and a Virtual seat on this date are two independently-sized
+            # pools, not one split between them - a room seats however many it seats
+            # regardless of who also joins by Virtual. So the LIVE seat count gets its
+            # own field, shown only where LIVE is actually offered.
+            show_live_capacity = is_meeting and entry['has_live']
             option_removing = None
             for option_index, option in enumerate(entry['options']):
-                option_columns = st.columns([3, 2, 2, 2, 1])
+                widths = [3, 2, 2, 2, 2, 1] if show_live_capacity else [3, 2, 2, 2, 1]
+                option_columns = st.columns(widths)
                 with option_columns[0]:
                     option['location'] = st.text_input(
                         "Location", value=option['location'],
@@ -456,13 +464,26 @@ def _render_dates(draft):
                         placeholder=draft['settings'].get('time_1_end') or '16:00')
                 with option_columns[3]:
                     capacity = st.text_input(
-                        "Seats", value=('' if option['capacity'] is None
-                                        else str(option['capacity'])),
+                        "Seats" + (" (Virtual)" if show_live_capacity else ""),
+                        value=('' if option['capacity'] is None
+                               else str(option['capacity'])),
                         key=wkey(f"cap_{index}_{option_index}"),
                         placeholder=str(draft['settings'].get('students_per_class')
                                         or 21))
                     option['capacity'] = catalog.parse_int(capacity)
-                with option_columns[4]:
+                if show_live_capacity:
+                    with option_columns[4]:
+                        live_capacity = st.text_input(
+                            "Seats (LIVE)", value=('' if option.get('live_capacity') is None
+                                                   else str(option['live_capacity'])),
+                            key=wkey(f"livecap_{index}_{option_index}"),
+                            placeholder=str(option['capacity']
+                                            or draft['settings'].get('students_per_class')
+                                            or 21))
+                        option['live_capacity'] = catalog.parse_int(live_capacity)
+                else:
+                    option['live_capacity'] = None
+                with option_columns[-1]:
                     st.write("")
                     if len(entry['options']) > 1:
                         if st.button("✕", key=wkey(f"rmloc_{index}_{option_index}"),
@@ -476,8 +497,14 @@ def _render_dates(draft):
                 reset_widget_state()
                 st.rerun()
 
-            st.caption("Times and seats left blank fall back to the class settings "
-                       "below, which is what a class taught at one site wants.")
+            if show_live_capacity:
+                st.caption("Times and seats left blank fall back to the class settings "
+                           "below. LIVE seats left blank fall back to the Virtual seat "
+                           "count, which is what a room known to seat at least that many "
+                           "wants.")
+            else:
+                st.caption("Times and seats left blank fall back to the class settings "
+                           "below, which is what a class taught at one site wants.")
 
             if st.button("➕ Add another location", key=wkey(f"addloc_{index}")):
                 entry['options'].append(_blank_option())
@@ -666,7 +693,8 @@ def _save(draft, training_year, original_name, db_path):
         'options': [{'location': (option.get('location') or '').strip(),
                      'start_time': (option.get('start_time') or '').strip(),
                      'end_time': (option.get('end_time') or '').strip(),
-                     'capacity': option.get('capacity')}
+                     'capacity': option.get('capacity'),
+                     'live_capacity': option.get('live_capacity')}
                     for option in entry['options']],
     } for entry in draft['dates'] if entry.get('class_date')]
 

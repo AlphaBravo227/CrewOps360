@@ -252,6 +252,10 @@ def initialize_catalog_tables(db_path=DEFAULT_DB_PATH):
     # A date's bookable options. `location` is what a staff member picks between when a
     # day runs at more than one site; `start_time`/`end_time`/`capacity` fall back to the
     # class-level settings when left empty, which is what an imported date does.
+    # `live_capacity` is separate from `capacity` because a staff meeting's LIVE seats and
+    # its Virtual seats are two independent pools, not one shared 27 split between modes -
+    # a room seats however many it seats regardless of how many join by Virtual, and vice
+    # versa. It falls back to `capacity` the same way `capacity` falls back to the class.
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS training_class_options (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -261,6 +265,7 @@ def initialize_catalog_tables(db_path=DEFAULT_DB_PATH):
             start_time TEXT,
             end_time TEXT,
             capacity INTEGER,
+            live_capacity INTEGER,
             UNIQUE(date_id, option_index),
             FOREIGN KEY (date_id) REFERENCES training_class_dates(id) ON DELETE CASCADE
         )
@@ -282,6 +287,11 @@ def initialize_catalog_tables(db_path=DEFAULT_DB_PATH):
                         cursor.execute("PRAGMA table_info(training_classes)")}
     if 'calendar_display' not in existing_columns:
         cursor.execute('ALTER TABLE training_classes ADD COLUMN calendar_display TEXT')
+
+    existing_option_columns = {row[1] for row in
+                               cursor.execute("PRAGMA table_info(training_class_options)")}
+    if 'live_capacity' not in existing_option_columns:
+        cursor.execute('ALTER TABLE training_class_options ADD COLUMN live_capacity INTEGER')
 
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_class_year '
                    'ON training_classes(training_year)')
@@ -450,7 +460,8 @@ def _write_dates(cursor, class_id, dates):
 
         options = [opt for opt in (entry.get('options') or [])
                    if any(str(opt.get(field) or '').strip()
-                          for field in ('location', 'start_time', 'end_time', 'capacity'))]
+                          for field in ('location', 'start_time', 'end_time',
+                                        'capacity', 'live_capacity'))]
         if not options:
             # No options entered means one option with nothing said about it: the class
             # times and the class capacity apply, and no location is named.
@@ -458,14 +469,16 @@ def _write_dates(cursor, class_id, dates):
         for option_index, option in enumerate(options, start=1):
             cursor.execute(
                 "INSERT INTO training_class_options "
-                "(date_id, option_index, location, start_time, end_time, capacity) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "(date_id, option_index, location, start_time, end_time, capacity, "
+                "live_capacity) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (date_id, option_index,
                  (str(option.get('location')).strip()
                   if option.get('location') else None),
                  parse_time(option.get('start_time')),
                  parse_time(option.get('end_time')),
-                 parse_int(option.get('capacity'))))
+                 parse_int(option.get('capacity')),
+                 parse_int(option.get('live_capacity'))))
 
 
 def _write_assignments(cursor, class_id, assigned_staff):
@@ -597,7 +610,8 @@ def get_dates_with_options(class_id, db_path=DEFAULT_DB_PATH, conn=None):
                              'location': o['location'] or '',
                              'start_time': o['start_time'],
                              'end_time': o['end_time'],
-                             'capacity': o['capacity']} for o in option_rows],
+                             'capacity': o['capacity'],
+                             'live_capacity': o['live_capacity']} for o in option_rows],
             })
         return dates
     finally:
@@ -829,12 +843,18 @@ class ClassCatalog:
                 continue
             resolved = []
             for option in details.get(f'date_{index}_options') or []:
+                capacity = (option.get('capacity')
+                           or parse_int(details.get('students_per_class'), 21))
                 resolved.append({
                     'location': option.get('location') or '',
                     'start_time': option.get('start_time') or details.get('time_1_start'),
                     'end_time': option.get('end_time') or details.get('time_1_end'),
-                    'capacity': (option.get('capacity')
-                                 or parse_int(details.get('students_per_class'), 21)),
+                    'capacity': capacity,
+                    # A staff meeting's LIVE seats are a separate, independently-sized
+                    # pool from its Virtual seats (a room seats what it seats, whoever
+                    # else joins by Virtual) - but when nobody has said how many, the
+                    # same number that caps Virtual is the only one on hand.
+                    'live_capacity': option.get('live_capacity') or capacity,
                     'option_index': option.get('option_index', 1),
                 })
             return resolved
