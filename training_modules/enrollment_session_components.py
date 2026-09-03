@@ -199,8 +199,15 @@ class EnrollmentSessionComponents:
 
             options = enrollment_manager.get_available_session_options(class_name, date)
             if not options:
-                rows.append([date_label, attributes.get('location') or "—",
-                             "—", "No slots available", conflict_cell, ""])
+                rows.append({
+                    "Date": date_label,
+                    "Location": attributes.get('location') or "",
+                    "Type": "",
+                    "Times": "—",
+                    "Availability": "No slots available",
+                    "Conflict": conflict_cell,
+                    "You": "",
+                })
                 continue
 
             # Grouped the way the options below are grouped: a date taught at two sites
@@ -211,34 +218,53 @@ class EnrollmentSessionComponents:
 
             first_row_for_date = True
             for location, location_options in by_location.items():
-                rows.append([
-                    date_label if first_row_for_date else "",
-                    location or "Not specified",
-                    EnrollmentSessionComponents._summary_time_text(location_options),
-                    EnrollmentSessionComponents._summary_availability_text(location_options),
+                rows.append({
+                    "Date": date_label if first_row_for_date else "",
+                    "Location": location,
+                    # How the session is attended, which for a staff meeting is the
+                    # room or a screen. It shared the Times column with the meeting's
+                    # hours, and being the only one of the two a meeting's options
+                    # carried, it displaced them: the column read "Virtual / LIVE" and
+                    # a meeting's start time appeared nowhere on the screen.
+                    "Type": EnrollmentSessionComponents._summary_type_text(location_options),
+                    "Times": EnrollmentSessionComponents._summary_time_text(location_options),
+                    "Availability": EnrollmentSessionComponents._summary_availability_text(
+                        location_options),
                     # Repeated on every location of the date rather than left blank
                     # below the first: a conflict is with the day, and an empty cell
                     # would read as "this site is clear".
-                    conflict_cell,
-                    EnrollmentSessionComponents._summary_enrolled_text(
-                        user_class_enrollments, date, location, len(by_location) > 1)
-                ])
+                    "Conflict": conflict_cell,
+                    "You": EnrollmentSessionComponents._summary_enrolled_text(
+                        user_class_enrollments, date, location, len(by_location) > 1),
+                })
                 first_row_for_date = False
 
         if not rows:
             st.warning("No dates configured for this class.")
             return
 
-        columns = ["Date", "Location", "Times", "Availability", "Conflict", "You"]
+        # A column with nothing to say in any row is dropped rather than filled with
+        # placeholders down its length: a class attended one way has no types to tell
+        # apart, a staff meeting usually has no rooms to name, and a conflict column
+        # means nothing to someone without a track. Every dropped column is width the
+        # remaining ones - the times and the seats - get back.
+        columns = ["Date", "Location", "Type", "Times", "Availability", "Conflict", "You"]
         if not (has_track or flag_reasons):
-            conflict_column = columns.index("Conflict")
-            columns.pop(conflict_column)
-            rows = [row[:conflict_column] + row[conflict_column + 1:] for row in rows]
+            columns.remove("Conflict")
+        for optional in ("Location", "Type"):
+            if not any(row[optional] for row in rows):
+                columns.remove(optional)
+
+        # Said only where a location column survives, and so where the dates that do
+        # name one would otherwise leave this one looking unanswered.
+        if "Location" in columns:
+            for row in rows:
+                row["Location"] = row["Location"] or "Not specified"
 
         header = ("| " + " | ".join(columns) + " |\n"
                   + "|" + "---|" * len(columns) + "\n")
         body = "\n".join(
-            "| " + " | ".join(str(cell).replace("|", "\\|") for cell in row) + " |"
+            "| " + " | ".join(str(row[column]).replace("|", "\\|") for column in columns) + " |"
             for row in rows
         )
         st.markdown(header + body)
@@ -295,7 +321,9 @@ class EnrollmentSessionComponents:
         times = []
         for option in options:
             if option['type'] == 'staff_meeting':
-                label = option.get('meeting_type', '')
+                # A meeting's hours, not which way it's attended - that lives in
+                # meeting_type, which the Type column reports instead.
+                label = option.get('display_time') or ''
             else:
                 label = option.get('session_time') or option.get('display_time') or ''
                 label = label.split(' (')[0].strip()
@@ -310,6 +338,19 @@ class EnrollmentSessionComponents:
         first = times[0].split('-')[0].strip()
         last = times[-1].split('-')[-1].strip()
         return f"{len(times)} sessions ({first} - {last})"
+
+    @staticmethod
+    def _summary_type_text(options):
+        """How the session is attended - LIVE and/or Virtual for a staff meeting. Other
+        class types have no attendance-mode split, so they report nothing here."""
+        types = []
+        for option in options:
+            if option['type'] != 'staff_meeting':
+                continue
+            label = option.get('meeting_type', '')
+            if label and label not in types:
+                types.append(label)
+        return " / ".join(types)
 
     @staticmethod
     def _summary_availability_text(options):

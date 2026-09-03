@@ -1103,6 +1103,14 @@ class EnrollmentManager:
             # listed nine of the twenty-three people enrolled, and offered their seats.
             absorbs_untyped = len(meeting_types) == 1
 
+            # The hours the meeting runs. A staff meeting's options carried no times
+            # at all, so the ones an admin set - on the class, or on this date's own
+            # location - reached neither the schedule summary nor the options below
+            # it, and the meeting read as though it had no start time.
+            start_time = class_details.get('time_1_start', '')
+            end_time = class_details.get('time_1_end', '')
+            meeting_time = f"{start_time}-{end_time}" if start_time and end_time else ''
+
             for meeting_type in meeting_types:
                 all_enrollments = self.get_session_enrollments(
                     class_name, class_date, None, meeting_type,
@@ -1117,6 +1125,10 @@ class EnrollmentManager:
                     'type': 'staff_meeting',
                     'is_two_day': is_two_day,
                     'date_display': date_display,
+                    # Displayed only. A staff meeting is booked by its meeting type,
+                    # and its seats are counted by it, so the times stay out of
+                    # `session_time`, which is what both of those are keyed on.
+                    'display_time': meeting_time,
                     'location': location,
                     '_absorbs_untyped': absorbs_untyped
                 })

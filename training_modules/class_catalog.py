@@ -69,6 +69,7 @@ DEFAULT_CLASS_DETAILS = {
     'is_count_exempt': False,
     'has_ccemt': 'No',
     'calendar_display': '',
+    'is_staff_meeting': False,
     'date_count': 0,
 }
 
@@ -751,6 +752,15 @@ class ClassCatalog:
                 'instructors_per_day': row['instructors_per_day'] or 0,
                 'calendar_display': (row['calendar_display'] or ''
                                      if 'calendar_display' in row.keys() else ''),
+                # NULL means no admin ever set it and the "SM" in the name rule that
+                # predates the field decides, which is the answer `is_staff_meeting`
+                # gives. Four displays read this key - the enrollment summary's facts,
+                # its LIVE/Virtual enrollment breakdown, Class Details and the educator
+                # screen - and while it was missing from here every one of them read a
+                # staff meeting as an ordinary class.
+                'is_staff_meeting': (bool(row['is_staff_meeting'])
+                                     if row['is_staff_meeting'] is not None
+                                     else 'SM' in str(row['class_name']).upper()),
                 'date_count': len(dates),
                 '_class_id': row['id'],
             }
