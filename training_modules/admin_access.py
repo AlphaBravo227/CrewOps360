@@ -1488,29 +1488,27 @@ class AdminAccess:
                             st.markdown(f"**Type:** {class_details.get('class_type', 'N/A')}")
                             st.markdown("---")
 
-                            # Expand two-day classes to show both days
+                            # Expand two-day classes to show both days, each mapped back to
+                            # its session's anchor (day 1) date. enroll_staff always derives
+                            # the pairing from whichever date it's given - Day 1 in, [Day 1,
+                            # Day 2] out - so a booking made from the Day 2 expander using
+                            # Day 2 itself would derive [Day 2, Day 2 + 1] instead: the
+                            # student never lands on Day 1 at all, and the seat count shown
+                            # to everyone else (which is keyed on Day 1) never sees them.
                             is_two_day = st.session_state.training_enrollment_manager._is_two_day_class(selected_class)
-                            dates_to_display = []
+                            date_to_anchor = {}
 
                             for date in class_dates:
                                 if is_two_day:
-                                    # Get both days for two-day classes
                                     both_days = st.session_state.training_enrollment_manager._get_two_day_dates(date)
-                                    dates_to_display.extend(both_days)
+                                    for day in both_days:
+                                        date_to_anchor.setdefault(day, date)
                                 else:
-                                    dates_to_display.append(date)
-
-                            # Remove duplicates while preserving order
-                            seen = set()
-                            unique_dates = []
-                            for date in dates_to_display:
-                                if date not in seen:
-                                    seen.add(date)
-                                    unique_dates.append(date)
+                                    date_to_anchor.setdefault(date, date)
 
                             # Display each session/date
-                            for date in unique_dates:
-                                self._display_session_roster_editor(selected_class, date, class_details)
+                            for date, anchor_date in date_to_anchor.items():
+                                self._display_session_roster_editor(selected_class, date, class_details, anchor_date)
                         else:
                             st.warning("No sessions found for this class")
                 else:
@@ -1521,8 +1519,16 @@ class AdminAccess:
                 import traceback
                 st.code(traceback.format_exc())
 
-    def _display_session_roster_editor(self, class_name, class_date, class_details):
-        """Display roster editor for a single class session with add/remove capabilities"""
+    def _display_session_roster_editor(self, class_name, class_date, class_details, session_date=None):
+        """Display roster editor for a single class session with add/remove capabilities.
+
+        session_date is the session's anchor (day 1) date for a two-day class - the date
+        new enrollments must be booked under regardless of which day's expander this is,
+        so both days land on the one real pairing. Defaults to class_date for a
+        single-day class, where the two are the same thing.
+        """
+        if session_date is None:
+            session_date = class_date
 
         # Create an expander for each session
         with st.expander(f"📅 {class_date}", expanded=False):
@@ -1582,7 +1588,7 @@ class AdminAccess:
                 # Add new student form
                 st.markdown("---")
                 st.markdown("**➕ Add New Student**")
-                self._display_add_student_form(class_name, class_date, class_details)
+                self._display_add_student_form(class_name, class_date, class_details, session_date)
 
             with col_educators:
                 st.markdown("### 👨‍🏫 Educator Signups")
@@ -1645,8 +1651,15 @@ class AdminAccess:
                 else:
                     st.error("Failed to remove educator")
 
-    def _display_add_student_form(self, class_name, class_date, class_details):
-        """Display form to add a new student enrollment with session availability info"""
+    def _display_add_student_form(self, class_name, class_date, class_details, session_date=None):
+        """Display form to add a new student enrollment with session availability info.
+
+        session_date is the two-day session's anchor (day 1) date - see
+        _display_session_roster_editor. Enrollment is booked under it rather than
+        class_date so adding from the Day 2 expander still lands on [Day 1, Day 2].
+        """
+        if session_date is None:
+            session_date = class_date
         # Get all staff
         staff_list = self.excel_admin_functions.excel.get_staff_list()
 
@@ -1837,7 +1850,7 @@ class AdminAccess:
                     result = st.session_state.training_enrollment_manager.enroll_staff(
                         staff_name=selected_staff,
                         class_name=class_name,
-                        class_date=class_date,
+                        class_date=session_date,
                         role=role,
                         meeting_type=meeting_type,
                         session_time=session_time,
