@@ -805,7 +805,14 @@ class EnrollmentSessionComponents:
 
             # Check based on option type
             if option['type'] == 'staff_meeting':
-                if enrollment.get('meeting_type') == option['meeting_type']:
+                enrollment_type = enrollment.get('meeting_type') or ''
+                if enrollment_type == option['meeting_type']:
+                    return enrollment
+                # A date with one option on offer takes in the bookings recorded
+                # without a type, so this is where the person holding one sees their
+                # own seat - and the button to cancel it - rather than being offered
+                # a second one alongside it.
+                if not enrollment_type and option.get('_absorbs_untyped'):
                     return enrollment
             elif option['type'] in ['regular', 'nurse_medic_separate']:
                 # For multi-session classes, match by session time

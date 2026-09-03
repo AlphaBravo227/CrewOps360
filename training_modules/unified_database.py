@@ -1538,12 +1538,17 @@ class UnifiedDatabase:
         return enrollments
         
     def get_enrollment_count(self, class_name, class_date, role=None, meeting_type=None,
-                             session_time=None, training_year=None, location=None):
+                             session_time=None, training_year=None, location=None,
+                             include_untyped=False):
         """Get enrollment count for a specific class, date, and optional filters.
 
         Scoped to one training year so a prior year's enrollments never consume
         this year's seats. Pass `location` on a date that runs at more than one site,
         so a full room at one of them doesn't consume the seats at the other.
+
+        `include_untyped` counts the rows carrying no meeting type into the one asked
+        for. It belongs on a date that offers a single meeting type, where a row with
+        none has nowhere else it could be - see get_session_enrollments.
         """
         self.connect()
         
@@ -1563,14 +1568,17 @@ class UnifiedDatabase:
             query += ' AND role = ?'
             params.append(role)
             
-        if meeting_type:
+        if meeting_type and include_untyped:
+            query += ' AND (meeting_type = ? OR meeting_type IS NULL OR meeting_type = "")'
+            params.append(meeting_type)
+        elif meeting_type:
             query += ' AND meeting_type = ?'
             params.append(meeting_type)
-            
+
         if session_time:
             query += ' AND session_time = ?'
             params.append(session_time)
-            
+
         self.cursor.execute(query, params)
         count = self.cursor.fetchone()['count']
         self.disconnect()
@@ -1578,7 +1586,7 @@ class UnifiedDatabase:
         
     def get_session_enrollments(self, class_name, class_date, session_time=None,
                                 meeting_type=None, training_year=None, location=None,
-                                untyped_only=True):
+                                untyped_only=True, include_untyped=False):
         """Get all enrollments for a specific training session in one training year.
 
         Pass `location` on a date that runs at more than one site, to count only the
@@ -1594,6 +1602,13 @@ class UnifiedDatabase:
         its session - which is how the seat counting has always read it, and a roster
         that disagreed with the count showed the session empty while it was refusing
         the next person.
+
+        `include_untyped` is the other half of that, for a meeting type that *is* asked
+        for: it takes in the rows carrying none. Set it on a date offering a single
+        meeting type, where a row with none has nowhere else it could be. On a date
+        offering both, nothing in the row says which one the person attended, so they
+        stay out of either roster until an administrator says - hiding a booking is
+        wrong, but guessing which session someone sat in is worse.
         """
         self.connect()
         
@@ -1617,7 +1632,10 @@ class UnifiedDatabase:
         else:
             query += ' AND (session_time IS NULL OR session_time = "")'
             
-        if meeting_type:
+        if meeting_type and include_untyped:
+            query += ' AND (meeting_type = ? OR meeting_type IS NULL OR meeting_type = "")'
+            params.append(meeting_type)
+        elif meeting_type:
             query += ' AND meeting_type = ?'
             params.append(meeting_type)
         elif meeting_type is None and untyped_only:

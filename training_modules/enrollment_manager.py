@@ -684,9 +684,12 @@ class EnrollmentManager:
 
         # For staff meetings, we need to check meeting type specific slots
         if self.excel.is_staff_meeting(class_name) and meeting_type:
+            # The seats a date offering one meeting type has left are counted over the
+            # same people its roster shows, the ones recorded without a type included.
             current_enrollment = self.db.get_enrollment_count(
                 class_name, class_date, None, meeting_type, session_time,
-                training_year=self.training_year, location=count_location)
+                training_year=self.training_year, location=count_location,
+                include_untyped=self._date_offers_single_meeting_type(class_name, class_date))
         elif class_details.get('nurses_medic_separate', 'No').lower() == 'yes' and role != 'General':
             # If nurses and medics are separate, check role-specific slots
             max_students = max_students // 2
@@ -722,18 +725,41 @@ class EnrollmentManager:
         return self.db.get_live_staff_meeting_count(staff_name, training_year=self.training_year)
         
     def get_session_enrollments(self, class_name, class_date, session_time=None,
-                                meeting_type=None, location=None):
+                                meeting_type=None, location=None, include_untyped=False):
         """Get list of staff enrolled in a specific session
 
         Only a staff meeting keeps its sessions apart by meeting type, so only there
         does a roster asked for without one mean "the rows carrying none". Anywhere
         else a meeting type on a row is stray data, and hiding the row for it left
         people enrolled but invisible - taking up a seat nobody could see.
+
+        `include_untyped` is for the reverse case on a staff meeting: a date offering a
+        single meeting type, where a row that carries none belongs to it.
         """
         return self.db.get_session_enrollments(
             class_name, class_date, session_time, meeting_type,
             training_year=self.training_year, location=location,
-            untyped_only=self.excel.is_staff_meeting(class_name))
+            untyped_only=self.excel.is_staff_meeting(class_name),
+            include_untyped=include_untyped)
+
+    def _date_offers_single_meeting_type(self, class_name, class_date):
+        """True when a staff meeting date offers one meeting type and not the other.
+
+        A booking recorded with no meeting type - every one the admin form wrote while
+        it failed to ask for one - can then only be that session, so the roster and the
+        seat count can take it in. Where the date offers both, which one the person
+        attended is not recorded anywhere and nothing here may invent it.
+        """
+        if not self.excel.is_staff_meeting(class_name):
+            return False
+        if hasattr(self.excel, 'get_date_attributes'):
+            return not self.excel.get_date_attributes(class_name, class_date).get('has_live')
+
+        class_details = self.excel.get_class_details(class_name) or {}
+        for i in date_indices(class_details):
+            if class_details.get(f'date_{i}') == class_date:
+                return not class_details.get(f'date_{i}_has_live', False)
+        return True
     
     def get_staff_meeting_enrollments(self, staff_name, class_name=None):
         """Get all Staff Meeting enrollments for a staff member"""
@@ -1070,13 +1096,20 @@ class EnrollmentManager:
             meeting_types = ['Virtual']
             if has_live_option:
                 meeting_types.append('LIVE')
-            
+
+            # With only one option on offer, a booking recorded without a meeting type
+            # is a booking in it. Those rows - the ones the admin form wrote while it
+            # never asked for the type - were otherwise in no roster at all: the screen
+            # listed nine of the twenty-three people enrolled, and offered their seats.
+            absorbs_untyped = len(meeting_types) == 1
+
             for meeting_type in meeting_types:
-                all_enrollments = self.get_session_enrollments(class_name, class_date, None, meeting_type,
-                                                             location=count_location)
+                all_enrollments = self.get_session_enrollments(
+                    class_name, class_date, None, meeting_type,
+                    location=count_location, include_untyped=absorbs_untyped)
                 enrolled_names = [e['staff_name'] for e in all_enrollments]
                 available_slots = max_students - len(enrolled_names)
-                
+
                 session_options.append({
                     'meeting_type': meeting_type,
                     'enrolled': enrolled_names,
@@ -1084,7 +1117,8 @@ class EnrollmentManager:
                     'type': 'staff_meeting',
                     'is_two_day': is_two_day,
                     'date_display': date_display,
-                    'location': location
+                    'location': location,
+                    '_absorbs_untyped': absorbs_untyped
                 })
         
         else:
