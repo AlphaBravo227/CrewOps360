@@ -40,8 +40,11 @@ class UIComponents:
         if not class_enrollments:
             return ""  # Not enrolled, show nothing
         
-        # Check if any enrollments have conflicts
-        has_conflict_override = any(e.get('conflict_override', False) for e in class_enrollments)
+        # Check if any enrollments have conflicts against the *current* schedule
+        has_conflict_override = any(
+            UIComponents._has_current_conflict(enrollment_manager, e)
+            for e in class_enrollments
+        )
         
         # Check if it's a staff meeting to show LIVE/Virtual
         is_staff_meeting = excel_handler.is_staff_meeting(class_name)
@@ -80,6 +83,23 @@ class UIComponents:
         return class_details.get('is_two_day_class', 'No').lower() == 'yes'
 
     @staticmethod
+    def _has_current_conflict(enrollment_manager, enrollment):
+        """Whether an enrollment conflicts with the staff member's schedule *today*.
+
+        enrollment['conflict_override'] is frozen at signup time - if the track
+        was edited afterward (the conflicting shift got swapped away, say), that
+        stored flag goes stale and keeps warning about a conflict that's gone.
+        Recheck live against track_manager so the warning tracks reality; fall
+        back to the stored flag only when there's no track data to recheck against.
+        """
+        if not getattr(enrollment_manager, 'track_manager', None):
+            return enrollment.get('conflict_override', False)
+        has_conflict, _ = enrollment_manager.check_enrollment_conflict(
+            enrollment['staff_name'], enrollment['class_name'], enrollment['class_date']
+        )
+        return has_conflict
+
+    @staticmethod
     def _get_two_day_dates(base_date):
         """Get both days for a two-day class"""
         try:
@@ -98,7 +118,8 @@ class UIComponents:
         what happened, not something to edit.
         """
         col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 1])
-        
+        has_current_conflict = UIComponents._has_current_conflict(enrollment_manager, enrollment)
+
         with col1:
             class_name = enrollment['class_name']
             display_name = f"**{class_name}**"
@@ -126,7 +147,7 @@ class UIComponents:
                     display_name += " 💻 Virtual"
             
             # Add conflict indicator
-            if enrollment.get('conflict_override'):
+            if has_current_conflict:
                 display_name += " ⚠️"
             
             st.write(display_name)
@@ -150,7 +171,7 @@ class UIComponents:
                         st.write(f"**Time:** {times}")
             
             # Show conflict details if override
-            if enrollment.get('conflict_override'):
+            if has_current_conflict:
                 st.write("**⚠️ Swap Required**")
         
         with col4:
