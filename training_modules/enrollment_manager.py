@@ -544,12 +544,18 @@ class EnrollmentManager:
     
     def enroll_staff_with_replacement(self, staff_name, class_name, class_date, role='General',
                                     meeting_type=None, session_time=None, override_conflict=False,
-                                    existing_enrollment_id=None):
-        """Convenience method for enrolling with replacement of existing enrollment"""
+                                    existing_enrollment_id=None, location=None):
+        """Convenience method for enrolling with replacement of existing enrollment
+
+        The site carries over like every other detail of the booking: dropped here,
+        the replacement row was written with no location and then filtered out of the
+        location's own view, so switching sessions made the person disappear from the
+        roster they had just booked.
+        """
         return self.enroll_staff(
-            staff_name, class_name, class_date, role, meeting_type, 
-            session_time, override_conflict, replace_existing=True, 
-            existing_enrollment_id=existing_enrollment_id
+            staff_name, class_name, class_date, role, meeting_type,
+            session_time, override_conflict, replace_existing=True,
+            existing_enrollment_id=existing_enrollment_id, location=location
         )
 
     def get_enrollment_details_for_display(self, enrollment):
@@ -717,10 +723,17 @@ class EnrollmentManager:
         
     def get_session_enrollments(self, class_name, class_date, session_time=None,
                                 meeting_type=None, location=None):
-        """Get list of staff enrolled in a specific session"""
+        """Get list of staff enrolled in a specific session
+
+        Only a staff meeting keeps its sessions apart by meeting type, so only there
+        does a roster asked for without one mean "the rows carrying none". Anywhere
+        else a meeting type on a row is stray data, and hiding the row for it left
+        people enrolled but invisible - taking up a seat nobody could see.
+        """
         return self.db.get_session_enrollments(
             class_name, class_date, session_time, meeting_type,
-            training_year=self.training_year, location=location)
+            training_year=self.training_year, location=location,
+            untyped_only=self.excel.is_staff_meeting(class_name))
     
     def get_staff_meeting_enrollments(self, staff_name, class_name=None):
         """Get all Staff Meeting enrollments for a staff member"""

@@ -99,8 +99,13 @@ class EnrollmentDialogComponents:
     @staticmethod
     def show_duplicate_enrollment_dialog(button_key, existing_enrollments, enrollment_manager, 
                                         staff_name, class_name, date, role, meeting_type, 
-                                        session_time, override_conflict=False):
-        """Show dialog for handling duplicate enrollment - UPDATED for two-day classes"""
+                                        session_time, override_conflict=False, location=None):
+        """Show dialog for handling duplicate enrollment - UPDATED for two-day classes
+
+        `location` is the site the new booking is at, on a date that runs at more than
+        one. It travels with the replacement so the row that lands carries the site the
+        person actually picked.
+        """
         
         duplicate_dialog_key = f"duplicate_dialog_{button_key}"
         duplicate_data_key = f"duplicate_data_{button_key}"
@@ -149,8 +154,9 @@ class EnrollmentDialogComponents:
                         
                         try:
                             success, message = enrollment_manager.enroll_staff_with_replacement(
-                                staff_name, class_name, date, role, meeting_type, 
-                                session_time, override_conflict, existing_id
+                                staff_name, class_name, date, role, meeting_type,
+                                session_time, override_conflict, existing_id,
+                                location=location
                             )
                             
                             if success:
@@ -186,7 +192,8 @@ class EnrollmentDialogComponents:
                                 try:
                                     success, message = enrollment_manager.enroll_staff_with_replacement(
                                         staff_name, class_name, date, role, meeting_type,
-                                        session_time, override_conflict, enrollment['id']
+                                        session_time, override_conflict, enrollment['id'],
+                                        location=location
                                     )
                                     
                                     if success:

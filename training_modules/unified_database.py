@@ -1577,7 +1577,8 @@ class UnifiedDatabase:
         return count
         
     def get_session_enrollments(self, class_name, class_date, session_time=None,
-                                meeting_type=None, training_year=None, location=None):
+                                meeting_type=None, training_year=None, location=None,
+                                untyped_only=True):
         """Get all enrollments for a specific training session in one training year.
 
         Pass `location` on a date that runs at more than one site, to count only the
@@ -1585,6 +1586,14 @@ class UnifiedDatabase:
         count, so counting them together would fill both at once. Leave it None for a
         date with a single location, which also keeps the older rows that predate the
         column in view.
+
+        With no `meeting_type` asked for, `untyped_only` decides what happens to a row
+        that carries one anyway. It has to stay on for a staff meeting, where the LIVE
+        and Virtual sessions are told apart by nothing else. Off, for every class that
+        has no meeting types at all, a row that somehow acquired one is still part of
+        its session - which is how the seat counting has always read it, and a roster
+        that disagreed with the count showed the session empty while it was refusing
+        the next person.
         """
         self.connect()
         
@@ -1611,9 +1620,9 @@ class UnifiedDatabase:
         if meeting_type:
             query += ' AND meeting_type = ?'
             params.append(meeting_type)
-        elif meeting_type is None:
+        elif meeting_type is None and untyped_only:
             query += ' AND (meeting_type IS NULL OR meeting_type = "")'
-            
+
         self.cursor.execute(query, params)
         rows = self.cursor.fetchall()
         enrollments = []

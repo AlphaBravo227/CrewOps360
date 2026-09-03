@@ -1674,6 +1674,22 @@ class AdminAccess:
             role = 'General'
             session_time = None
             meeting_type = None
+            location = None
+
+            enrollment_manager = st.session_state.training_enrollment_manager
+            is_staff_meeting = enrollment_manager.excel.is_staff_meeting(class_name)
+
+            # The sites this date runs at. An enrollment records the one it is at, the
+            # same as a staff member's own booking does. Left off, the row is filtered
+            # straight back out of that site's roster and the person added here never
+            # appears on the public view of the session they were added to.
+            date_locations = []
+            if hasattr(enrollment_manager.excel, 'get_date_options'):
+                date_locations = [option.get('location') for option
+                                  in enrollment_manager.excel.get_date_options(class_name, class_date)
+                                  if option.get('location')]
+            if len(date_locations) == 1:
+                location = date_locations[0]
 
             # Check for multi-session classes
             if session_options and len(session_options) > 0:
@@ -1685,53 +1701,48 @@ class AdminAccess:
                     # Multi-session class - show session options with capacity
                     st.markdown("**Available Sessions:**")
 
-                    session_choices = []
+                    # Every label keeps the option and role it was built from. Read back
+                    # out of the label instead, a date running at two sites matched
+                    # whichever session came first and booked the wrong room.
+                    session_choices = {}
                     for opt in session_options:
+                        display_time = opt.get('display_time', opt.get('session_time'))
+                        opt_location = opt.get('location') or ''
+                        prefix = f"{opt_location} - " if len(date_locations) > 1 and opt_location else ""
+
                         if opt.get('type') == 'nurse_medic_separate':
                             # Show separate options for nurse and medic
-                            display_time = opt.get('display_time', opt.get('session_time'))
-                            nurse_count = len(opt.get('nurses', []))
-                            medic_count = len(opt.get('medics', []))
-                            ccemt_count = len(opt.get('ccemts', []))
-
+                            role_counts = [
+                                ('Nurse', len(opt.get('nurses', []))),
+                                ('Medic', len(opt.get('medics', []))),
+                            ]
                             if opt.get('has_ccemt'):
-                                session_choices.append(f"{display_time} - Nurse ({nurse_count}/1)")
-                                session_choices.append(f"{display_time} - Medic ({medic_count}/1)")
-                                session_choices.append(f"{display_time} - CCEMT ({ccemt_count}/1)")
+                                max_per_role = 1
+                                role_counts.append(('CCEMT', len(opt.get('ccemts', []))))
                             else:
                                 max_per_role = int(class_details.get('students_per_class', 21)) // 2
-                                session_choices.append(f"{display_time} - Nurse ({nurse_count}/{max_per_role})")
-                                session_choices.append(f"{display_time} - Medic ({medic_count}/{max_per_role})")
+
+                            for role_name, enrolled_count in role_counts:
+                                label = f"{prefix}{display_time} - {role_name} ({enrolled_count}/{max_per_role})"
+                                session_choices[label] = (opt, role_name)
                         else:
                             # Regular session - show total enrollment
-                            display_time = opt.get('display_time', opt.get('session_time'))
                             enrolled_count = len(opt.get('enrolled', []))
                             max_students = int(class_details.get('students_per_class', 21))
-                            session_choices.append(f"{display_time} ({enrolled_count}/{max_students})")
+                            label = f"{prefix}{display_time} ({enrolled_count}/{max_students})"
+                            session_choices[label] = (opt, 'General')
 
                     if session_choices:
                         selected_option = st.selectbox(
                             "Select Session",
-                            options=[""] + session_choices,
+                            options=[""] + list(session_choices.keys()),
                             key=f"{form_key}_session_option"
                         )
 
-                        # Parse the selected option to extract session_time and role
                         if selected_option:
-                            # Extract session time from the display string
-                            for opt in session_options:
-                                display_time = opt.get('display_time', opt.get('session_time'))
-                                if display_time in selected_option:
-                                    session_time = opt.get('session_time')
-
-                                    # Check if role is specified in selection
-                                    if ' - Nurse' in selected_option:
-                                        role = 'Nurse'
-                                    elif ' - Medic' in selected_option:
-                                        role = 'Medic'
-                                    elif ' - CCEMT' in selected_option:
-                                        role = 'CCEMT'
-                                    break
+                            chosen_option, role = session_choices[selected_option]
+                            session_time = chosen_option.get('session_time')
+                            location = chosen_option.get('location') or location
                 else:
                     # Single-session class with role separation - fall through to else block below
                     pass
@@ -1781,12 +1792,33 @@ class AdminAccess:
                             role = 'CCEMT'
 
                 # Meeting type (for Staff Meetings)
-                if 'Staff Meeting' in class_name:
+                # Whether a class is a staff meeting is the catalog's answer, not a
+                # guess from its name: the meetings are named "Wed SM Q1" and the like,
+                # so a test for "Staff Meeting" in the name never fired and the meeting
+                # type was never asked for. The enrollment was then written with none,
+                # and the public view - which lists the LIVE and Virtual sessions
+                # separately - had nowhere to show it.
+                if is_staff_meeting:
+                    meeting_options = [option['meeting_type'] for option in (session_options or [])
+                                       if option.get('type') == 'staff_meeting'
+                                       and option.get('meeting_type')]
+                    if not meeting_options:
+                        meeting_options = ["LIVE", "Virtual"]
                     meeting_type = st.selectbox(
                         "Meeting Type",
-                        options=["", "LIVE", "Virtual"],
+                        options=[""] + meeting_options,
                         key=f"{form_key}_meeting"
                     )
+
+                # A date that runs at more than one site needs one picked, for the same
+                # reason the multi-session picker above records it.
+                if len(date_locations) > 1:
+                    selected_location = st.selectbox(
+                        "Select Location",
+                        options=[""] + date_locations,
+                        key=f"{form_key}_location"
+                    )
+                    location = selected_location or None
 
             # Submit button
             submitted = st.form_submit_button("➕ Add Student")
@@ -1794,10 +1826,12 @@ class AdminAccess:
             if submitted:
                 if not selected_staff:
                     st.error("Please select a staff member")
-                elif 'Staff Meeting' in class_name and not meeting_type:
+                elif is_staff_meeting and not meeting_type:
                     st.error("Please select meeting type")
                 elif session_options and len(session_options) > 0 and session_options[0].get('type') in ['nurse_medic_separate', 'regular'] and not session_time:
                     st.error("Please select a session")
+                elif len(date_locations) > 1 and not location:
+                    st.error("Please select a location")
                 else:
                     # Add the enrollment
                     result = st.session_state.training_enrollment_manager.enroll_staff(
@@ -1808,7 +1842,8 @@ class AdminAccess:
                         meeting_type=meeting_type,
                         session_time=session_time,
                         override_conflict=True,  # Admin can override conflicts
-                        override_capacity=True   # Admin can override capacity limits
+                        override_capacity=True,  # Admin can override capacity limits
+                        location=location
                     )
 
                     # Handle tuple return (success, message) or special case ("duplicate_found", enrollments)

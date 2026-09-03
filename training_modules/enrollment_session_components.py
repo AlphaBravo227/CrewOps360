@@ -423,8 +423,8 @@ class EnrollmentSessionComponents:
                                 button_text, f"nurse_{option_key}",
                                 has_conflict, conflict_details,
                                 enrollment_manager, selected_staff, class_name,
-                                date, "Nurse", option.get('session_time'),
-                                option.get('location')
+                                date, "Nurse", session_time=option.get('session_time'),
+                                location=option.get('location')
                             ):
                                 return  # Will trigger rerun
                         # If weekly limit blocked, don't show button at all
@@ -449,8 +449,8 @@ class EnrollmentSessionComponents:
                                 button_text, f"medic_{option_key}",
                                 has_conflict, conflict_details,
                                 enrollment_manager, selected_staff, class_name,
-                                date, "Medic", option.get('session_time'),
-                                option.get('location')
+                                date, "Medic", session_time=option.get('session_time'),
+                                location=option.get('location')
                             ):
                                 return  # Will trigger rerun
                         # If weekly limit blocked, don't show button at all
@@ -476,8 +476,8 @@ class EnrollmentSessionComponents:
                                     button_text, f"ccemt_{option_key}",
                                     has_conflict, conflict_details,
                                     enrollment_manager, selected_staff, class_name,
-                                    date, "CCEMT", option.get('session_time'),
-                                option.get('location')
+                                    date, "CCEMT", session_time=option.get('session_time'),
+                                    location=option.get('location')
                                 ):
                                     return  # Will trigger rerun
                             # If weekly limit blocked, don't show button at all
@@ -523,8 +523,8 @@ class EnrollmentSessionComponents:
                             button_text, f"enroll_{option_key}",
                             has_conflict, conflict_details,
                             enrollment_manager, selected_staff, class_name,
-                            date, "General", option.get('session_time'),
-                                option.get('location')
+                            date, "General", session_time=option.get('session_time'),
+                            location=option.get('location')
                         ):
                             return  # Will trigger rerun
                     # If weekly limit blocked, don't show button at all
@@ -580,8 +580,8 @@ class EnrollmentSessionComponents:
                             button_text, f"enroll_{option_key}",
                             has_conflict, conflict_details,
                             enrollment_manager, selected_staff, class_name,
-                            date, "General", None, option['meeting_type'],
-                            option.get('location')
+                            date, "General", meeting_type=option['meeting_type'],
+                            location=option.get('location')
                         ):
                             return  # Will trigger rerun
                     # If weekly limit blocked, don't show button at all
@@ -656,8 +656,8 @@ class EnrollmentSessionComponents:
                                 button_text, f"nurse_{option_key}",
                                 has_conflict, conflict_details,
                                 enrollment_manager, selected_staff, class_name,
-                                date, "Nurse", option.get('session_time'), None,
-                                option.get('location')
+                                date, "Nurse", session_time=option.get('session_time'),
+                                location=option.get('location')
                             ):
                                 return True
                         # If weekly limit blocked, don't show button at all
@@ -681,8 +681,8 @@ class EnrollmentSessionComponents:
                                 button_text, f"medic_{option_key}",
                                 has_conflict, conflict_details,
                                 enrollment_manager, selected_staff, class_name,
-                                date, "Medic", option.get('session_time'), None,
-                                option.get('location')
+                                date, "Medic", session_time=option.get('session_time'),
+                                location=option.get('location')
                             ):
                                 return True
                         # If weekly limit blocked, don't show button at all
@@ -746,8 +746,8 @@ class EnrollmentSessionComponents:
                             button_text, f"enroll_{option_key}",
                             has_conflict, conflict_details,
                             enrollment_manager, selected_staff, class_name,
-                            date, "General", option.get('session_time'), None,
-                            option.get('location')
+                            date, "General", session_time=option.get('session_time'),
+                            location=option.get('location')
                         ):
                             return True
                     # If weekly limit blocked, don't show button at all
@@ -839,9 +839,16 @@ class EnrollmentSessionComponents:
     @staticmethod
     def _handle_enrollment_button(button_label, button_key, has_conflict, conflict_details,
                             enrollment_manager, staff_name, class_name, date,
-                            role="General", session_time=None, meeting_type=None,
+                            role="General", *, session_time=None, meeting_type=None,
                             location=None):
-        """Handle enrollment button with conflict override dialog - UPDATED for two-day classes"""
+        """Handle enrollment button with conflict override dialog - UPDATED for two-day classes
+
+        Everything after the role must be named. Passed positionally, a caller that
+        omitted the meeting type slid the location into it, and the enrollment was
+        written with the site recorded as a meeting type: the seat counting saw the
+        booking, the session roster - which shows only rows with no meeting type - did
+        not, and the session read as empty while refusing the next person.
+        """
         
         # Check if this is a Staff Meeting class
         is_staff_meeting = enrollment_manager.excel.is_staff_meeting(class_name)
@@ -858,7 +865,8 @@ class EnrollmentSessionComponents:
             from .staff_meeting_components import EnrollmentDialogComponents
             result = EnrollmentDialogComponents.show_duplicate_enrollment_dialog(
                 button_key, existing_enrollments, enrollment_manager, staff_name,
-                class_name, date, role, meeting_type, session_time
+                class_name, date, role, meeting_type, session_time,
+                location=location
             )
             
             # If dialog completed successfully, clean up and return
