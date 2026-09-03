@@ -71,9 +71,24 @@ def plan_repairs(conn, db_path):
     repairs, unclear = [], []
     cache = {}
 
+    # A database the app has not opened since locations became bookable has no
+    # location column yet - the app adds it on startup. The meeting type half of
+    # this repair is what matters there and works the same, so read what the table
+    # actually has rather than refusing the run.
+    columns = [column[1] for column in
+               conn.execute("PRAGMA table_info(training_enrollments)").fetchall()]
+    if not columns:
+        print("  no training_enrollments table in this database")
+        return repairs, unclear
+    has_location = 'location' in columns
+    if not has_location:
+        print("  no location column yet (the app adds it on startup) - meeting types "
+              "will be cleared, but a location cannot be restored from one")
+
+    location_select = 'location' if has_location else "NULL AS location"
     rows = conn.execute(
-        f"SELECT id, staff_name, class_name, class_date, meeting_type, location, "
-        f"session_time, status, "
+        f"SELECT id, staff_name, class_name, class_date, meeting_type, "
+        f"{location_select}, session_time, status, "
         f"COALESCE(training_year, '{LEGACY_TRAINING_YEAR}') AS year "
         f"FROM training_enrollments"
     ).fetchall()
@@ -96,7 +111,7 @@ def plan_repairs(conn, db_path):
                          if option.get('location')]
             new_location = None
             reason = "not a staff meeting"
-            if meeting_type in locations and not (row['location'] or '').strip():
+            if has_location and meeting_type in locations and not (row['location'] or '').strip():
                 new_location = meeting_type
                 reason = "location recorded as a meeting type"
             repairs.append((row, None, new_location, reason))
