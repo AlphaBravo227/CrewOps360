@@ -445,7 +445,8 @@ class ExcelAdminFunctions:
         instead; the cell's comment still spells out the full class name, its time and
         its location, so shortening the label loses nothing.
 
-        Without one, the old behaviour stands: a staff meeting collapses to SM and
+        Without one, the old behaviour stands: a class flagged as a staff meeting
+        (the "Staff meeting" checkbox in Build Classes) collapses to SM and
         everything else prints its own name.
         """
         label = ''
@@ -459,6 +460,12 @@ class ExcelAdminFunctions:
             print(f"Could not read the calendar display name for '{class_name}': {e}")
             label = ''
 
+        try:
+            is_staff_meeting = self.excel.is_staff_meeting(class_name)
+        except Exception as e:
+            print(f"Could not read the staff-meeting flag for '{class_name}': {e}")
+            is_staff_meeting = False
+
         if label:
             # LIVE or VIRTUAL is chosen per enrollment, not per class, so an admin
             # cannot have typed it into a single class's label. Append it when the
@@ -466,8 +473,7 @@ class ExcelAdminFunctions:
             # ("SM (LIVE)") exactly as it was typed.
             if meeting_type and '(' not in label:
                 label = f"{label} ({meeting_type})"
-        elif (' SM ' in class_name or class_name.startswith('SM ')
-                or class_name.endswith(' SM')):
+        elif is_staff_meeting:
             label = f'SM ({meeting_type})' if meeting_type else 'SM'
         else:
             label = class_name
