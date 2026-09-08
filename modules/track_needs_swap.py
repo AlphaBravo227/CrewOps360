@@ -38,6 +38,7 @@ import pandas as pd
 import streamlit as st
 
 from modules.db_utils import (
+    add_need_swap_offers,
     delete_needs_swap_outreach_entry,
     get_bid_track_from_db,
     get_need_swap_offers,
@@ -45,6 +46,7 @@ from modules.db_utils import (
     get_needs_swap_outreach_entry,
     get_needs_swap_track_config,
     get_track_config_by_name,
+    record_needs_swap_outreach_response,
     save_bid_track_to_db,
     restore_superseded_need_offers,
     save_need_swap_offers,
@@ -1484,6 +1486,11 @@ def _apply_needs_swap_deep_link_defaults(staff_names):
     consider moving onto", ?giveup=<day>|<period>,... pre-ticks those specific
     give-up rows in the editor that opens for it.
 
+    Those links now land on _render_outreach_response_page() first, so this only
+    runs for someone who clicked "See all my swap options instead" from there —
+    which is exactly when carrying the ask over as a starting point is useful,
+    since they came here to widen it rather than to start from nothing.
+
     Applied once per browser session (guarded by _NSWP_DEEP_LINK_APPLIED) so it
     never fights the visitor's own later clicks — including unchecking a give-up
     the link pre-ticked — and silently does nothing when a value doesn't match
@@ -1514,6 +1521,285 @@ def _apply_needs_swap_deep_link_defaults(staff_names):
         st.session_state['_needs_swap_deep_link_giveups'] = pairs
 
 
+# ──────────────────────────────────────────────
+# Responding to one admin-drafted ask — the page an outreach email links to
+# ──────────────────────────────────────────────
+
+# They followed an ask link but asked to see the whole self-service page instead.
+_ASK_BYPASS = 'needs_swap_ask_bypass'
+# What they just clicked, so the confirmation survives the rerun that follows it.
+_ASK_RESULT = 'needs_swap_ask_result'
+
+
+def _outreach_ask_from_query():
+    """
+    The one ask an outreach email's ?respond=1 link is about, or None when this
+    isn't such a link (or the visitor has clicked through to the full page).
+
+    Read fresh from the URL on every rerun rather than seeded once into
+    session_state like _apply_needs_swap_deep_link_defaults() does: that one
+    seeds widgets the visitor then owns and may change, while this identifies
+    which page to show at all, and must not evaporate the moment they click a
+    button on it.
+
+    Purely a parse — whether the staff member and need are real is settled by
+    the caller against loaded data, so an ordinary visit is decided here without
+    loading anything.
+
+    Returns {staff_name, need_day, need_period, give_ups: [(day, period), ...]}.
+    An empty give_ups list is meaningful, not missing — it's the ask the
+    composer builds for someone already on administrative time that day, where
+    covering the need converts that AT in place and there's nothing to trade.
+    """
+    if st.session_state.get(_ASK_BYPASS):
+        return None
+    qp = get_query_params()
+    if qp.get('respond') != '1':
+        return None
+
+    staff = qp.get('staff')
+    need_param = qp.get('need') or ''
+    if not staff or '|' not in need_param:
+        return None
+    need_day, need_period = need_param.split('|', 1)
+    if need_period not in _PERIOD_CODE:
+        return None
+
+    give_ups = []
+    for item in (qp.get('giveup') or '').split(','):
+        if '|' not in item:
+            continue
+        day, period = item.split('|', 1)
+        if period in _PERIOD_CODE and (day, period) not in give_ups:
+            give_ups.append((day, period))
+    return {'staff_name': staff, 'need_day': need_day, 'need_period': need_period,
+            'give_ups': give_ups}
+
+
+def _ask_full_page_button(key):
+    """The way out of the focused ask page and into the ordinary self-service one —
+    on every branch of it, including the dead ends, so a link that has gone stale
+    never leaves someone with nothing to click."""
+    if st.button("See all my swap options instead", key=key, use_container_width=True):
+        st.session_state[_ASK_BYPASS] = True
+        st.rerun()
+
+
+def _render_ask_result(ask, track_name):
+    """The confirmation shown after Accept or Decline, in place of the buttons."""
+    result = st.session_state.get(_ASK_RESULT)
+    if not result or result.get('key') != (track_name, ask['staff_name'],
+                                           ask['need_day'], ask['need_period']):
+        return False
+    if result['response'] == 'accepted':
+        st.success(f"✅ **Accepted.** {result['message']}")
+        st.caption(
+            "This is an offer, not a change — nothing moves until a scheduler approves it, and "
+            "you'll get an email either way. You can change your mind before then from the full "
+            "Track Bidding page."
+        )
+    else:
+        st.info("❌ **Declined.** The scheduling team has been told you can't take this one. "
+                "Nothing on your track changes, and you don't need to do anything else.")
+    _ask_full_page_button('needs_swap_ask_full_page_after')
+    return True
+
+
+def _render_outreach_response_page(track_name, floors):
+    """
+    The page an outreach email's Accept/Decline link lands on: this one ask and
+    nothing else — the need the admin picked, the give-up shift(s) they actually
+    ticked in the composer, that person's own track for context, and two buttons.
+
+    Deliberately not the ordinary self-service page with things pre-ticked. That
+    page is a menu (every need they could volunteer for, every shift they could
+    trade, ranked), which is the right shape for someone browsing but the wrong
+    shape for answering a specific question that was put to them. The full page
+    is one click away from here and nothing is taken off it.
+
+    The ask is re-checked against live eligibility rather than trusted from the
+    URL — needs get covered and give-ups stop being surplus between the email
+    going out and the link being clicked — so a stale link says so instead of
+    submitting an offer the rules would no longer allow.
+
+    Returns True when this page has been rendered (the caller shows nothing
+    else), False when the link isn't one of these and the ordinary page should
+    render.
+    """
+    ask = _outreach_ask_from_query()
+    if ask is None:
+        return False
+
+    with st.spinner("Loading your request..."):
+        report_ctx, err = load_swap_context(track_name)
+    # Falling through to the ordinary page is the friendlier failure for a link
+    # whose ?staff= no longer names anyone with a bid on this cycle — they can
+    # still pick their own name there — and the same for a cycle that won't load
+    # at all, which that page reports properly.
+    if report_ctx is None or ask['staff_name'] not in report_ctx['bids_by_name']:
+        return False
+
+    staff_name = ask['staff_name']
+    from modules.ui_components import render_section_banner
+    render_section_banner(
+        "🔁 A track change request for you",
+        subtitle=f"{staff_name} — the scheduling team has asked whether you'd move onto one "
+                 f"shift in {track_name} that came out short. Accept or decline below.",
+        eyebrow="Post-bid · asked of you directly",
+        accent="#28a745",
+        background="#eefaf1",
+    )
+
+    need = next((n for n in report_ctx['needs']
+                 if n['day_label'] == ask['need_day'] and n['period'] == ask['need_period']), None)
+    if need is None:
+        st.success(
+            f"**{_shift_label(ask['need_day'], ask['need_period'])} is no longer short.** "
+            "It's been covered since this request was emailed, so there's nothing to answer — "
+            "thank you anyway."
+        )
+        _ask_full_page_button('needs_swap_ask_full_page_covered')
+        return True
+
+    need_base = best_base_for_need(staff_name, need['day_label'], need['period'], report_ctx)
+    at_conversion = not ask['give_ups']
+
+    # Which of the asked give-ups the rules still allow. swap_options_for_staff() is
+    # the same function the self-service page runs, so this page can never offer a
+    # trade that one would refuse.
+    options_by_key = {}
+    if not at_conversion:
+        menu = swap_options_for_staff(staff_name, [need], report_ctx, floors)
+        if menu:
+            options_by_key = {(o['day_label'], o['period']): o for o in menu[0]['options']}
+    live = [options_by_key[k] for k in ask['give_ups'] if k in options_by_key]
+    lapsed = [k for k in ask['give_ups'] if k not in options_by_key]
+
+    if not at_conversion and not live:
+        # Either half of the pairing can have moved on: the give-up may have stopped
+        # being surplus, or the need may have stopped being one this person can fill
+        # (someone else covered enough of it, or their own track changed). Both land
+        # here, so the wording doesn't claim to know which.
+        st.warning(
+            "**This request has lapsed.** Trading "
+            f"{_join_with_or([_shift_label(d, p) for d, p in ask['give_ups']])} for "
+            f"{_shift_label(need['day_label'], need['period'])} isn't something the rules still "
+            "allow — the shift you were asked to give up may now be short itself, or this need "
+            "may no longer be one your move would help. Nothing has changed for you. Reply to "
+            "the scheduling team if you'd still like to help."
+        )
+        _ask_full_page_button('needs_swap_ask_full_page_lapsed')
+        return True
+
+    # ── The ask itself ──
+    need_text = _shift_label(need['day_label'], need['period'])
+    if need_base:
+        need_text += f" — {need_base['base']}"
+    st.markdown("#### What you're being asked")
+    if at_conversion:
+        st.markdown(
+            f"Cover **{need_text}**. You're already scheduled for administrative time that day, "
+            "so this converts it into the shift — there's nothing to give up in exchange."
+        )
+    else:
+        st.markdown(
+            f"Move onto **{need_text}**, and give up "
+            f"**{_join_with_or([_shift_label(o['day_label'], o['period']) for o in live])}** "
+            "in exchange."
+        )
+    st.markdown(_need_headline(need))
+    _render_base_outlook(staff_name, need, report_ctx)
+
+    if lapsed:
+        st.caption(
+            "No longer available to trade, so it isn't part of this: " +
+            ", ".join(_shift_label(d, p) for d, p in lapsed) + "."
+        )
+
+    st.markdown(_ask_track_table_html(
+        staff_name, need, need_base,
+        [{'day_label': o['day_label'], 'period': o['period']} for o in live],
+        report_ctx), unsafe_allow_html=True)
+    st.caption("Your track for this cycle. The yellow cell is the need you're being asked to "
+               "cover; the red outline marks what you'd give up for it.")
+
+    # ── Accept / decline ──
+    chosen = live
+    if len(live) > 1:
+        st.markdown("**Which of those would you give up?**")
+        st.caption("Tick every one you'd be willing to trade — schedulers will use the first "
+                   "that works. Untick any you'd rather keep.")
+        chosen = []
+        for opt in live:
+            key = f"needs_swap_ask_giveup_{opt['day_label']}_{opt['period']}"
+            label = _shift_label(opt['day_label'], opt['period'])
+            advisory = _advisory_text(opt.get('advisories'))
+            if st.checkbox(label, value=True, key=key):
+                chosen.append(opt)
+            if advisory:
+                st.caption(f"⚠️ {advisory}")
+    elif live:
+        advisory = _advisory_text(live[0].get('advisories'))
+        if advisory:
+            st.caption(f"⚠️ Heads up — {advisory}")
+
+    if _render_ask_result(ask, track_name):
+        return True
+
+    note = st.text_area("Anything you want the schedulers to know (optional):",
+                        key="needs_swap_ask_note", max_chars=500)
+
+    logged = get_needs_swap_outreach_entry(track_name, staff_name, need['day_label'], need['period'])
+    if logged and logged['response']:
+        st.caption(f"You answered this on {logged['response_date']} — "
+                   f"{'accepted' if logged['response'] == 'accepted' else 'declined'}. "
+                   "Answering again replaces that.")
+
+    accept_col, decline_col = st.columns(2)
+    with accept_col:
+        disabled = not at_conversion and not chosen
+        if st.button("✅ Accept — I'll take this swap", key="needs_swap_ask_accept",
+                     type="primary", use_container_width=True, disabled=disabled):
+            if at_conversion:
+                # track_need_offers requires a give_up_day, so an AT conversion has no
+                # offer row to write — the acceptance lives in the outreach log and a
+                # scheduler applies it by hand, which is how these were handled before
+                # this page existed.
+                message = ("The scheduling team has your acceptance and will apply the "
+                           "conversion — there's no shift to trade for it.")
+            else:
+                offers = [{'need_day': need['day_label'], 'need_period': need['period'],
+                           'give_up_day': o['day_label'], 'give_up_period': o['period'],
+                           'preference_rank': rank}
+                          for rank, o in enumerate(chosen, start=1)]
+                ok, message = add_need_swap_offers(track_name, staff_name, offers, note or None)
+                if not ok:
+                    st.error(message)
+                    return True
+            record_needs_swap_outreach_response(
+                track_name, staff_name, need['day_label'], need['period'], 'accepted', note)
+            st.session_state[_ASK_RESULT] = {
+                'key': (track_name, staff_name, need['day_label'], need['period']),
+                'response': 'accepted', 'message': message}
+            st.rerun()
+        if disabled:
+            st.caption("Tick at least one shift above to accept.")
+    with decline_col:
+        if st.button("❌ Decline — I can't take this one", key="needs_swap_ask_decline",
+                     use_container_width=True):
+            record_needs_swap_outreach_response(
+                track_name, staff_name, need['day_label'], need['period'], 'declined', note)
+            st.session_state[_ASK_RESULT] = {
+                'key': (track_name, staff_name, need['day_label'], need['period']),
+                'response': 'declined', 'message': ''}
+            st.rerun()
+
+    st.caption("Accepting submits an offer for review — it doesn't change your track on its own. "
+               "Declining just tells the schedulers, and changes nothing.")
+    _ask_full_page_button('needs_swap_ask_full_page')
+    return True
+
+
 def display_staff_needs_swap(track_name=None):
     """
     Staff-facing "swap onto a need" page: pick your name, see the needs you could
@@ -1538,6 +1824,14 @@ def display_staff_needs_swap(track_name=None):
 
     track_name = cfg['track_name']
     floors = needs_swap_floors(cfg)
+
+    # An outreach email's Accept/Decline link takes over the whole section: that
+    # visitor was asked one specific question and gets one specific page, not the
+    # full browse-everything menu below with a few boxes pre-ticked. Returns False
+    # for any other visit — including a link whose ?staff= or ?need= no longer
+    # matches anything real — so the ordinary page renders as it always has.
+    if _render_outreach_response_page(track_name, floors):
+        return True
 
     # Distinct green banner — this section shares the Track Bidding page with the
     # bid itself (blue), and the two are easy to confuse. Bidding builds a track;
@@ -2375,6 +2669,14 @@ def _build_deep_link(staff_name, need, give_up_options, track_name):
     Naming the cycle this ask was drafted against means the link still lands
     correctly even then.
 
+    ?respond=1 is what makes this an Accept/Decline link rather than a pre-filled
+    trip through the full self-service page: the recipient lands on
+    _render_outreach_response_page(), which shows this one ask — this need, and only
+    the give-up shift(s) the admin actually ticked — with two buttons, instead of
+    the whole menu of needs they could volunteer for and every shift they could
+    trade. They can still get to that full page from a link on it, so nothing is
+    taken away; it just isn't what an emailed ask drops them into.
+
     Never carries the 4-digit access code — that stays something the recipient
     types themselves, so a forwarded email can't be used to skip it.
     """
@@ -2385,6 +2687,7 @@ def _build_deep_link(staff_name, need, give_up_options, track_name):
         'staff': staff_name,
         'need': f"{need['day_label']}|{need['period']}",
         'giveup': ','.join(f"{o['day_label']}|{o['period']}" for o in give_up_options),
+        'respond': '1',
     }
     return f"{_CREWOPS_BASE_URL}?{urlencode(params)}"
 
@@ -2612,12 +2915,13 @@ def _compose_ask_email(staff_name, need, need_base, give_up_options, note, sign_
         f'{table_html}'
         f'{note_html}'
         '<p style="font-size:14.5px;line-height:1.65;margin:0 0 14px;">\U0001F449 '
-        f'<a href="{link}" style="color:#2563eb;font-weight:700;">Open your pre-filled offer</a> '
-        "— you'll still be asked for your usual 4-digit access code.</p>"
+        f'<a href="{link}" style="color:#2563eb;font-weight:700;">Accept or decline this request</a> '
+        "— the link opens this one request with an <b>Accept</b> and a <b>Decline</b> button. "
+        "You'll still be asked for your usual 4-digit access code.</p>"
         '<p style="font-size:14.5px;line-height:1.65;margin:0 0 14px;">Thank you for considering '
         'this proposed track change. Please reply-all to the scheduling team if you have any '
-        "questions, or let us know if you aren't able to help with this offer. All changes "
-        f"you're eligible for can be viewed on the "
+        "questions. If you'd rather look at everything you could volunteer for — other needs, "
+        "other shifts you could trade — that's on the "
         f'<a href="{module_link}" style="color:#2563eb;">Track Bidding page</a> '
         '(<b>Track Needs — Swap Opportunities</b>).</p>'
         f'<p style="font-size:14.5px;margin-top:18px;">Thanks,<br>{html.escape(sign)}</p>'
@@ -2634,13 +2938,14 @@ def _compose_ask_email(staff_name, need, need_base, give_up_options, note, sign_
     if note:
         plain_lines += [f'"{note}"', ""]
     plain_lines += [
-        f"Open your pre-filled offer: {link}",
-        "(You'll still be asked for your usual 4-digit access code.)",
+        f"Accept or decline this request: {link}",
+        "(The link opens this one request with an Accept and a Decline button. You'll still be "
+        "asked for your usual 4-digit access code.)",
         "",
         "Thank you for considering this proposed track change. Please reply-all to the "
-        "scheduling team if you have any questions, or let us know if you aren't able to help "
-        "with this offer. All changes you're eligible for can be viewed on the Track Bidding "
-        f"page (Track Needs - Swap Opportunities): {module_link}",
+        "scheduling team if you have any questions. If you'd rather look at everything you "
+        "could volunteer for - other needs, other shifts you could trade - that's on the "
+        f"Track Bidding page (Track Needs - Swap Opportunities): {module_link}",
         "",
         "Thanks,",
         sign,
@@ -2863,31 +3168,63 @@ def _render_needs_swap_compose_section(report_ctx, track_name, uncovered, review
     else:
         st.caption("Not yet logged as emailed — click Copy above, then Log as emailed once it's actually sent.")
 
+    # Their own Accept/Decline, if they've already clicked one — shown right here so
+    # an admin drafting a second ask for the same need can see this person has
+    # already answered, without scrolling to the log.
+    if logged and logged['response']:
+        icon = '✅' if logged['response'] == 'accepted' else '❌'
+        said = f" — \"{logged['response_note']}\"" if logged['response_note'] else ""
+        st.caption(f"{icon} They {logged['response']} this on {logged['response_date']}{said}")
+
     with st.expander("Plain-text version (for clients that strip formatting)"):
         st.code(plain_for_copy, language=None)
 
 
 def _outreach_response_text(row, offers_by_staff):
     """
-    Whether this staff member has actually submitted a swap offer for this
-    exact need since the ask was emailed — checked against their real
-    track_need_offers rows, not left for the admin to remember or ask again.
+    What this staff member has done about the ask — the answer they gave on the
+    email's Accept/Decline page if they used it, and otherwise whatever their
+    real track_need_offers rows say, so an offer submitted the ordinary way
+    still registers here.
 
-    Blank until the row is marked emailed (there's nothing to have responded
-    to yet). 'Not yet' if emailed but no matching offer's submission_date is at
-    or after emailed_date; otherwise the status of their most recent one.
-    Timestamps are only second-precision, so >= rather than > — a submission
-    logged in the same second as the email shouldn't read as "before" it.
+    A recorded Decline is the one answer that leaves no other trace anywhere,
+    which is exactly why it's stored: without it a declined ask and an ignored
+    one look identical in this table forever.
+
+    Blank only when there is nothing to have responded to yet — not emailed and
+    not answered. 'Not yet' when the ask went out and neither an answer nor a
+    matching offer has come back. Timestamps are second-precision, so the offer
+    match is >= rather than > — a submission logged in the same second as the
+    email shouldn't read as "before" it.
     """
-    if not row['emailed'] or not row['emailed_date']:
+    since = row['emailed_date'] if row['emailed'] else row['response_date']
+    if not since and not row['response']:
         return ''
+
     offers = offers_by_staff.get(row['staff_name'], [])
-    matches = [o for o in offers if o['need_day'] == row['need_day'] and o['need_period'] == row['need_period']
-              and o['submission_date'] and o['submission_date'] >= row['emailed_date']]
-    if not matches:
-        return 'Not yet'
+    matches = [o for o in offers
+               if o['need_day'] == row['need_day'] and o['need_period'] == row['need_period']
+               and o['submission_date'] and (not since or o['submission_date'] >= since)]
     matches.sort(key=lambda o: o['submission_date'], reverse=True)
-    return f"✅ {_STATUS_LABEL.get(matches[0]['status'], matches[0]['status'])}"
+    offer_status = _STATUS_LABEL.get(matches[0]['status'], matches[0]['status']) if matches else None
+
+    if row['response'] == 'declined':
+        return f"❌ Declined {_short_date(row['response_date'])}".strip()
+    if row['response'] == 'accepted':
+        # An accepted AT conversion has no offer row to point at — there is no shift
+        # to trade, so nothing is written to track_need_offers (see the Accept button
+        # in _render_outreach_response_page()). Say so rather than reading as unanswered.
+        tail = offer_status or "no offer row — AT conversion"
+        return f"✅ Accepted {_short_date(row['response_date'])} · {tail}".strip()
+    if offer_status:
+        return f"✅ {offer_status}"
+    return 'Not yet'
+
+
+def _short_date(stamp):
+    """The date half of a 'YYYY-MM-DD HH:MM:SS' stamp, for a table cell that has no
+    room for the time. Empty string for a missing one."""
+    return (stamp or '').split(' ')[0]
 
 
 def _render_needs_swap_outreach_log(track_name, reviewer):
@@ -2914,9 +3251,11 @@ def _render_needs_swap_outreach_log(track_name, reviewer):
 
     st.caption(
         "Tracks what the composer above can't see on its own: whether an ask actually got emailed, "
-        "and whether they've since submitted an offer for it. Streamlit has no way to detect the "
-        "clipboard copy itself, so \"Emailed\" is logged by hand — tick it, fix who sent it, add a "
-        "reply, or tick Delete to remove a row, then save."
+        "and what came back. **Responded?** fills itself in — the email's link lands on an "
+        "Accept/Decline page, and both answers land here, alongside the status of any offer they "
+        "submitted. Streamlit has no way to detect the clipboard copy itself, so \"Emailed\" is "
+        "still logged by hand — tick it, fix who sent it, add your own note, or tick Delete to "
+        "remove a row, then save."
     )
 
     offers_by_staff = {}
@@ -2931,6 +3270,7 @@ def _render_needs_swap_outreach_log(track_name, reviewer):
         'Emailed by': r['emailed_by'] or '',
         'Emailed date': r['emailed_date'] or '',
         'Responded?': _outreach_response_text(r, offers_by_staff),
+        'Their note': r['response_note'] or '',
         'Reply note': r['reply_note'] or '',
         'Delete': False,
     } for r in rows])
@@ -2944,8 +3284,14 @@ def _render_needs_swap_outreach_log(track_name, reviewer):
             'Emailed by': st.column_config.TextColumn(help="Who sent it — editable if it needs correcting."),
             'Emailed date': st.column_config.TextColumn(disabled=True, help="Stamped automatically when Emailed is first checked."),
             'Responded?': st.column_config.TextColumn(
-                disabled=True, help="Checked against their actual submitted offers — not a memory aid."),
-            'Reply note': st.column_config.TextColumn(width="large", help="What they said back, if anything."),
+                disabled=True, width="medium",
+                help="Their Accept/Decline from the email's response page, plus the status of any "
+                     "offer they actually submitted — not a memory aid."),
+            'Their note': st.column_config.TextColumn(
+                disabled=True, width="medium",
+                help="What they typed on the response page when they accepted or declined. "
+                     "Their words, so this one isn't editable."),
+            'Reply note': st.column_config.TextColumn(width="large", help="Your own note — what they said back another way, if anything."),
             'Delete': st.column_config.CheckboxColumn(help="Check, then Save, to remove this row entirely."),
         },
     )

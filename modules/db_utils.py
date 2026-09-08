@@ -621,10 +621,28 @@ def initialize_database():
             emailed_by TEXT,
             emailed_date TEXT,
             reply_note TEXT,
+            response TEXT,
+            response_note TEXT,
+            response_date TEXT,
             updated_date TEXT NOT NULL,
             UNIQUE(track_name, staff_name, need_day, need_period)
         )
         ''')
+
+        # The staff member's own Accept/Decline, recorded by the response page the
+        # outreach email links to (see _render_outreach_response_page() in
+        # modules/track_needs_swap.py). Separate from reply_note, which is the
+        # admin's own free-text note on the row and is rewritten wholesale every
+        # time the outreach log is saved — a decline reason typed by the staff
+        # member must not be clobbered by that.
+        cursor.execute("PRAGMA table_info(needs_swap_outreach)")
+        _outreach_columns = [column[1] for column in cursor.fetchall()]
+        if 'response' not in _outreach_columns:
+            cursor.execute('ALTER TABLE needs_swap_outreach ADD COLUMN response TEXT')
+        if 'response_note' not in _outreach_columns:
+            cursor.execute('ALTER TABLE needs_swap_outreach ADD COLUMN response_note TEXT')
+        if 'response_date' not in _outreach_columns:
+            cursor.execute('ALTER TABLE needs_swap_outreach ADD COLUMN response_date TEXT')
 
         # Commit changes
         conn.commit()
@@ -3302,6 +3320,56 @@ def save_need_swap_offers(track_name, staff_name, offers, staff_notes=None):
         return False, f"Error saving swap offers: {e}"
 
 
+def add_need_swap_offers(track_name, staff_name, offers, staff_notes=None):
+    """
+    Add offers without disturbing any the staff member already has pending —
+    what accepting one specific admin ask does, as opposed to
+    save_need_swap_offers(), which is the staff page's "here is my whole set
+    now" submit and deletes their pending rows first.
+
+    An identical pairing they've already offered (whatever its status) is
+    skipped rather than duplicated, so clicking Accept twice, or accepting an
+    ask they'd already volunteered for, is harmless.
+
+    preference_rank is taken from each offer as given: these ranks are ordered
+    within this one ask, and don't renumber the offers a staff member made on
+    their own.
+
+    Returns (success, message).
+    """
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+        saved, skipped = 0, 0
+        for offer in offers:
+            cursor.execute("""SELECT status FROM track_need_offers
+                              WHERE track_name = ? AND staff_name = ? AND need_day = ?
+                                AND need_period = ? AND give_up_day = ? AND give_up_period = ?""",
+                           (track_name, staff_name, offer['need_day'], offer['need_period'],
+                            offer['give_up_day'], offer['give_up_period']))
+            if cursor.fetchone():
+                skipped += 1
+                continue
+            cursor.execute("""INSERT INTO track_need_offers
+                (track_name, staff_name, need_day, need_period, give_up_day, give_up_period,
+                 preference_rank, staff_notes, status, submission_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                           (track_name, staff_name, offer['need_day'], offer['need_period'],
+                            offer['give_up_day'], offer['give_up_period'],
+                            int(offer.get('preference_rank', 1)), staff_notes, now))
+            saved += 1
+
+        conn.commit()
+        if not saved and skipped:
+            return True, "You had already offered this — nothing new to add."
+        return True, f"Submitted {saved} swap option{'s' if saved != 1 else ''}."
+    except Exception as e:
+        return False, f"Error saving swap offers: {e}"
+
+
 def get_need_swap_offers(track_name, staff_name=None, statuses=None):
     """
     Offers for a track cycle, newest submission first.
@@ -3437,7 +3505,8 @@ def delete_need_swap_offers(track_name, staff_name=None):
 
 _OUTREACH_COLUMNS = [
     'id', 'track_name', 'staff_name', 'need_day', 'need_period',
-    'emailed', 'emailed_by', 'emailed_date', 'reply_note', 'updated_date',
+    'emailed', 'emailed_by', 'emailed_date', 'reply_note',
+    'response', 'response_note', 'response_date', 'updated_date',
 ]
 
 
@@ -3532,6 +3601,51 @@ def upsert_needs_swap_outreach(track_name, staff_name, need_day, need_period,
         return True, "Outreach status saved."
     except Exception as e:
         return False, f"Error saving outreach status: {e}"
+
+
+_OUTREACH_RESPONSES = ('accepted', 'declined')
+
+
+def record_needs_swap_outreach_response(track_name, staff_name, need_day, need_period,
+                                        response, note=None):
+    """
+    Record what the staff member themselves did with an admin's ask — Accept or
+    Decline from the response page the outreach email links to.
+
+    Writes only the response columns, never the emailed/reply_note ones: those
+    belong to the admin's own outreach log, which is saved wholesale from a
+    data_editor and would otherwise overwrite whatever the staff member typed.
+    A response arriving for a (staff, need) pair with no logged row — the admin
+    sent the email without clicking "Log as emailed" — creates the row rather
+    than dropping the response on the floor, with emailed left 0 so the log
+    still shows honestly that the send was never logged.
+
+    Returns (success, message).
+    """
+    if response not in _OUTREACH_RESPONSES:
+        return False, f"Unknown response '{response}'."
+    try:
+        initialize_database()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
+        note = (note or '').strip() or None
+
+        existing = get_needs_swap_outreach_entry(track_name, staff_name, need_day, need_period)
+        if existing is None:
+            cursor.execute("""INSERT INTO needs_swap_outreach
+                (track_name, staff_name, need_day, need_period, emailed,
+                 response, response_note, response_date, updated_date)
+                VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)""",
+                (track_name, staff_name, need_day, need_period, response, note, now, now))
+        else:
+            cursor.execute("""UPDATE needs_swap_outreach
+                SET response = ?, response_note = ?, response_date = ?, updated_date = ?
+                WHERE id = ?""", (response, note, now, now, existing['id']))
+        conn.commit()
+        return True, "Response recorded."
+    except Exception as e:
+        return False, f"Error recording outreach response: {e}"
 
 
 def delete_needs_swap_outreach_entry(track_name, staff_name, need_day, need_period):
