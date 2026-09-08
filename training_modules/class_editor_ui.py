@@ -558,8 +558,10 @@ def _render_settings(draft):
             "Staff meeting", value=bool(settings.get('is_staff_meeting')),
             key=wkey("is_meeting"),
             help="Staff meetings are booked as LIVE or Virtual and count towards the "
-                 "meeting requirement. This used to be inferred from 'SM' appearing "
-                 "in the class name.")
+                 "meeting requirement, and their cell on the Comprehensive Education "
+                 "Schedule Report always abbreviates to SM / SM (LIVE) / SM (Virtual), "
+                 "whatever the class is named. This used to be inferred from 'SM' "
+                 "appearing in the class name.")
         settings['nurses_medic_separate'] = st.checkbox(
             "Nurses and medics enrolled separately",
             value=bool(settings.get('nurses_medic_separate')),
@@ -746,11 +748,14 @@ def render_class_form(training_year, class_name=None, db_path=catalog.DEFAULT_DB
     draft['settings']['calendar_display'] = st.text_input(
         "Calendar display", value=draft['settings'].get('calendar_display') or '',
         key=wkey("calendar_display"), max_chars=CALENDAR_DISPLAY_MAX,
-        placeholder="e.g. SM (Virtual), SM (LIVE), Clinical",
+        placeholder="e.g. Clinical, Onboarding",
         help="A short, generic label for this class on the Comprehensive Education "
              "Schedule Report — that report's day cells are narrow, so a full class "
              "name does not fit. The hover note on each cell keeps showing the full "
-             "class name, time and location. Leave it blank to print the class name.")
+             "class name, time and location. Leave it blank to print the class name. "
+             "Staff meetings don't need one — checking \"Staff meeting\" below already "
+             "abbreviates the cell to SM / SM (LIVE) / SM (Virtual), no matter what "
+             "the class is named.")
 
     _render_settings(draft)
     st.markdown("---")
