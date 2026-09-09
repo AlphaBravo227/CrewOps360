@@ -576,7 +576,10 @@ def _render_settings(draft):
             "Instructors needed per day", min_value=0, max_value=20,
             value=int(settings.get('instructors_per_day') or 0),
             key=wkey("instructors"),
-            help="Zero means the class takes no educator signups.")
+            help="Zero means the class takes no educator signups. This one number "
+                 "can also be changed for every class at once, without coming back "
+                 "into this form, under Training Admin → Educator Coverage → "
+                 "Educators Required.")
 
     flag_columns = st.columns(3)
     with flag_columns[0]:

@@ -54,10 +54,12 @@ def show_educator_coverage(admin):
         _educator_roster_tab(admin)
         return
 
-    tab_coverage, tab_gaps, tab_assign, tab_roster, tab_people, tab_available = st.tabs([
+    (tab_coverage, tab_gaps, tab_assign, tab_required,
+     tab_roster, tab_people, tab_available) = st.tabs([
         "📊 Coverage",
         "🚨 Gaps",
         "✏️ Assign Educators",
+        "🎚️ Educators Required",
         "👤 Educator Roster",
         "👥 Participation",
         "🗓️ Available to Teach",
@@ -69,6 +71,8 @@ def show_educator_coverage(admin):
         _gaps_tab(admin, excel_admin, year)
     with tab_assign:
         _assign_tab(admin, excel_admin, educator, year)
+    with tab_required:
+        _requirements_tab(admin, excel_admin, educator, year)
     with tab_roster:
         _educator_roster_tab(admin)
     with tab_people:
@@ -376,6 +380,236 @@ def _add_educator_form(admin, class_name, class_date, already_signed_up=frozense
                 st.error(f"Could not add {selected_staff}: {message}")
         else:
             st.error("Unexpected response from the educator system.")
+
+
+# ============================================================================
+# EDUCATORS REQUIRED
+# ============================================================================
+
+def _requirements_tab(admin, excel_admin, educator, year):
+    """How many educators each class needs per day, editable here.
+
+    The number lives on the class, next to seat counts and time slots, and Build
+    Classes is still where a class is created with it. But it is the education
+    manager reading the coverage tab who discovers a class was built needing two
+    educators when it really needs three, and sending them into the full class editor
+    to change one number means walking past every date, location and assignment on
+    the way. This edits that one column and nothing else.
+    """
+    st.write("### 🎚️ Educators Required per Class")
+    st.caption(
+        "How many educators each class needs on each of its dates. This is what puts "
+        "a class on the educator signup list at all - zero means it takes no "
+        "educators. Everything on the Coverage and Gaps tabs is measured against it."
+    )
+
+    from . import class_catalog as catalog
+
+    handler = st.session_state.get('training_excel_handler')
+    if handler is None or not hasattr(handler, 'db_path'):
+        st.error(
+            "The class catalog is not loaded in this session, so requirements cannot "
+            "be edited here. Use Training Admin → Build Classes instead."
+        )
+        return
+
+    catalog_year = getattr(handler, 'training_year', None) or year
+    if not catalog_year:
+        st.error("No training year is selected, so there are no classes to configure.")
+        return
+
+    try:
+        all_classes = excel_admin.excel.get_all_classes()
+    except Exception as e:
+        st.error(f"Could not list this year's classes: {e}")
+        return
+
+    if not all_classes:
+        st.info(f"{catalog_year} has no classes yet. Build them under "
+                f"Training Admin → Build Classes.")
+        return
+
+    rows = _requirement_rows(excel_admin, educator, all_classes)
+    if not rows:
+        st.info("No class details could be read for this year.")
+        return
+
+    show_all = st.checkbox(
+        "Show classes that take no educators", value=False,
+        key="educator_requirements_show_all",
+        help="Classes set to zero are off the educator signup list entirely. Show "
+             "them to put a class onto it.",
+    )
+    visible = rows if show_all else [r for r in rows if r['Required'] > 0]
+
+    if not visible:
+        st.info("No class in this year requires educators yet. Tick the box above to "
+                "give one a requirement.")
+        return
+
+    table = pd.DataFrame([{
+        'Class': r['Class'],
+        'Required': r['Required'],
+        'Dates': r['Dates'],
+        'Most signed up on a date': r['Peak'],
+        'Positions per year': r['Required'] * r['Dates'],
+    } for r in visible])
+
+    edited = st.data_editor(
+        table,
+        use_container_width=True,
+        hide_index=True,
+        key="educator_requirements_editor",
+        disabled=['Class', 'Dates', 'Most signed up on a date', 'Positions per year'],
+        column_config={
+            'Required': st.column_config.NumberColumn(
+                "Required per day", min_value=0, max_value=20, step=1,
+                help="Educators needed on each date of this class. Zero takes it off "
+                     "the educator signup list.",
+            ),
+            'Most signed up on a date': st.column_config.NumberColumn(
+                help="The busiest date's current signups. Setting the requirement "
+                     "below this leaves that date over-staffed - nobody is removed.",
+            ),
+            'Positions per year': st.column_config.NumberColumn(
+                help="Requirement × dates: how many educator slots this class asks "
+                     "for across the whole year.",
+            ),
+        },
+    )
+
+    original = {r['Class']: r['Required'] for r in visible}
+    peaks = {r['Class']: r['Peak'] for r in visible}
+    changes = {}
+    for class_name, required in zip(edited['Class'], edited['Required']):
+        try:
+            new_value = int(required)
+        except (TypeError, ValueError):
+            continue
+        if new_value != original.get(class_name):
+            changes[class_name] = new_value
+
+    if changes:
+        _preview_requirement_changes(changes, original, peaks)
+
+    if st.button("💾 Save requirements", type="primary", disabled=not changes,
+                 use_container_width=False, key="educator_requirements_save"):
+        _save_requirements(catalog, catalog_year, handler, changes)
+
+
+def _requirement_rows(excel_admin, educator, all_classes):
+    """Current requirement, date count and busiest date's signups, per class."""
+    try:
+        opportunities = {o['class_name']: o for o in educator.get_educator_opportunities()}
+    except Exception:
+        opportunities = {}
+
+    rows = []
+    for class_name in all_classes:
+        try:
+            class_details = excel_admin.excel.get_class_details(class_name)
+        except Exception:
+            class_details = None
+        if not class_details:
+            continue
+
+        try:
+            required = int(float(class_details.get('instructors_per_day') or 0))
+        except (TypeError, ValueError):
+            required = 0
+
+        # Two-day classes are counted the way educators actually sign up for them -
+        # per day - so "positions per year" matches what the coverage table shows.
+        opportunity = opportunities.get(class_name)
+        if opportunity:
+            dates = opportunity['available_dates']
+        else:
+            try:
+                dates = excel_admin.excel.get_class_dates(class_name) or []
+            except Exception:
+                dates = []
+
+        rows.append({
+            'Class': class_name,
+            'Required': required,
+            'Dates': len(dates),
+            'Peak': _peak_signups(educator, class_name, dates),
+        })
+
+    rows.sort(key=lambda r: (-r['Required'], r['Class'].lower()))
+    return rows
+
+
+def _peak_signups(educator, class_name, dates):
+    """The most educators signed up on any one date of this class."""
+    peak = 0
+    for class_date in dates:
+        try:
+            count = educator.db.get_educator_signup_count(
+                class_name, class_date, training_year=educator.training_year)
+        except Exception:
+            continue
+        peak = max(peak, count or 0)
+    return peak
+
+
+def _preview_requirement_changes(changes, original, peaks):
+    """Say what saving would do, including the two ways it can strand signups."""
+    lines = []
+    stranding = []
+    removing = []
+
+    for class_name, new_value in sorted(changes.items()):
+        was = original.get(class_name, 0)
+        lines.append(f"**{class_name}**: {was} → {new_value} per day")
+        if new_value == 0 and peaks.get(class_name, 0) > 0:
+            removing.append(class_name)
+        elif new_value < peaks.get(class_name, 0):
+            stranding.append(f"{class_name} (a date has {peaks[class_name]})")
+
+    st.info("Pending changes:\n\n" + "\n\n".join(f"- {line}" for line in lines))
+
+    if removing:
+        st.warning(
+            "⚠️ Setting the requirement to zero takes these classes off the educator "
+            "signup list, but does **not** cancel the signups already on them: "
+            + ", ".join(removing) + ". Cancel those on the ✏️ Assign Educators tab "
+            "first if they should not stand."
+        )
+    if stranding:
+        st.warning(
+            "⚠️ These end up below what is already signed up on their busiest date, "
+            "so that date reads as over-staffed until someone is removed: "
+            + ", ".join(stranding) + "."
+        )
+
+
+def _save_requirements(catalog, catalog_year, handler, changes):
+    """Write the changed requirements, then drop the catalog's cached details."""
+    saved, failures = 0, []
+
+    for class_name, new_value in changes.items():
+        try:
+            catalog.set_instructors_per_day(catalog_year, class_name, new_value,
+                                            db_path=handler.db_path)
+            saved += 1
+        except Exception as e:
+            failures.append(f"{class_name}: {e}")
+
+    # The catalog caches a class's details for the render it read them in, and every
+    # coverage number on this page is computed from that copy. Without this the tab
+    # would go on reporting the requirement the class used to have.
+    if saved and hasattr(handler, 'invalidate'):
+        handler.invalidate()
+
+    if failures:
+        st.error("Some requirements were not saved:\n\n"
+                 + "\n\n".join(f"- {failure}" for failure in failures))
+    if saved and not failures:
+        st.success(f"Updated {saved} class{'es' if saved != 1 else ''}.")
+        st.rerun()
+    elif saved:
+        st.info(f"{saved} of {len(changes)} saved.")
 
 
 # ============================================================================

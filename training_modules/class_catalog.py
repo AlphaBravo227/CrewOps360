@@ -570,6 +570,54 @@ def rename_class(training_year, old_name, new_name, db_path=DEFAULT_DB_PATH):
         conn.close()
 
 
+def set_instructors_per_day(training_year, class_name, count, db_path=DEFAULT_DB_PATH):
+    """
+    Change just how many educators a class needs on each of its dates.
+
+    A targeted update rather than a `save_class` round trip. `save_class` rewrites a
+    class's dates and its assignments wholesale, so loading a whole class back and
+    re-saving it to change one number puts the schedule and the assignment list at
+    risk for no reason. This touches one column.
+
+    The requirement is per class, not per date - every date of a class needs the same
+    number of educators - so this is what the Educator Coverage screen edits when a
+    class turns out to need more cover than it was built with.
+
+    Raises ValueError for a count outside the 0-20 the class editor offers, for a
+    class that isn't in this training year, and for zeroing an educator-only class.
+    """
+    number = parse_int(count, None)
+    if number is None or number < 0 or number > 20:
+        raise ValueError("Instructors per day must be a whole number from 0 to 20.")
+
+    conn = _connect(db_path)
+    try:
+        cursor = conn.cursor()
+        row = cursor.execute(
+            "SELECT id, is_educator_only FROM training_classes "
+            "WHERE training_year = ? AND class_name = ?",
+            (training_year, str(class_name).strip())).fetchone()
+        if not row:
+            raise ValueError(f"No class '{class_name}' in {training_year}")
+
+        # Same rule the class editor enforces: nobody attends an educator-only class
+        # as a student, so with no educator positions nobody could sign up for it at
+        # all and it would vanish from every screen.
+        if row['is_educator_only'] and number == 0:
+            raise ValueError(
+                f"'{class_name}' is educator-only, so it needs at least one "
+                f"instructor per day. Turn off educator-only in Build Classes first "
+                f"if the class really takes no educators.")
+
+        cursor.execute(
+            "UPDATE training_classes SET instructors_per_day = ?, modified_date = ? "
+            "WHERE id = ?", (number, _now(), row['id']))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Reading
 # ---------------------------------------------------------------------------
