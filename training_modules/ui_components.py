@@ -2,6 +2,7 @@
 import html
 import streamlit as st
 from datetime import datetime, timedelta
+from . import two_day
 
 class UIComponents:
     
@@ -79,8 +80,7 @@ class UIComponents:
     @staticmethod
     def _is_two_day_class(enrollment_manager, class_name):
         """Check if a class is a two-day class"""
-        class_details = enrollment_manager.excel.get_class_details(class_name)
-        return class_details.get('is_two_day_class', 'No').lower() == 'yes'
+        return two_day.is_two_day(enrollment_manager.excel.get_class_details(class_name))
 
     @staticmethod
     def _has_current_conflict(enrollment_manager, enrollment):
@@ -98,17 +98,6 @@ class UIComponents:
             enrollment['staff_name'], enrollment['class_name'], enrollment['class_date']
         )
         return has_conflict
-
-    @staticmethod
-    def _get_two_day_dates(base_date):
-        """Get both days for a two-day class"""
-        try:
-            date_obj = datetime.strptime(base_date, '%m/%d/%Y')
-            day_1 = date_obj.strftime('%m/%d/%Y')
-            day_2 = (date_obj + timedelta(days=1)).strftime('%m/%d/%Y')
-            return [day_1, day_2]
-        except ValueError:
-            return [base_date]
 
     @staticmethod
     def display_enrollment_row(enrollment, excel_handler, enrollment_manager, read_only=False):

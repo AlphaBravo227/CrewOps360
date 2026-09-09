@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from .staff_meeting_components import EnrollmentDialogComponents
 from .class_catalog import date_indices
 from .ui_components import UIComponents
+from . import two_day
 
 class EnrollmentSessionComponents:
     
@@ -63,7 +64,7 @@ class EnrollmentSessionComponents:
                 "**Enroll in:**",
                 options=available_dates,
                 index=default_index,
-                format_func=lambda date: EnrollmentSessionComponents._date_label(date, is_two_day),
+                format_func=lambda date: EnrollmentSessionComponents._date_label(class_details, date),
                 horizontal=True,
                 key=f"enroll_date_choice_{class_name}"
             )
@@ -72,14 +73,7 @@ class EnrollmentSessionComponents:
         # Iterate through available dates and show enrollment options
         for date in dates_to_show:
             # For two-day classes, show the expanded date range
-            if is_two_day:
-                both_days = EnrollmentSessionComponents._get_two_day_dates(date)
-                if len(both_days) == 2:
-                    st.subheader(f"📅 {both_days[0]} - {both_days[1]} (2-Day Class)")
-                else:
-                    st.subheader(f"📅 {date} (2-Day Class)")
-            else:
-                st.subheader(f"📅 {date}")
+            st.subheader(f"📅 {two_day.date_range_label(class_details, date)}")
             
             # Where the class is that day. A date running at more than one location
             # gets no heading: each option below names its own, and a single heading
@@ -167,7 +161,7 @@ class EnrollmentSessionComponents:
             attributes = enrollment_manager.excel.get_date_attributes(class_name, date) \
                 if hasattr(enrollment_manager.excel, 'get_date_attributes') else {}
 
-            date_label = EnrollmentSessionComponents._date_label(date, is_two_day)
+            date_label = EnrollmentSessionComponents._date_label(class_details, date)
             if attributes.get('can_work_n_prior'):
                 date_label += " 🌙"
                 shows_night_prior = True
@@ -304,24 +298,22 @@ class EnrollmentSessionComponents:
             return enrollment_manager.check_enrollment_conflict(selected_staff, class_name, date)
 
         conflicts = []
-        for day_number, day in enumerate(
-                EnrollmentSessionComponents._get_two_day_dates(date), start=1):
+        for number, day in enumerate(
+                EnrollmentSessionComponents._session_days(
+                    enrollment_manager, class_name, date), start=1):
             has_conflict, conflict_details = enrollment_manager.check_enrollment_conflict(
                 selected_staff, class_name, day)
             if has_conflict:
-                conflicts.append(f"Day {day_number} ({day}): {conflict_details}")
+                conflicts.append(f"Day {number} ({day}): {conflict_details}")
 
         if conflicts:
             return (True, "; ".join(conflicts))
         return (False, "No conflicts for either day")
 
     @staticmethod
-    def _date_label(date, is_two_day):
+    def _date_label(class_details, date):
         """A date as the user books it - a two-day class books a pair of days."""
-        if not is_two_day:
-            return date
-        both_days = EnrollmentSessionComponents._get_two_day_dates(date)
-        return f"{both_days[0]} - {both_days[1]}" if len(both_days) == 2 else date
+        return two_day.date_range_label(class_details, date, suffix='')
 
     @staticmethod
     def _summary_time_text(options):
@@ -877,19 +869,13 @@ class EnrollmentSessionComponents:
     @staticmethod
     def _is_two_day_class(enrollment_manager, class_name):
         """Check if a class is a two-day class"""
-        class_details = enrollment_manager.excel.get_class_details(class_name)
-        return class_details.get('is_two_day_class', 'No').lower() == 'yes'
+        return two_day.is_two_day(enrollment_manager.excel.get_class_details(class_name))
 
     @staticmethod
-    def _get_two_day_dates(base_date):
-        """Get both days for a two-day class"""
-        try:
-            date_obj = datetime.strptime(base_date, '%m/%d/%Y')
-            day_1 = date_obj.strftime('%m/%d/%Y')
-            day_2 = (date_obj + timedelta(days=1)).strftime('%m/%d/%Y')
-            return [day_1, day_2]
-        except ValueError:
-            return [base_date]
+    def _session_days(enrollment_manager, class_name, date):
+        """Both days of the session `date` belongs to, for a two-day class."""
+        return two_day.session_days(
+            enrollment_manager.excel.get_class_details(class_name), date)
 
     @staticmethod
     def _handle_enrollment_button(button_label, button_key, has_conflict, conflict_details,

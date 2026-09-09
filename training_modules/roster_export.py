@@ -31,6 +31,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from training_modules import class_catalog as catalog
+from training_modules import two_day
 
 try:
     from modules import staff_database as staffdb
@@ -164,6 +165,22 @@ def _report_info_sheet(workbook, data):
     sheet.column_dimensions['B'].width = 70
 
 
+def _class_details_for(record):
+    """The shape `two_day` reads a class in, built from an export record.
+
+    The export carries a class as settings plus a list of date rows; `two_day` asks
+    about `is_two_day_class` and numbered `date_N` keys, the way the catalog hands a
+    class to every other screen. This translates between the two.
+    """
+    details = {
+        'is_two_day_class': record['settings'].get('is_two_day_class'),
+        'date_count': len(record['dates']),
+    }
+    for index, entry in enumerate(record['dates'], start=1):
+        details[f'date_{index}'] = entry['class_date']
+    return details
+
+
 def _summary_sheet(workbook, data):
     """One row per class: what it is, when it runs, and how full it is."""
     enrolled_by_class = {}
@@ -191,8 +208,25 @@ def _summary_sheet(workbook, data):
                 seats += (catalog.parse_int(option.get('capacity'))
                           or default_capacity)
 
-        enrolled = len(enrolled_by_class.get(name, []))
+        # One booking per person per session, not one per enrollment row. A student
+        # booked into a two-day class holds a row on each of its days, so counting
+        # rows counted everyone twice - against a "Seats offered" figure that only
+        # ever counted one day - and a full two-day class reported as 200% full with
+        # no seats left. Collapsing each session's days to their start date counts
+        # people, which is what the seat figures are measured in.
+        class_details = _class_details_for(record)
+        bookings = {
+            (row['staff_name'],
+             two_day.anchor_of(class_details, row['class_date']) or row['class_date'])
+            for row in enrolled_by_class.get(name, [])
+        }
+        enrolled = len(bookings)
+
         instructors = catalog.parse_int(settings.get('instructors_per_day'), 0) or 0
+        # Educators sign up for a day, not a session, so a two-day class asks for its
+        # requirement on each of its days. Multiplying by the number of configured
+        # dates counted only the first day of each and halved the year's real need.
+        teaching_days = len(two_day.all_days(class_details)) or len(dates)
         rows.append([
             name,
             record['source'] == 'import' and 'Imported' or 'Built in app',
@@ -206,7 +240,7 @@ def _summary_sheet(workbook, data):
             max(seats - enrolled, 0),
             f"{(enrolled / seats * 100):.0f}%" if seats else '',
             len(record['assigned_staff']),
-            instructors * len(dates),
+            instructors * teaching_days,
             len(signups_by_class.get(name, [])),
         ])
 

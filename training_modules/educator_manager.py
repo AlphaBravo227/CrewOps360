@@ -5,6 +5,7 @@ with track conflict checking and proper 2-day class support.
 """
 from datetime import datetime, timedelta
 from .class_catalog import date_indices
+from . import two_day
 
 class EducatorManager:
     def __init__(self, unified_database, excel_handler, track_manager=None,
@@ -52,32 +53,11 @@ class EducatorManager:
             
             # Only include classes that need instructors
             if instructor_count > 0:
-                # Check if this is a two-day class
-                is_two_day = class_details.get('is_two_day_class', 'No').lower() == 'yes'
-                
-                # Get all available dates for this class
-                base_dates = []
-                for i in date_indices(class_details):
-                    date_key = f'date_{i}'
-                    if date_key in class_details and class_details[date_key]:
-                        base_dates.append(class_details[date_key])
-                
-                # Expand dates for 2-day classes
-                expanded_dates = []
-                if is_two_day:
-                    for base_date in base_dates:
-                        try:
-                            # Parse the date and add both days
-                            date_obj = datetime.strptime(base_date, '%m/%d/%Y')
-                            day_1 = date_obj.strftime('%m/%d/%Y')
-                            day_2 = (date_obj + timedelta(days=1)).strftime('%m/%d/%Y')
-                            
-                            expanded_dates.extend([day_1, day_2])
-                        except ValueError as e:
-                            print(f"Warning: Could not parse date {base_date} for class {class_name}: {e}")
-                            expanded_dates.append(base_date)  # Add original if parsing fails
-                else:
-                    expanded_dates = base_dates
+                is_two_day = two_day.is_two_day(class_details)
+
+                # Every day the class is taught. Educators sign up per day, so a
+                # two-day class offers two opportunities per date on its schedule.
+                expanded_dates = two_day.all_days(class_details)
                 
                 if expanded_dates:  # Only include if there are actual dates
                     opportunities.append({
@@ -186,34 +166,14 @@ class EducatorManager:
         
         # Get class details to check if it's a two-day class and N prior settings
         class_details = self.excel.get_class_details(class_name)
-        is_two_day = class_details.get('is_two_day_class', 'No').lower() == 'yes'
-        
-        # Find which date index this is to get the can_work_n_prior setting
-        # For 2-day classes, we need to map the specific date back to the base date
+
+        # The night-prior setting is configured on the date the session starts, so
+        # either day of a two-day class has to resolve back to that date to find it.
+        anchor = two_day.anchor_of(class_details, class_date)
         can_work_n_prior = False
-        
-        if is_two_day:
-            # For 2-day classes, find the base date that this specific date belongs to
-            try:
-                current_date_obj = datetime.strptime(class_date, '%m/%d/%Y')
-                
-                for i in date_indices(class_details):
-                    date_key = f'date_{i}'
-                    if date_key in class_details and class_details[date_key]:
-                        base_date_obj = datetime.strptime(class_details[date_key], '%m/%d/%Y')
-                        day_2_obj = base_date_obj + timedelta(days=1)
-                        
-                        # Check if current_date matches either day 1 or day 2 of this base date
-                        if (current_date_obj == base_date_obj or current_date_obj == day_2_obj):
-                            can_work_n_prior = class_details.get(f'date_{i}_can_work_n_prior', False)
-                            break
-            except ValueError as e:
-                print(f"Warning: Could not parse date {class_date}: {e}")
-        else:
-            # For single-day classes, find the matching date directly
+        if anchor:
             for i in date_indices(class_details):
-                date_key = f'date_{i}'
-                if date_key in class_details and class_details[date_key] == class_date:
+                if class_details.get(f'date_{i}') == anchor:
                     can_work_n_prior = class_details.get(f'date_{i}_can_work_n_prior', False)
                     break
         

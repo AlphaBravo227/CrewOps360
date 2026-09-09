@@ -11,6 +11,7 @@ import pytz
 _eastern_tz = pytz.timezone('America/New_York')
 from .config import NON_CLASS_COLUMNS, DEFAULT_CLASS_DETAILS
 from .class_catalog import date_indices
+from . import two_day
 
 def year_filename_prefix(training_year):
     """`FY27_` for use at the front of an export filename, or '' if no year is set.
@@ -1108,29 +1109,21 @@ class ExcelAdminFunctions:
                 if date_key in class_details and class_details[date_key]:
                     date_str = class_details[date_key]
                     
-                    # For two-day classes, each configured date represents one offering
-                    # but we need to count enrollments for both days
+                    # A two-day class is one offering with one set of seats, and a
+                    # student booked into it holds a row on each of its days. Adding
+                    # both days' counts therefore counted every student twice and
+                    # reported a full class at 200% utilisation. The session's real
+                    # headcount is the busiest of its days: the same people appear on
+                    # both, and taking the larger also survives a legacy booking left
+                    # on only one day.
                     if is_two_day:
-                        try:
-                            date_obj = datetime.strptime(date_str, '%m/%d/%Y')
-                            day_1 = date_obj.strftime('%m/%d/%Y')
-                            day_2 = (date_obj + timedelta(days=1)).strftime('%m/%d/%Y')
-                            
-                            # Count this as ONE date offering with ONE capacity
-                            total_dates += 1
-                            total_capacity += capacity_per_date
-                            
-                            # But count enrollments from both days
-                            if day_1 in enrollment_summary:
-                                total_enrolled += enrollment_summary[day_1]['total']
-                            if day_2 in enrollment_summary:
-                                total_enrolled += enrollment_summary[day_2]['total']
-                        except:
-                            # Fallback if date parsing fails
-                            total_dates += 1
-                            total_capacity += capacity_per_date
-                            if date_str in enrollment_summary:
-                                total_enrolled += enrollment_summary[date_str]['total']
+                        total_dates += 1
+                        total_capacity += capacity_per_date
+                        total_enrolled += max(
+                            (enrollment_summary[day]['total']
+                             for day in two_day.session_days(class_details, date_str)
+                             if day in enrollment_summary),
+                            default=0)
                     else:
                         # Regular single-day class
                         total_dates += 1
@@ -1326,18 +1319,11 @@ class ExcelAdminFunctions:
                 can_work_n_prior = class_details.get(f'date_{i}_can_work_n_prior', False)
                 
                 # For two-day classes, expand to both days
-                dates_to_process = []
                 if is_two_day:
-                    try:
-                        date_obj = datetime.strptime(date_str, '%m/%d/%Y')
-                        day_1 = date_obj.strftime('%m/%d/%Y')
-                        day_2 = (date_obj + timedelta(days=1)).strftime('%m/%d/%Y')
-                        dates_to_process = [
-                            (day_1, 'Day 1'),
-                            (day_2, 'Day 2')
-                        ]
-                    except:
-                        dates_to_process = [(date_str, '')]
+                    dates_to_process = [
+                        (day, two_day.day_label(class_details, day))
+                        for day in two_day.session_days(class_details, date_str)
+                    ]
                 else:
                     dates_to_process = [(date_str, '')]
                 

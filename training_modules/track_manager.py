@@ -456,7 +456,12 @@ class TrainingTrackManager:
             except ValueError:
                 return False, "Invalid date format"
             
-            # For two-day classes, check both days
+            # For two-day classes, check both days. Every caller today passes
+            # is_two_day=False and checks one day at a time, having resolved the
+            # session's days through training_modules/two_day.py - which is the only
+            # safe way to expand a date, since "the next day" is right only when the
+            # date in hand is already day 1. Keep it that way rather than reviving
+            # this branch.
             dates_to_check = [date_obj]
             if is_two_day:
                 day2 = date_obj + timedelta(days=1)

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import sqlite3
 import pandas as pd
 from .class_catalog import date_indices
+from . import two_day
 
 class AvailabilityAnalyzer:
     def __init__(self, unified_database, excel_handler, enrollment_manager, track_manager=None):
@@ -289,7 +290,7 @@ class AvailabilityAnalyzer:
             
             if is_two_day:
                 # For 2-day classes, check BOTH days for conflicts
-                both_days = self._get_two_day_dates(date_str)
+                both_days = self._session_days(class_name, date_str)
                 day_conflicts = []
                 
                 for i, day in enumerate(both_days):
@@ -344,24 +345,18 @@ class AvailabilityAnalyzer:
             'slots_remaining': slots_remaining
         }
 
-    def _get_two_day_dates(self, base_date):
+    def _session_days(self, class_name, date):
         """
-        Get both days for a two-day class
-        
+        Every day of the session `date` belongs to.
+
         Args:
-            base_date (str): Base date in MM/DD/YYYY format
-            
+            class_name (str): the class, so the date can be resolved against its schedule
+            date (str): either day of the session, in MM/DD/YYYY
+
         Returns:
-            list: List of both dates [day1, day2]
+            list: both days of a two-day session, or just `date`
         """
-        try:
-            from datetime import datetime, timedelta
-            date_obj = datetime.strptime(base_date, '%m/%d/%Y')
-            day_1 = date_obj.strftime('%m/%d/%Y')
-            day_2 = (date_obj + timedelta(days=1)).strftime('%m/%d/%Y')
-            return [day_1, day_2]
-        except ValueError:
-            return [base_date]
+        return two_day.session_days(self.excel.get_class_details(class_name), date)
     
     def _check_weekly_enrollment_limit_for_availability(self, staff_name, class_date, class_name=None):
         """
@@ -534,10 +529,7 @@ class AvailabilityAnalyzer:
     
     def _is_two_day_class(self, class_name):
         """Check if this is a two-day class"""
-        class_details = self.excel.get_class_details(class_name)
-        if not class_details:
-            return False
-        return class_details.get('is_two_day_class', 'No').lower() == 'yes'
+        return two_day.is_two_day(self.excel.get_class_details(class_name))
     
     def get_no_conflict_educator_availability(self, start_date, end_date):
         """

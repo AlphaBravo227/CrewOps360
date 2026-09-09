@@ -2,6 +2,7 @@
 import streamlit as st
 from datetime import datetime, timedelta
 from .class_catalog import date_indices
+from . import two_day
 
 class ClassDisplayComponents:
     
@@ -22,7 +23,7 @@ class ClassDisplayComponents:
             return
         
         # Check if this is a two-day class
-        is_two_day = class_details.get('is_two_day_class', 'No').lower() == 'yes'
+        is_two_day = two_day.is_two_day(class_details)
         is_multi_session = class_details.get('is_multi_session', 'No').lower() == 'yes'
         session_length = class_details.get('session_length')
 
@@ -74,23 +75,11 @@ class ClassDisplayComponents:
                 
                 if is_two_day:
                     # Show both days for two-day classes
-                    try:
-                        date_obj = datetime.strptime(base_date, '%m/%d/%Y')
-                        day_1 = date_obj.strftime('%m/%d/%Y')
-                        day_2 = (date_obj + timedelta(days=1)).strftime('%m/%d/%Y')
-                        
-                        date_info = f"• {day_1} - {day_2} (2-Day Class)"
-                        if location:
-                            date_info += f" - Location: {location}"
-                        if can_work_n_prior:
-                            date_info += " 🌙"
-                    except ValueError:
-                        # Fallback if date parsing fails
-                        date_info = f"• {base_date} (2-Day Class)"
-                        if location:
-                            date_info += f" - Location: {location}"
-                        if can_work_n_prior:
-                            date_info += " 🌙"
+                    date_info = f"• {two_day.date_range_label(class_details, base_date)}"
+                    if location:
+                        date_info += f" - Location: {location}"
+                    if can_work_n_prior:
+                        date_info += " 🌙"
                 else:
                     # Single day display
                     date_info = f"• {base_date}"

@@ -6,6 +6,7 @@ FIXED: Handles consecutive day enrollment, conflict checking, and cancellation.
 from datetime import datetime, timedelta
 from .training_email_notifications import send_training_event_notification
 from .class_catalog import date_indices
+from . import two_day
 
 class EnrollmentManager:
     def __init__(self, unified_database, excel_handler, track_manager=None,
@@ -30,22 +31,20 @@ class EnrollmentManager:
         """Point this manager at a different training year (None = active year)."""
         self.training_year = training_year
         
-    def _get_two_day_dates(self, base_date_str):
-        """Convert base date string to both days for two-day class"""
-        try:
-            base_date = datetime.strptime(base_date_str, '%m/%d/%Y')
-            day_1 = base_date.strftime('%m/%d/%Y')
-            day_2 = (base_date + timedelta(days=1)).strftime('%m/%d/%Y')
-            return [day_1, day_2]
-        except ValueError:
-            return [base_date_str]  # Return original if parsing fails
-    
+    def session_days(self, class_name, date):
+        """Every day of the session that `date` belongs to.
+
+        The replacement for the old `_get_two_day_dates`, which turned any date into
+        "that date and the next one". That was only right when the date it was handed
+        was day 1; given day 2 of a two-day class it produced day 3, a date the class
+        does not run on. This resolves the date back to the day its session starts on
+        first, so either day of a session gives back the same pair.
+        """
+        return two_day.session_days(self.excel.get_class_details(class_name), date)
+
     def _is_two_day_class(self, class_name):
         """Check if a class is configured as a two-day class"""
-        class_details = self.excel.get_class_details(class_name)
-        if not class_details:
-            return False
-        return class_details.get('is_two_day_class', 'No').lower() == 'yes'
+        return two_day.is_two_day(self.excel.get_class_details(class_name))
     
     def check_existing_enrollment(self, staff_name, class_name):
         """Check if staff member is already enrolled in any session of this class"""
@@ -238,12 +237,13 @@ class EnrollmentManager:
         
         print(f"DEBUG: Enrolling {staff_name} in {class_name} - Two-day: {is_two_day}")
         
-        # Get the actual dates to enroll (single date or two consecutive days)
+        # The days to book. A two-day class is booked as a session, not a day, so
+        # this resolves whichever date it was given back to that session's days -
+        # the booking screen passes day 1, but an admin editor working per day may
+        # pass either.
+        enrollment_dates = self.session_days(class_name, class_date)
         if is_two_day:
-            enrollment_dates = self._get_two_day_dates(class_date)
             print(f"DEBUG: Two-day enrollment dates: {enrollment_dates}")
-        else:
-            enrollment_dates = [class_date]
         # NEW: Check weekly enrollment limit for non-MGMT medics
         # Check each enrollment date for weekly limits
         for date in enrollment_dates:
@@ -422,9 +422,14 @@ class EnrollmentManager:
         
         if is_two_day:
             print(f"DEBUG: Cancelling two-day class enrollment for {staff_name}")
-            
-            # Get both days for this enrollment
-            enrollment_dates = self._get_two_day_dates(class_date)
+
+            # Both days of the session this enrollment belongs to. `class_date` is
+            # whichever row the staff member clicked cancel on, and "My Enrollments"
+            # lists a two-day booking as two rows - so half the time that is day 2.
+            # The old arithmetic turned day 2 into "day 2 and day 3", matched only
+            # the day 2 row, and left day 1 booked: the staff member's own screen
+            # then read "2-Day Partial" and the seat stayed taken on day 1.
+            enrollment_dates = self.session_days(class_name, class_date)
             
             # Cancel all enrollments for this class on both days
             all_enrollments = self.get_staff_enrollments(staff_name)
@@ -526,13 +531,18 @@ class EnrollmentManager:
         # Get class details to check N prior settings
         class_details = self.excel.get_class_details(class_name)
         
-        # Find which date index this is to get the can_work_n_prior setting
+        # The night-prior allowance is configured on the date a session starts, so
+        # day 2 of a two-day class has to resolve back to that date to find it.
+        # Matching the raw date meant day 2 never matched and silently fell back to
+        # "no night shift allowed" - stricter than the class was configured to be,
+        # and out of step with the educator side, which has always resolved it.
+        anchor = two_day.anchor_of(class_details, class_date)
         can_work_n_prior = False
-        for i in date_indices(class_details):  # Check rows 1-14
-            date_key = f'date_{i}'
-            if date_key in class_details and class_details[date_key] == class_date:
-                can_work_n_prior = class_details.get(f'date_{i}_can_work_n_prior', False)
-                break
+        if anchor:
+            for i in date_indices(class_details):
+                if class_details.get(f'date_{i}') == anchor:
+                    can_work_n_prior = class_details.get(f'date_{i}_can_work_n_prior', False)
+                    break
         
         # For two-day classes, we check each day individually but don't pass is_two_day=True
         # because we're checking a specific single date, not the full two-day sequence
@@ -601,9 +611,10 @@ class EnrollmentManager:
             if date_key in class_details and class_details[date_key]:
                 base_date = class_details[date_key]
                 
-                # For two-day classes, expand to both days
-                if self._is_two_day_class(class_name):
-                    both_days = self._get_two_day_dates(base_date)
+                # For two-day classes, expand to both days. `base_date` comes
+                # straight off the class's configured dates, so it is always a day 1.
+                if two_day.is_two_day(class_details):
+                    both_days = two_day.days_from_anchor(base_date)
                     dates.extend(both_days)
                     can_work_n_prior = class_details.get(f'date_{i}_can_work_n_prior', False)
                     can_work_n_prior_list.extend([can_work_n_prior, can_work_n_prior])
@@ -920,11 +931,7 @@ class EnrollmentManager:
         session_options = []
 
         # Add two-day indicator to display if applicable
-        date_display = class_date
-        if is_two_day:
-            both_days = self._get_two_day_dates(class_date)
-            if len(both_days) == 2:
-                date_display = f"{both_days[0]} - {both_days[1]} (2-Day Class)"
+        date_display = two_day.date_range_label(class_details, class_date)
 
         if is_multi_session and session_length:
             # Dynamically generate sessions based on SESSION_LENGTH interval

@@ -7,6 +7,7 @@ import pytz
 import os
 import re
 from . import class_catalog as catalog
+from . import two_day
 
 _eastern_tz = pytz.timezone('America/New_York')
 
@@ -1380,23 +1381,17 @@ class AdminAccess:
                             st.markdown(f"**Type:** {class_details.get('class_type', 'N/A')}")
                             st.markdown("---")
 
-                            # Expand two-day classes to show both days, each mapped back to
-                            # its session's anchor (day 1) date. enroll_staff always derives
-                            # the pairing from whichever date it's given - Day 1 in, [Day 1,
-                            # Day 2] out - so a booking made from the Day 2 expander using
-                            # Day 2 itself would derive [Day 2, Day 2 + 1] instead: the
-                            # student never lands on Day 1 at all, and the seat count shown
-                            # to everyone else (which is keyed on Day 1) never sees them.
-                            is_two_day = st.session_state.training_enrollment_manager._is_two_day_class(selected_class)
+                            # One editor per day a class is taught, each carrying the
+                            # date its session starts on. Bookings are still made under
+                            # that start date so both days land on the one real pairing -
+                            # though enroll_staff now resolves a session from either of
+                            # its days itself, so this is belt and braces rather than the
+                            # only thing standing between a Day 2 editor and a booking on
+                            # a day the class does not run.
                             date_to_anchor = {}
-
-                            for date in class_dates:
-                                if is_two_day:
-                                    both_days = st.session_state.training_enrollment_manager._get_two_day_dates(date)
-                                    for day in both_days:
-                                        date_to_anchor.setdefault(day, date)
-                                else:
-                                    date_to_anchor.setdefault(date, date)
+                            for day in two_day.all_days(class_details):
+                                date_to_anchor.setdefault(
+                                    day, two_day.anchor_of(class_details, day) or day)
 
                             # Display each session/date
                             for date, anchor_date in date_to_anchor.items():
