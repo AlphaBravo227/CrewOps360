@@ -372,12 +372,18 @@ def _class_sheets(workbook, data):
         settings = record['settings']
         sheet = workbook.create_sheet(_sheet_name(name, used))
 
+        # An educator-only class has nobody assigned and nobody enrolled by design,
+        # so it says so rather than printing two zeroes that read as a broken class.
+        if settings.get('is_educator_only'):
+            standing = "educator-only, staff don't attend"
+        else:
+            standing = (f"{len(record['assigned_staff'])} assigned  ·  "
+                        f"{len(enrolled_by_class.get(name, []))} enrolled")
+
         sheet.cell(row=1, column=1, value=name).font = TITLE_FONT
         sheet.cell(row=2, column=1,
                    value=f"{data['year']}  ·  {len(record['dates'])} date(s)  ·  "
-                         f"{len(record['assigned_staff'])} assigned  ·  "
-                         f"{len(enrolled_by_class.get(name, []))} enrolled").font = (
-                             Font(italic=True))
+                         f"{standing}").font = Font(italic=True)
 
         default_capacity = catalog.parse_int(settings.get('students_per_class'), 0) or 0
         schedule_rows = []

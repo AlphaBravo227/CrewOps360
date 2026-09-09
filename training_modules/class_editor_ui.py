@@ -100,6 +100,7 @@ def _blank_draft():
             'is_multi_session': False,
             'session_length': None,
             'is_count_exempt': False,
+            'is_educator_only': False,
             'nurses_medic_separate': False,
             'is_two_day_class': False,
             'is_staff_meeting': False,
@@ -143,7 +144,7 @@ def _draft_from_class(record):
                 'time_3_start', 'time_3_end', 'time_4_start', 'time_4_end'):
         draft['settings'][key] = settings.get(key) or ''
     for key in ('has_ccemt', 'is_multi_session', 'is_count_exempt',
-                'nurses_medic_separate', 'is_two_day_class'):
+                'nurses_medic_separate', 'is_two_day_class', 'is_educator_only'):
         draft['settings'][key] = bool(settings.get(key))
     # A NULL is_staff_meeting means "never set" — the name rule decided it. Show the
     # answer that rule would give, so the box reflects how the class actually behaves.
@@ -284,6 +285,19 @@ def _members_matching(grouping_ids, roles):
 def _render_staff_assignment(draft):
     """Who the class is for."""
     st.markdown("#### Assigned staff")
+
+    if draft['settings'].get('is_educator_only'):
+        st.info(
+            "Nobody is assigned to an educator-only class — staff don't attend it, so "
+            "it stays off their registration screen and out of their class count. "
+            "Educators sign up for it on the **Educator Signup** tab like any other "
+            "class that needs instructors.")
+        # Cleared rather than kept, so a class switched to educator-only stops being
+        # required of the people who were assigned to it before.
+        draft['assigned_staff'] = []
+        draft['assignment_source'] = {'groupings': [], 'roles': []}
+        return
+
     st.caption(
         "Assigned staff are the people who see this class on their registration "
         "screen. Pick groupings or roles to fill the list quickly, then add or remove "
@@ -531,6 +545,18 @@ def _render_settings(draft):
     settings = draft['settings']
 
     st.markdown("#### Class settings")
+
+    settings['is_educator_only'] = st.checkbox(
+        "Educator-only class", value=bool(settings.get('is_educator_only')),
+        key=wkey("educator_only"),
+        help="An outside course we staff with educators but our own people do not "
+             "attend. Nobody is assigned to it, so it never reaches the registration "
+             "screen and counts towards nobody's requirement — it exists so educators "
+             "can sign up to teach it. Give it at least one instructor per day.")
+    if settings['is_educator_only']:
+        st.caption("Staff won't see this class. Set the instructors needed per day "
+                   "below; the assigned staff section is skipped.")
+
     columns = st.columns(3)
     with columns[0]:
         settings['students_per_class'] = st.number_input(
@@ -678,9 +704,16 @@ def _validate(draft, training_year, original_name, db_path):
         problems.append("The CCEMT role split only applies when nurses and medics "
                         "are enrolled separately.")
 
-    if not draft['assigned_staff']:
+    if draft['settings'].get('is_educator_only'):
+        if not catalog.parse_int(draft['settings'].get('instructors_per_day'), 0):
+            problems.append("An educator-only class needs at least one instructor per "
+                            "day. Nobody attends it as a student, so with no educator "
+                            "positions nobody could sign up for it at all.")
+    elif not draft['assigned_staff']:
         problems.append("Nobody is assigned to the class, so nobody would see it. "
-                        "Assign at least one staff member.")
+                        "Assign at least one staff member — or tick "
+                        "\"Educator-only class\" if this is an outside course staff "
+                        "don't attend.")
 
     return problems
 
@@ -716,8 +749,10 @@ def _save(draft, training_year, original_name, db_path):
             source=(record or {}).get('source') or 'app',
             assignment_source=draft.get('assignment_source'),
             db_path=db_path)
-        return True, f"Saved **{name}** — {len(dates)} date(s), " \
-                     f"{len(draft['assigned_staff'])} staff assigned."
+        staffing = ("educator-only, no staff assigned"
+                    if draft['settings'].get('is_educator_only')
+                    else f"{len(draft['assigned_staff'])} staff assigned")
+        return True, f"Saved **{name}** — {len(dates)} date(s), {staffing}."
     except Exception as e:
         return False, f"Could not save the class: {e}"
 

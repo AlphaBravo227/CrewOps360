@@ -67,21 +67,23 @@ DEFAULT_CLASS_DETAILS = {
     'is_multi_session': 'No',
     'session_length': None,
     'is_count_exempt': False,
+    'is_educator_only': False,
     'has_ccemt': 'No',
     'calendar_display': '',
     'is_staff_meeting': False,
     'date_count': 0,
 }
 
-# The settings that used to live at fixed cells on a class's detail sheet, paired with
-# the cell each one came from. Kept here rather than in the importer so the mapping from
-# the old layout to the new columns is readable in one place.
+# The class's settings columns - what the detail sheet used to carry at fixed cells,
+# plus the two fields that were never in a workbook, `calendar_display` and
+# `is_educator_only`. This is the list `load_class_for_editing` hands the editor, so a
+# setting missing from here round-trips back to its default on the next save.
 CLASS_SETTING_COLUMNS = (
     'has_ccemt', 'is_multi_session', 'session_length', 'is_count_exempt',
     'students_per_class', 'nurses_medic_separate', 'classes_per_day',
     'is_two_day_class', 'time_1_start', 'time_1_end', 'time_2_start', 'time_2_end',
     'time_3_start', 'time_3_end', 'time_4_start', 'time_4_end', 'instructors_per_day',
-    'calendar_display',
+    'calendar_display', 'is_educator_only',
 )
 
 
@@ -212,6 +214,7 @@ def initialize_catalog_tables(db_path=DEFAULT_DB_PATH):
             is_multi_session INTEGER DEFAULT 0,
             session_length INTEGER,
             is_count_exempt INTEGER DEFAULT 0,
+            is_educator_only INTEGER DEFAULT 0,
             students_per_class INTEGER DEFAULT 21,
             nurses_medic_separate INTEGER DEFAULT 0,
             classes_per_day INTEGER DEFAULT 1,
@@ -287,6 +290,9 @@ def initialize_catalog_tables(db_path=DEFAULT_DB_PATH):
                         cursor.execute("PRAGMA table_info(training_classes)")}
     if 'calendar_display' not in existing_columns:
         cursor.execute('ALTER TABLE training_classes ADD COLUMN calendar_display TEXT')
+    if 'is_educator_only' not in existing_columns:
+        cursor.execute('ALTER TABLE training_classes '
+                       'ADD COLUMN is_educator_only INTEGER DEFAULT 0')
 
     existing_option_columns = {row[1] for row in
                                cursor.execute("PRAGMA table_info(training_class_options)")}
@@ -360,6 +366,12 @@ def save_class(training_year, class_name, settings=None, dates=None, assigned_st
             'is_multi_session': int(parse_checkbox(settings.get('is_multi_session'))),
             'session_length': parse_int(settings.get('session_length')),
             'is_count_exempt': int(parse_checkbox(settings.get('is_count_exempt'))),
+            # An outside class we supply educators to and our own staff do not attend.
+            # Nobody is assigned to it, which is what keeps it off the registration
+            # screen; `instructors_per_day` is what puts it on the educator signup
+            # list. The flag exists because those two facts together are otherwise
+            # indistinguishable from a class somebody forgot to assign anyone to.
+            'is_educator_only': int(parse_checkbox(settings.get('is_educator_only'))),
             'students_per_class': parse_int(settings.get('students_per_class'), 21),
             'nurses_medic_separate': int(parse_checkbox(
                 settings.get('nurses_medic_separate'))),
@@ -759,6 +771,8 @@ class ClassCatalog:
                 'is_multi_session': 'Yes' if row['is_multi_session'] else 'No',
                 'session_length': row['session_length'],
                 'is_count_exempt': bool(row['is_count_exempt']),
+                'is_educator_only': (bool(row['is_educator_only'])
+                                     if 'is_educator_only' in row.keys() else False),
                 'students_per_class': row['students_per_class'] or 21,
                 'nurses_medic_separate': 'Yes' if row['nurses_medic_separate'] else 'No',
                 'classes_per_day': row['classes_per_day'] or 1,
@@ -961,6 +975,17 @@ class ClassCatalog:
         """How many educators a class needs per day."""
         details = self.get_class_details(class_name)
         return parse_int(details.get('instructors_per_day'), 0) or 0
+
+    def is_educator_only(self, class_name):
+        """
+        True for a class our staff never attend - one we only send educators to.
+
+        Nothing about enrollment consults this: an educator-only class has nobody
+        assigned, so it is already absent from every staff-facing screen. It is the
+        admin side that needs telling, so that a class with nobody assigned and no
+        enrollments reads as deliberate rather than as a configuration mistake.
+        """
+        return bool(self.get_class_details(class_name).get('is_educator_only'))
 
     # -- staff attributes -------------------------------------------------
     #
