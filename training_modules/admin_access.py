@@ -1215,10 +1215,12 @@ class AdminAccess:
                 with heading[0]:
                     origin = ("imported from the workbook"
                               if record['source'] == 'import' else "built here")
+                    staffing = (
+                        "educator-only, staff don't attend"
+                        if record['settings'].get('is_educator_only')
+                        else f"{len(record['assigned_staff'])} staff assigned")
                     st.markdown(f"**{class_name}**")
-                    st.caption(
-                        f"{len(dates)} date(s) · {len(record['assigned_staff'])} "
-                        f"staff assigned · {origin}")
+                    st.caption(f"{len(dates)} date(s) · {staffing} · {origin}")
                     calendar_display = (record['settings'].get('calendar_display')
                                         or '').strip()
                     if calendar_display:

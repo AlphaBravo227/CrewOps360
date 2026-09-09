@@ -1065,6 +1065,14 @@ class ExcelAdminFunctions:
         else:
             return "🔴 Behind Schedule"
     
+    def _class_type_label(self, class_name):
+        """What a report calls this class."""
+        if self.excel.is_educator_only(class_name):
+            return "Educator-Only"
+        if self.excel.is_staff_meeting(class_name):
+            return "Staff Meeting"
+        return "Training"
+
     def get_class_utilization_report(self):
         """Generate report showing class capacity utilization"""
         all_classes = self.excel.get_all_classes()
@@ -1150,7 +1158,7 @@ class ExcelAdminFunctions:
                 'Educator Requirements': educator_coverage,
                 'Educator Signups': total_educator_signups,
                 'Educator Coverage': f"{educator_coverage_rate:.1f}%" if educator_coverage > 0 else "N/A",
-                'Class Type': "Staff Meeting" if self.excel.is_staff_meeting(class_name) else "Training",
+                'Class Type': self._class_type_label(class_name),
                 'Status': self._get_utilization_status(utilization_rate)
             })
             
@@ -1214,6 +1222,10 @@ class ExcelAdminFunctions:
         unused_classes = []
         
         for class_name in all_classes:
+            # An educator-only class never has enrollments — staff don't attend it —
+            # so listing it here would report a working class as an unused one.
+            if self.excel.is_educator_only(class_name):
+                continue
             enrollments = self.db.get_class_enrollments(class_name, training_year=self.training_year)
             if not enrollments:
                 unused_classes.append(class_name)
@@ -1254,6 +1266,14 @@ class ExcelAdminFunctions:
                 issues.append(f"Class '{class_name}' has no scheduled dates")
                 continue
 
+            if self.excel.is_educator_only(class_name):
+                # Nobody assigned is the point of an educator-only class. What would
+                # leave it unbookable is having no educator positions on it.
+                if not class_details.get('instructors_per_day'):
+                    issues.append(f"Class '{class_name}' is educator-only but needs no "
+                                  f"instructors, so nobody can sign up for it")
+                continue
+
             if not self._get_staff_assigned_to_class(class_name):
                 issues.append(f"Class '{class_name}' has nobody assigned to it, so "
                               f"no staff member can see it")
@@ -1271,7 +1291,8 @@ class ExcelAdminFunctions:
         # Basic class info
         report = {
             'class_name': class_name,
-            'class_type': 'Staff Meeting' if self.excel.is_staff_meeting(class_name) else 'Training Class',
+            'class_type': self._class_type_label(class_name),
+            'is_educator_only': self.excel.is_educator_only(class_name),
             'max_students_per_session': int(class_details.get('students_per_class', 21)),
             'classes_per_day': int(class_details.get('classes_per_day', 1)),
             'is_two_day_class': class_details.get('is_two_day_class', 'No'),
