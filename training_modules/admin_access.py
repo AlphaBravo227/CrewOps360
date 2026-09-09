@@ -181,6 +181,8 @@ class AdminAccess:
         ("📈 Enrollment Reports", "enrollment_reports", "View and export enrollment data"),
         ("👥 Manage Staff", "manage_staff", "View staff enrollment status"),
         ("📚 Manage Classes", "manage_classes", "Configure class settings and schedules"),
+        ("👨‍🏫 Educator Coverage", "educator_coverage",
+         "Educator coverage, gaps, assignments and the authorised educator roster"),
         ("➕ Build Classes", "build_classes", "Create and reconfigure classes and their dates"),
         ("🗓️ Training Years", "training_years", "Manage fiscal-year rosters and cutover"),
         ("📄 Data Export", "data_management", "Export training data"),
@@ -438,6 +440,8 @@ class AdminAccess:
             self._show_manage_staff()
         elif function_key == "manage_classes":
             self._show_manage_classes()
+        elif function_key == "educator_coverage":
+            self._show_educator_coverage()
         elif function_key == "build_classes":
             self._show_build_classes()
         elif function_key == "training_years":
@@ -479,8 +483,13 @@ class AdminAccess:
             st.error("Admin functions not initialized")
             return
         
-        # Updated to include Tab 4 and Tab 5
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["👤 Staff Overview", "📊 Compliance Status", "📝 Assignments", "📅 Available Staff for Events", "👨‍🏫 Available Educators for Teaching"])        
+        # Educator availability used to be a fifth tab here, which meant looking for
+        # someone to teach a class in the middle of the *student* compliance screens.
+        # It moved, with the rest of the educator tools, to Educator Coverage.
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "👤 Staff Overview", "📊 Compliance Status", "📝 Assignments",
+            "📅 Available Staff for Events",
+        ])
 
         with tab1:
             # FIXED Tab 1 content (Staff Overview)
@@ -580,10 +589,6 @@ class AdminAccess:
         with tab4:
             # NEW Tab 4 - Available Staff for Events
             self._show_available_staff_for_events()
-        
-        with tab5:
-            # NEW Tab 5 - Available Educators for Teaching (Future Implementation)
-            self._show_available_educators_for_teaching()
 
     def _show_available_staff_for_events(self):
         """Show available staff for events within date range - NEW TAB 4"""
@@ -971,136 +976,21 @@ class AdminAccess:
                 # Note: In a full implementation, you'd re-run the display logic with filters
                 # For now, this is just UI framework
 
-    def _show_available_educators_for_teaching(self):
-        """Show available educators for teaching within date range - NEW TAB 5 (Future Implementation)"""
-        st.write("### 👨‍🏫 Available Educators for Teaching")
-        st.caption("Analyze educator availability for classes requiring instruction within a date range")
-        
-        # Future implementation placeholder with UI framework
-        st.info("🚧 **Coming Soon**: Educator availability analysis")
-        
-        st.markdown("""
-        **Planned Features:**
-        
-        📋 **Educator Eligibility Analysis**
-        - Staff authorized for educator roles (based on 'Educator AT' column)
-        - Classes requiring educators (instructor count > 0)
-        - Existing educator signups vs requirements
-        
-        📅 **Schedule Conflict Checking**
-        - AT shifts allowed for educators (non-blocking)
-        - Track conflicts with educator-specific rules
-        - Overlap detection with student enrollments
-        
-        📊 **Availability Reporting**
-        - Classes needing educator coverage
-        - Available authorized staff by date
-        - Educator workload distribution
-        - Coverage gap identification
-        
-        📥 **Export Capabilities**
-        - Available educator lists by class/date
-        - Coverage gap reports
-        - Educator assignment recommendations
-        """)
-        
-        # Placeholder UI elements for future development
-        st.markdown("---")
-        st.markdown("#### 🎯 Preview Interface (Non-Functional)")
-        
-        # Mock date range selector
-        col1, col2 = st.columns(2)
-        with col1:
-            placeholder_start = st.date_input(
-                "Start Date (Preview)",
-                value=datetime.now(_eastern_tz),
-                disabled=True,
-                help="Date range selection for educator availability analysis"
-            )
-        with col2:
-            placeholder_end = st.date_input(
-                "End Date (Preview)", 
-                value=datetime.now(_eastern_tz) + timedelta(days=30),
-                disabled=True,
-                help="Date range selection for educator availability analysis"
-            )
-        
-        # Mock options
-        st.markdown("#### ⚙️ Analysis Options (Preview)")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.checkbox(
-                "Only authorized educators",
-                value=True,
-                disabled=True,
-                help="Filter to staff marked as 'Educator AT' in the roster"
-            )
-        
-        with col2:
-            st.checkbox(
-                "Show educator workload balance",
-                value=False,
-                disabled=True,
-                help="Include analysis of educator assignment distribution"
-            )
-        
-        # Mock analysis button
-        if st.button("📊 Analyze Educator Availability (Coming Soon)", disabled=True, use_container_width=True):
-            st.info("This feature will be implemented in a future update.")
-        
-        # Show current educator-enabled classes for context
-        st.markdown("---")
-        st.markdown("#### 📚 Current Classes Requiring Educators")
-        
-        # Get actual classes that need educators
-        try:
-            if hasattr(self, 'excel_admin_functions') and self.excel_admin_functions:
-                all_classes = self.excel_admin_functions.excel.get_all_classes()
-                educator_classes = []
-                
-                for class_name in all_classes:
-                    class_details = self.excel_admin_functions.excel.get_class_details(class_name)
-                    if class_details:
-                        instructor_count = class_details.get('instructors_per_day', 0)
-                        try:
-                            instructor_count = int(float(instructor_count)) if instructor_count else 0
-                        except (ValueError, TypeError):
-                            instructor_count = 0
-                        
-                        if instructor_count > 0:
-                            educator_classes.append({
-                                'Class Name': class_name,
-                                'Educators Needed': instructor_count,
-                                'Class Type': 'Staff Meeting' if 'SM' in class_name.upper() else 'Training'
-                            })
-                
-                if educator_classes:
-                    educator_df = pd.DataFrame(educator_classes)
-                    st.dataframe(educator_df, use_container_width=True, hide_index=True)
-                    st.info(f"Found {len(educator_classes)} classes that require educators")
-                else:
-                    st.info("No classes currently configured to require educators")
-                    
-        except Exception as e:
-            st.error(f"Error loading educator class information: {str(e)}")
-        
-        # Implementation roadmap
-        st.markdown("---")
-        st.markdown("#### 🗺️ Implementation Roadmap")
-        
-        roadmap_items = [
-            "✅ Tab 5 structure created",
-            "🔄 Enhance `get_no_conflict_educator_availability()` function", 
-            "🔄 Integrate educator authorization checking",
-            "🔄 Add educator-specific conflict rules (AT allowed)",
-            "🔄 Build educator workload analysis",
-            "🔄 Create educator coverage gap reporting",
-            "🔄 Add export functionality for educator reports"
-        ]
-        
-        for item in roadmap_items:
-            st.write(f"• {item}")
+    # ========================================================================
+    # EDUCATOR COVERAGE
+    #
+    # The education manager's workspace. Coverage numbers used to be a tab inside
+    # Enrollment Reports, assigning an educator meant scrolling past every student
+    # roster in Manage Classes, and authorising someone to teach at all meant
+    # leaving the training dashboard for the staff database. All of it is one
+    # section now, so a gap can be closed on the screen that showed it.
+    # ========================================================================
+
+    def _show_educator_coverage(self):
+        """Show the Educator Coverage workspace."""
+        from .educator_admin_ui import show_educator_coverage
+        show_educator_coverage(self)
+
 
     # ========================================================================
     # BUILD CLASSES
@@ -1875,16 +1765,21 @@ class AdminAccess:
                         st.error("Unexpected response from enrollment system")
 
     def _display_add_educator_form(self, class_name, class_date):
-        """Display form to add a new educator signup with two-day class support"""
+        """Add an educator signup for exactly the date this session editor is showing.
+
+        Educators on a two-day class sign up per day, and the caller has already
+        expanded such a class into one editor per day - so the day is settled before
+        this form is reached. It used to ask anyway, deriving "Day 1" and "Day 2"
+        from whatever date it was handed: from the Day 2 editor that made Day 1 the
+        second day of the class and Day 2 *the day after the class ended*, and
+        choosing it booked an educator onto a date the class does not run on.
+        """
         # Get all staff
         staff_list = self.excel_admin_functions.excel.get_staff_list()
 
         if not staff_list:
             st.warning("No staff found")
             return
-
-        # Check if this is a two-day class
-        is_two_day = st.session_state.training_enrollment_manager._is_two_day_class(class_name)
 
         # Create unique key for this form
         form_key = f"add_educator_{class_name}_{class_date}".replace(" ", "_").replace("/", "_")
@@ -1897,30 +1792,8 @@ class AdminAccess:
                 key=f"{form_key}_staff"
             )
 
-            # For two-day classes, allow selecting which day
-            selected_date = class_date
-            if is_two_day:
-                both_days = st.session_state.training_enrollment_manager._get_two_day_dates(class_date)
-                if len(both_days) == 2:
-                    st.info("Note: For 2-day classes, educators can sign up for individual days")
-                    day_options = [
-                        f"Day 1 ({both_days[0]})",
-                        f"Day 2 ({both_days[1]})"
-                    ]
-                    selected_day_option = st.selectbox(
-                        "Select Day",
-                        options=day_options,
-                        key=f"{form_key}_day"
-                    )
-
-                    # Extract the date from the selection
-                    if "Day 1" in selected_day_option:
-                        selected_date = both_days[0]
-                    else:
-                        selected_date = both_days[1]
-
             # Submit button
-            submitted = st.form_submit_button("➕ Add Educator")
+            submitted = st.form_submit_button(f"➕ Add Educator to {class_date}")
 
             if submitted:
                 if not selected_staff:
@@ -1930,7 +1803,7 @@ class AdminAccess:
                     result = st.session_state.training_educator_manager.signup_as_educator(
                         staff_name=selected_staff,
                         class_name=class_name,
-                        class_date=selected_date,  # Use selected_date (which may be day 1 or day 2)
+                        class_date=class_date,  # the day this editor is showing, not a re-derived one
                         override_conflict=True,  # Admin can override conflicts
                         override_capacity=True   # Admin can override capacity limits
                     )
@@ -1939,8 +1812,7 @@ class AdminAccess:
                     if isinstance(result, tuple):
                         success, message = result
                         if success:
-                            day_label = f" for {selected_date}" if is_two_day else ""
-                            st.success(f"Added {selected_staff} as educator{day_label}")
+                            st.success(f"Added {selected_staff} as educator for {class_date}")
                             st.rerun()
                         else:
                             st.error(f"Failed to add educator: {message}")

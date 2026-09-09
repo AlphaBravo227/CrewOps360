@@ -176,6 +176,13 @@ The page also flags anything needing attention: staff with no role, clinical sta
 no seniority, duplicate seniority ranks, non-management clinical staff with no shift
 requirement, bidding staff with no email, and track-working staff in no grouping.
 
+One field has a second editor. `is_educator_at` (**Educator AT**) can also be set from
+Training & Events → **Training Admin → Educator Coverage → Educator Roster**, because
+the person who discovers a class has nobody authorised to teach it is the education
+manager, and sending them to a different admin area to fix it lost the gap report they
+were reading. Both editors write the same roster row through `update_staff()`, so a
+change made in either shows up in the other.
+
 ### Someone leaves
 
 Mark them **inactive**. They drop out of every staff picker (track management, bidding,

@@ -1614,20 +1614,24 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
             st.caption(f"Reporting on **{training_year}**. Every table and download "
                        f"on this page covers that year only.")
         
-        # Add educator tab if educator functionality is available
+        # Educator numbers still colour the tables below - a compliance row counts a
+        # staff member's educator signups, a conflict row says whether it came from a
+        # signup or an enrolment - so this flag stays. What moved out is the educator
+        # *workspace*: coverage, gaps, participation, assignment and the authorised
+        # roster now live under Training Admin > Educator Coverage, so the education
+        # manager works in one place instead of reading here and editing three
+        # screens away.
         has_educator = excel_admin_functions.educator is not None
-        
+
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            "📊 Compliance", "🎯 Utilization", "⚠️ Conflicts",
+            "📋 Individual Classes", "🔍 Validation", "📅 Schedule Report"
+        ])
+
         if has_educator:
-            tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-                "📊 Compliance", "🎯 Utilization", "⚠️ Conflicts", "👨‍🏫 Educators", 
-                "📋 Individual Classes", "🔍 Validation", "📅 Schedule Report"
-            ])
-        else:
-            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-                "📊 Compliance", "🎯 Utilization", "⚠️ Conflicts", 
-                "📋 Individual Classes", "🔍 Validation", "📅 Schedule Report"
-            ])
-        
+            st.caption("👨‍🏫 Educator coverage, gaps, participation and roster editing "
+                       "now live in **Training Admin → Educator Coverage**.")
+
 
         with tab1:
             st.write("### Staff Enrollment Compliance")
@@ -1876,104 +1880,8 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
             except Exception as e:
                 st.error(f"Error generating conflict report: {str(e)}")
         
-        # EDUCATOR TAB (only if educator functionality is available)
-        if has_educator:
-            with tab4:
-                st.write("### 👨‍🏫 Educator Coverage Analysis")
-                
-                try:
-                    # Educator coverage report
-                    coverage_df = excel_admin_functions.get_educator_coverage_report()
-                    
-                    if not coverage_df.empty:
-                        # Coverage summary metrics
-                        col1, col2, col3, col4 = st.columns(4)
-                        
-                        with col1:
-                            fully_covered = len(coverage_df[coverage_df['Status'] == '✅ Fully Covered'])
-                            st.metric("Fully Covered", fully_covered)
-                        
-                        with col2:
-                            total_needed = coverage_df['Still Needed'].sum()
-                            st.metric("Total Positions Needed", total_needed)
-                        
-                        with col3:
-                            critical_classes = len(coverage_df[coverage_df['Status'] == '❌ No Coverage'])
-                            st.metric("Classes w/o Educators", critical_classes)
-                        
-                        with col4:
-                            avg_coverage = coverage_df['Coverage Rate'].str.rstrip('%').astype(float).mean()
-                            st.metric("Avg Coverage", f"{avg_coverage:.1f}%")
-                        
-                        st.write("#### Educator Coverage by Class/Date")
-                        st.dataframe(
-                            sortable_dates(coverage_df, ['Date']),
-                            use_container_width=True,
-                            column_config=date_column_config(['Date']),
-                        )
-                        
-                        # Classes needing educators
-                        st.write("#### 🚨 Priority - Classes Still Needing Educators")
-                        needs_educators_df = excel_admin_functions.get_classes_needing_educators_report()
-                        
-                        if not needs_educators_df.empty:
-                            st.dataframe(
-                                sortable_dates(needs_educators_df, ['Date']),
-                                use_container_width=True,
-                                column_config=date_column_config(['Date']),
-                            )
-                        else:
-                            st.success("✅ All educator positions are filled!")
-                        
-                        # Individual educator participation
-                        st.write("#### Individual Educator Participation")
-                        participation_df = excel_admin_functions.get_educator_participation_report()
-                        
-                        if not participation_df.empty:
-                            st.dataframe(participation_df, use_container_width=True)
-                        else:
-                            st.info("No educator signups found.")
-                        
-                        # Export functionality
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            if st.button("📥 Export Coverage Report"):
-                                csv = coverage_df.to_csv(index=False)
-                                st.download_button(
-                                    "Download Coverage CSV",
-                                    csv,
-                                    f"{year_filename_prefix(training_year)}educator_coverage_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.csv",
-                                    "text/csv"
-                                )
-                        
-                        with col2:
-                            if st.button("📥 Export Needs Report"):
-                                csv = needs_educators_df.to_csv(index=False)
-                                st.download_button(
-                                    "Download Needs CSV",
-                                    csv,
-                                    f"{year_filename_prefix(training_year)}educator_needs_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.csv",
-                                    "text/csv"
-                                )
-                        
-                        with col3:
-                            if st.button("📥 Export Participation Report"):
-                                csv = participation_df.to_csv(index=False)
-                                st.download_button(
-                                    "Download Participation CSV",
-                                    csv,
-                                    f"{year_filename_prefix(training_year)}educator_participation_{datetime.now(_eastern_tz).strftime('%Y%m%d')}.csv",
-                                    "text/csv"
-                                )
-                    
-                    else:
-                        st.info("No educator data available - no classes require educators.")
-                        
-                except Exception as e:
-                    st.error(f"Error generating educator reports: {str(e)}")
-        
         # Individual classes tab
-        individual_tab_idx = tab5 if has_educator else tab4
+        individual_tab_idx = tab4
         with individual_tab_idx:
             st.write("### Enhanced Individual Class Reports")
             
@@ -2135,7 +2043,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                 st.error(f"Error with individual class reports: {str(e)}")
         
         # Validation tab
-        validation_tab_idx = tab6 if has_educator else tab5
+        validation_tab_idx = tab5
         with validation_tab_idx:
             st.write("### Excel Structure Validation")
             try:
@@ -2160,7 +2068,7 @@ def enhance_admin_reports(admin_access_instance, excel_admin_functions):
                 st.error(f"Error with validation: {str(e)}")
         
         # COMPREHENSIVE SCHEDULE REPORT TAB
-        schedule_report_tab = tab7 if has_educator else tab6
+        schedule_report_tab = tab6
         with schedule_report_tab:
             _show_comprehensive_schedule_report()
 
