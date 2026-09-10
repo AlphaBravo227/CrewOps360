@@ -38,6 +38,11 @@ except Exception as e:  # pragma: no cover
 DRAFT_KEY = 'training_class_draft'
 DRAFT_FOR_KEY = 'training_class_draft_for'
 
+# Set while the form holds an unsaved copy of an existing class, so the screen can say
+# what it was copied from. A duplicate is a new class like any other until it is saved -
+# nothing is written when the copy is made, so backing out of it leaves no trace.
+DUPLICATE_OF_KEY = 'training_class_duplicate_of'
+
 # A keyed Streamlit widget ignores the `value` or `default` it is handed once it has
 # state of its own, and returns whatever the browser last had in it. So changing the
 # draft in code - filling the staff list from a group, removing a date, loading a
@@ -199,7 +204,62 @@ def clear_draft():
     """Forget the working copy and the fields showing it, after saving or cancelling."""
     st.session_state.pop(DRAFT_KEY, None)
     st.session_state.pop(DRAFT_FOR_KEY, None)
+    st.session_state.pop(DUPLICATE_OF_KEY, None)
     reset_widget_state()
+
+
+def copy_name_for(training_year, source_name, db_path=catalog.DEFAULT_DB_PATH):
+    """A name like the source's that the year is not already using.
+
+    Names are compared case-insensitively because the catalog matches them that way:
+    saving a 'crm (copy)' beside a 'CRM (Copy)' would find the existing class and
+    overwrite it rather than adding one.
+    """
+    taken = {str(name).strip().lower()
+             for name in catalog.get_class_names(training_year, db_path=db_path)}
+    candidate = f"{source_name} (copy)"
+    counter = 1
+    while candidate.strip().lower() in taken:
+        counter += 1
+        candidate = f"{source_name} (copy {counter})"
+    return candidate
+
+
+def start_duplicate(training_year, source_class_name, db_path=catalog.DEFAULT_DB_PATH):
+    """
+    Load an existing class into the form as a new, unsaved one.
+
+    Building a year's classes is mostly repetition — the same locations, times, seat
+    counts and assigned staff, on different dates — so a copy to edit down is far less
+    work than a form filled in from scratch. Nothing is written here: the copy is a
+    draft under a free name until the admin saves it, and its dates come across too,
+    since a schedule's shape is usually closer to what is wanted than an empty one.
+
+    Returns True if the source class was found and the form is now holding its copy.
+    """
+    record = catalog.load_class_for_editing(training_year, source_class_name,
+                                            db_path=db_path)
+    if not record:
+        return False
+
+    draft = _draft_from_class(record)
+    draft['class_name'] = copy_name_for(training_year, record['class_name'],
+                                        db_path=db_path)
+
+    # The form's fields still hold whatever was last in them; the draft they are
+    # supposed to be showing has just changed underneath them.
+    reset_widget_state()
+    st.session_state[DRAFT_KEY] = draft
+    # Keyed as the create form's draft, which is what this is - `load_draft` finds it
+    # already there and leaves it alone rather than blanking it.
+    st.session_state[DRAFT_FOR_KEY] = (training_year, None)
+    st.session_state[DUPLICATE_OF_KEY] = record['class_name']
+    return True
+
+
+def duplicate_source():
+    """The class the form's unsaved copy came from, or None."""
+    return st.session_state.get(DUPLICATE_OF_KEY)
 
 
 # ---------------------------------------------------------------------------
@@ -411,17 +471,28 @@ def _render_dates(draft):
     st.caption(
         "Add as many dates as the class needs. A date taught at more than one site "
         "gets a location per site: each is bookable separately, with its own times "
-        "and its own seat count, and staff pick which one they are attending.")
+        "and its own seat count, and staff pick which one they are attending. "
+        "**Duplicate** copies a date's whole setup onto a new one, so a class that "
+        "runs the same way every time is set up once and dated as many times as it "
+        "needs.")
 
     is_meeting = draft['settings'].get('is_staff_meeting')
     removing = None
+    duplicating = None
 
     for index, entry in enumerate(draft['dates']):
         with st.container(border=True):
-            header = st.columns([5, 1])
+            header = st.columns([4, 1, 1])
             with header[0]:
                 st.markdown(f"**Date {index + 1}**")
             with header[1]:
+                if st.button("Duplicate", key=wkey(f"copy_date_{index}"),
+                             use_container_width=True,
+                             help="Add another date set up exactly like this one — "
+                                  "same locations, times and seat counts — for you "
+                                  "to put a date on."):
+                    duplicating = index
+            with header[2]:
                 # Never offer to remove the only date — a class with no dates shows
                 # staff a "not configured" warning, which is not something to reach
                 # by clicking a button labelled Remove.
@@ -523,6 +594,22 @@ def _render_dates(draft):
             if st.button("➕ Add another location", key=wkey(f"addloc_{index}")):
                 entry['options'].append(_blank_option())
                 st.rerun()
+
+    if duplicating is not None:
+        source = draft['dates'][duplicating]
+        draft['dates'].insert(duplicating + 1, {
+            # The day itself is the one thing a copy is always for changing, and two
+            # dates carrying the same day would not save. Everything laborious about
+            # the row — every location, with its times and seat counts — comes across.
+            'class_date': None,
+            'has_live': source['has_live'],
+            'can_work_n_prior': source['can_work_n_prior'],
+            'options': [dict(option) for option in source['options']],
+        })
+        # The dates after the copy have all shifted down one, onto the widget keys
+        # their neighbours were using.
+        reset_widget_state()
+        st.rerun()
 
     if removing is not None:
         draft['dates'].pop(removing)
@@ -773,6 +860,14 @@ def render_class_form(training_year, class_name=None, db_path=catalog.DEFAULT_DB
     `on_saved` is called after a successful save, for the caller to leave the form.
     """
     draft = load_draft(training_year, class_name, db_path=db_path)
+
+    copied_from = duplicate_source() if class_name is None else None
+    if copied_from:
+        st.info(
+            f"This is a copy of **{copied_from}** — its settings, dates, locations "
+            f"and assigned staff came across. Nothing is saved until you click **Save "
+            f"class**, and {copied_from} itself is untouched either way. Give it a "
+            f"name of its own and change what differs.")
 
     draft['class_name'] = st.text_input(
         "Class name", value=draft['class_name'], key=wkey("name"),
