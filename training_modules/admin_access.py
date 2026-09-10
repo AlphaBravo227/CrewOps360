@@ -1052,14 +1052,34 @@ class AdminAccess:
             self._show_class_import(year, catalog)
 
     def _show_class_editor(self, year, editing, class_editor_ui):
-        """The create/edit form, with a way back to the class list."""
-        if st.button("⬅️ Back to classes", key="class_form_back"):
-            class_editor_ui.clear_draft()
-            st.session_state.pop('training_class_editing', None)
-            st.session_state.training_class_creating = False
-            st.rerun()
+        """The create/edit form, with a way back to the class list.
+
+        Deleting a class lives here rather than on the list: the list is long
+        enough to scroll, and a delete button on every row is a destructive
+        control sitting one misclick away from the edit button beside it.
+        """
+        from training_modules import class_catalog as catalog
+
+        top = st.columns([2, 6, 2])
+        with top[0]:
+            if st.button("⬅️ Back to classes", key="class_form_back",
+                         use_container_width=True):
+                class_editor_ui.clear_draft()
+                st.session_state.pop('training_class_editing', None)
+                st.session_state.pop('training_class_deleting', None)
+                st.session_state.training_class_creating = False
+                st.rerun()
+        with top[2]:
+            # Nothing to delete until the class exists.
+            if editing and st.button("🗑️ Delete class", key="class_form_delete",
+                                     use_container_width=True):
+                st.session_state['training_class_deleting'] = editing
+                st.rerun()
 
         st.markdown(f"### {'Edit ' + editing if editing else 'New class'}")
+
+        if editing and st.session_state.get('training_class_deleting') == editing:
+            self._confirm_class_delete(year, editing, catalog)
 
         def leave_editor():
             st.session_state.pop('training_class_editing', None)
@@ -1078,6 +1098,7 @@ class AdminAccess:
                      key="class_list_create"):
             st.session_state.training_class_creating = True
             st.session_state.pop('training_class_editing', None)
+            st.session_state.pop('training_class_deleting', None)
             st.rerun()
 
         class_names = catalog.get_class_names(year)
@@ -1088,6 +1109,9 @@ class AdminAccess:
             return
 
         st.write(f"**{len(class_names)} class(es) in {year}**")
+
+        st.caption("Open a class to see its dates and locations. Delete lives "
+                   "inside a class, under Edit.")
 
         for position, class_name in enumerate(class_names):
             record = catalog.load_class_for_editing(year, class_name)
@@ -1101,46 +1125,48 @@ class AdminAccess:
             multi_site = [entry['class_date'] for entry in dates
                           if len(entry['options']) > 1]
 
-            with st.container(border=True):
-                heading = st.columns([5, 1, 1])
-                with heading[0]:
-                    origin = ("imported from the workbook"
-                              if record['source'] == 'import' else "built here")
-                    staffing = (
-                        "educator-only, staff don't attend"
-                        if record['settings'].get('is_educator_only')
-                        else f"{len(record['assigned_staff'])} staff assigned")
-                    st.markdown(f"**{class_name}**")
-                    st.caption(f"{len(dates)} date(s) · {staffing} · {origin}")
+            span = ''
+            if dates:
+                first, last = dates[0]['class_date'], dates[-1]['class_date']
+                span = first if first == last else f"{first} – {last}"
+
+            origin = ("imported from the workbook"
+                      if record['source'] == 'import' else "built here")
+            staffing = (
+                "educator-only, staff don't attend"
+                if record['settings'].get('is_educator_only')
+                else f"{len(record['assigned_staff'])} staff assigned")
+
+            # Everything a year's classes are usually scanned for - which class,
+            # when, how many dates - reads off the collapsed line, so the list
+            # stays short enough to see at once.
+            summary = f"**{class_name}** · {len(dates)} date(s)"
+            if span:
+                summary += f" · {span}"
+
+            row = st.columns([6, 1])
+            with row[0]:
+                with st.expander(summary, expanded=False):
+                    # The collapsed line already carries the name, date count and
+                    # span, so only what it left out belongs in here.
+                    st.caption(f"{staffing} · {origin}")
                     calendar_display = (record['settings'].get('calendar_display')
                                         or '').strip()
                     if calendar_display:
                         st.caption(f"🗓️ Shows as \"{calendar_display}\" on the "
                                    f"schedule report")
-                with heading[1]:
-                    if st.button("Edit", key=f"class_edit_{position}",
-                                 use_container_width=True):
-                        st.session_state.training_class_editing = class_name
-                        st.session_state.training_class_creating = False
-                        st.rerun()
-                with heading[2]:
-                    if st.button("Delete", key=f"class_del_{position}",
-                                 use_container_width=True):
-                        st.session_state['training_class_deleting'] = class_name
-                        st.rerun()
-
-                if dates:
-                    first, last = dates[0]['class_date'], dates[-1]['class_date']
-                    span = first if first == last else f"{first} – {last}"
-                    st.caption(f"📅 {span}")
-                if locations:
-                    st.caption(f"📍 {', '.join(locations)}")
-                if multi_site:
-                    st.caption(f"🔀 {len(multi_site)} date(s) run at more than one "
-                               f"location: {', '.join(multi_site)}")
-
-                if st.session_state.get('training_class_deleting') == class_name:
-                    self._confirm_class_delete(year, class_name, catalog)
+                    if locations:
+                        st.caption(f"📍 {', '.join(locations)}")
+                    if multi_site:
+                        st.caption(f"🔀 {len(multi_site)} date(s) run at more than "
+                                   f"one location: {', '.join(multi_site)}")
+            with row[1]:
+                if st.button("Edit", key=f"class_edit_{position}",
+                             use_container_width=True):
+                    st.session_state.training_class_editing = class_name
+                    st.session_state.training_class_creating = False
+                    st.session_state.pop('training_class_deleting', None)
+                    st.rerun()
 
     def _confirm_class_delete(self, year, class_name, catalog):
         """Ask before deleting, and say what the deletion leaves behind."""
@@ -1170,6 +1196,9 @@ class AdminAccess:
                 try:
                     catalog.delete_class(year, class_name)
                     st.session_state.pop('training_class_deleting', None)
+                    # The class is gone, so its editor has nothing to edit.
+                    st.session_state.pop('training_class_editing', None)
+                    st.session_state.training_class_creating = False
                     handler = st.session_state.get('training_excel_handler')
                     if handler is not None and hasattr(handler, 'invalidate'):
                         handler.invalidate()
