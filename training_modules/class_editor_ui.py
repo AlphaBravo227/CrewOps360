@@ -93,6 +93,11 @@ def _blank_draft():
         'class_name': '',
         'settings': {
             'calendar_display': '',
+            # A new class is live unless the admin says otherwise. Building one and
+            # forgetting to turn it on would be the worse failure of the two: nobody
+            # would be told the class exists, where a class switched off deliberately
+            # is switched off by somebody who meant it.
+            'is_active': True,
             'students_per_class': 21,
             'classes_per_day': 1,
             'instructors_per_day': 0,
@@ -151,6 +156,9 @@ def _draft_from_class(record):
     for key in ('has_ccemt', 'is_multi_session', 'is_count_exempt',
                 'nurses_medic_separate', 'is_two_day_class', 'is_educator_only'):
         draft['settings'][key] = bool(settings.get(key))
+    # Missing or NULL means a class stored before the flag existed, which was live.
+    stored_active = settings.get('is_active')
+    draft['settings']['is_active'] = True if stored_active is None else bool(stored_active)
     # A NULL is_staff_meeting means "never set" — the name rule decided it. Show the
     # answer that rule would give, so the box reflects how the class actually behaves.
     meeting = settings.get('is_staff_meeting')
@@ -216,7 +224,8 @@ def copy_name_for(training_year, source_name, db_path=catalog.DEFAULT_DB_PATH):
     overwrite it rather than adding one.
     """
     taken = {str(name).strip().lower()
-             for name in catalog.get_class_names(training_year, db_path=db_path)}
+             for name in catalog.get_class_names(training_year, db_path=db_path,
+                                                 include_inactive=True)}
     candidate = f"{source_name} (copy)"
     counter = 1
     while candidate.strip().lower() in taken:
@@ -633,6 +642,23 @@ def _render_settings(draft):
 
     st.markdown("#### Class settings")
 
+    settings['is_active'] = st.checkbox(
+        "Class is active", value=bool(settings.get('is_active', True)),
+        key=wkey("is_active"),
+        help="On, the class is live: the staff assigned to it see it on their "
+             "registration screen, educators can sign up to teach it, and it appears "
+             "in the reports and the roster export. Off, the class is yours to build "
+             "on - it keeps its dates, settings and assigned staff, and none of them "
+             "reach anybody until you turn it on. Nothing enrolled against it is lost "
+             "while it is off.")
+    if not settings['is_active']:
+        st.warning(
+            "**Not live.** Nobody sees this class - not on registration, not on the "
+            "educator signup list, and not in the reports or the roster export. Build "
+            "it as far as you want and tick **Class is active** when it is ready. "
+            "Anyone already enrolled keeps their enrollment; it comes back with the "
+            "class.")
+
     settings['is_educator_only'] = st.checkbox(
         "Educator-only class", value=bool(settings.get('is_educator_only')),
         key=wkey("educator_only"),
@@ -745,16 +771,25 @@ def _render_settings(draft):
 def _validate(draft, training_year, original_name, db_path):
     """What is wrong with the draft, as a list of messages. Empty means it will save."""
     problems = []
+    # An inactive class is one being built, so what it is missing is not yet wrong.
+    # Everything below that is a genuine data error - a name already taken, a date
+    # entered twice, a time the app cannot read - is reported either way: those do
+    # not become correct by being invisible, and leaving them to be discovered on
+    # the day the class goes live is how a draft turns into an emergency.
+    is_active = bool(draft['settings'].get('is_active', True))
 
     name = (draft['class_name'] or '').strip()
     if not name:
         problems.append("The class needs a name.")
     elif name != (original_name or ''):
-        if name in catalog.get_class_names(training_year, db_path=db_path):
+        # Inactive classes included: a draft holds its name against the year like any
+        # other class, and saving a second class under it would overwrite the draft.
+        if name in catalog.get_class_names(training_year, db_path=db_path,
+                                           include_inactive=True):
             problems.append(f"{training_year} already has a class called '{name}'.")
 
     entered = [entry for entry in draft['dates'] if entry.get('class_date')]
-    if not entered:
+    if not entered and is_active:
         problems.append("The class needs at least one date. A class with no dates "
                         "shows staff a 'not configured' warning instead of a schedule.")
 
@@ -794,16 +829,18 @@ def _validate(draft, training_year, original_name, db_path):
         problems.append("The CCEMT role split only applies when nurses and medics "
                         "are enrolled separately.")
 
-    if draft['settings'].get('is_educator_only'):
-        if not catalog.parse_int(draft['settings'].get('instructors_per_day'), 0):
-            problems.append("An educator-only class needs at least one instructor per "
-                            "day. Nobody attends it as a student, so with no educator "
-                            "positions nobody could sign up for it at all.")
-    elif not draft['assigned_staff']:
-        problems.append("Nobody is assigned to the class, so nobody would see it. "
-                        "Assign at least one staff member — or tick "
-                        "\"Educator-only class\" if this is an outside course staff "
-                        "don't attend.")
+    if is_active:
+        if draft['settings'].get('is_educator_only'):
+            if not catalog.parse_int(draft['settings'].get('instructors_per_day'), 0):
+                problems.append("An educator-only class needs at least one instructor "
+                                "per day. Nobody attends it as a student, so with no "
+                                "educator positions nobody could sign up for it at "
+                                "all.")
+        elif not draft['assigned_staff']:
+            problems.append("Nobody is assigned to the class, so nobody would see it. "
+                            "Assign at least one staff member — or tick "
+                            "\"Educator-only class\" if this is an outside course "
+                            "staff don't attend.")
 
     return problems
 
@@ -842,6 +879,9 @@ def _save(draft, training_year, original_name, db_path):
         staffing = ("educator-only, no staff assigned"
                     if draft['settings'].get('is_educator_only')
                     else f"{len(draft['assigned_staff'])} staff assigned")
+        if not draft['settings'].get('is_active', True):
+            return True, (f"Saved **{name}** as **not active** — {len(dates)} date(s), "
+                          f"{staffing}. Nobody sees it until it is activated.")
         return True, f"Saved **{name}** — {len(dates)} date(s), {staffing}."
     except Exception as e:
         return False, f"Could not save the class: {e}"
@@ -901,6 +941,14 @@ def render_class_form(training_year, class_name=None, db_path=catalog.DEFAULT_DB
     if problems:
         st.warning("**Before this can be saved:**\n\n"
                    + "\n".join(f"- {problem}" for problem in problems))
+
+    # An inactive class saves without these, so say what it would still need rather
+    # than letting the day it is activated be the first anybody hears of them.
+    if not draft['settings'].get('is_active', True):
+        outstanding = catalog.activation_blockers(draft)
+        if outstanding:
+            st.info("**Before this class can be made active it will need:** "
+                    + ", ".join(outstanding) + ". It saves without them.")
 
     action_columns = st.columns([2, 2, 6])
     with action_columns[0]:

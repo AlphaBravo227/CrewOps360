@@ -120,6 +120,8 @@ def collect_year(training_year, db_path=catalog.DEFAULT_DB_PATH, unified_db=None
     going back to the database per row.
     """
     classes = []
+    # Live classes only: the export is a record of what is being taught, and a class
+    # still being built is not part of it yet.
     for class_name in catalog.get_class_names(training_year, db_path=db_path):
         record = catalog.load_class_for_editing(training_year, class_name,
                                                 db_path=db_path)

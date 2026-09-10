@@ -71,6 +71,7 @@ DEFAULT_CLASS_DETAILS = {
     'has_ccemt': 'No',
     'calendar_display': '',
     'is_staff_meeting': False,
+    'is_active': True,
     'date_count': 0,
 }
 
@@ -83,7 +84,7 @@ CLASS_SETTING_COLUMNS = (
     'students_per_class', 'nurses_medic_separate', 'classes_per_day',
     'is_two_day_class', 'time_1_start', 'time_1_end', 'time_2_start', 'time_2_end',
     'time_3_start', 'time_3_end', 'time_4_start', 'time_4_end', 'instructors_per_day',
-    'calendar_display', 'is_educator_only',
+    'calendar_display', 'is_educator_only', 'is_active',
 )
 
 
@@ -215,6 +216,7 @@ def initialize_catalog_tables(db_path=DEFAULT_DB_PATH):
             session_length INTEGER,
             is_count_exempt INTEGER DEFAULT 0,
             is_educator_only INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1,
             students_per_class INTEGER DEFAULT 21,
             nurses_medic_separate INTEGER DEFAULT 0,
             classes_per_day INTEGER DEFAULT 1,
@@ -293,6 +295,15 @@ def initialize_catalog_tables(db_path=DEFAULT_DB_PATH):
     if 'is_educator_only' not in existing_columns:
         cursor.execute('ALTER TABLE training_classes '
                        'ADD COLUMN is_educator_only INTEGER DEFAULT 0')
+    # Every class that existed before the flag did was live - it was on the
+    # registration screen, and nothing about it changes because the column arrived.
+    # The DEFAULT covers the rows ALTER TABLE backfills as well as new inserts, so a
+    # database upgraded here comes back with every class active.
+    if 'is_active' not in existing_columns:
+        cursor.execute('ALTER TABLE training_classes '
+                       'ADD COLUMN is_active INTEGER DEFAULT 1')
+        cursor.execute('UPDATE training_classes SET is_active = 1 '
+                       'WHERE is_active IS NULL')
 
     existing_option_columns = {row[1] for row in
                                cursor.execute("PRAGMA table_info(training_class_options)")}
@@ -372,6 +383,13 @@ def save_class(training_year, class_name, settings=None, dates=None, assigned_st
             # list. The flag exists because those two facts together are otherwise
             # indistinguishable from a class somebody forgot to assign anyone to.
             'is_educator_only': int(parse_checkbox(settings.get('is_educator_only'))),
+            # Whether the class is live. An inactive class is a class being built:
+            # it keeps its dates, settings and assignments, and none of them reach
+            # anybody - not the registration screen, not the educator signups, not
+            # the reports or the roster export. Absent from `settings` means active,
+            # so every caller that predates the flag (the workbook import among them)
+            # goes on producing live classes.
+            'is_active': int(parse_checkbox(settings.get('is_active', True))),
             'students_per_class': parse_int(settings.get('students_per_class'), 21),
             'nurses_medic_separate': int(parse_checkbox(
                 settings.get('nurses_medic_separate'))),
@@ -618,6 +636,75 @@ def set_instructors_per_day(training_year, class_name, count, db_path=DEFAULT_DB
         conn.close()
 
 
+def activation_blockers(record):
+    """
+    What a class still lacks before it could go live, as a list of short phrases.
+
+    These are the requirements that only mean anything once staff can see the class:
+    a class nobody can see does not need anybody assigned to it yet, and a class with
+    no dates is a class still being planned rather than a broken one. Activating is
+    what turns them into problems, which is why both the screens that can activate a
+    class - the editor's checkbox and the class list's button - ask here rather than
+    each keeping their own copy of the rule.
+
+    `record` is either a stored class from `load_class_for_editing` or the editor's
+    working copy: both carry `settings`, `dates` and `assigned_staff`, and a date is
+    only ever tested for being set.
+    """
+    settings = record.get('settings') or {}
+    missing = []
+    if not [entry for entry in (record.get('dates') or []) if entry.get('class_date')]:
+        missing.append("at least one date")
+    if parse_checkbox(settings.get('is_educator_only')):
+        if not parse_int(settings.get('instructors_per_day'), 0):
+            missing.append("at least one instructor per day")
+    elif not (record.get('assigned_staff') or []):
+        missing.append("at least one assigned staff member")
+    return missing
+
+
+def set_class_active(training_year, class_name, active, db_path=DEFAULT_DB_PATH):
+    """
+    Make a class live, or take it back out of circulation.
+
+    A targeted update for the same reason `set_instructors_per_day` is one: loading a
+    whole class back and re-saving it to flip one flag rewrites its dates and its
+    assignment list, which is not something a button labelled "Activate" should risk.
+
+    Activating checks the class is ready first: making one live is the moment its
+    gaps start being everybody's problem, and a class put in front of staff without a
+    date shows them a "not configured" warning instead of a schedule. Deactivating
+    never checks anything - taking a class out of circulation is always allowed.
+
+    Returns True when the class was found and changed.
+    """
+    active = parse_checkbox(active)
+    if active:
+        record = load_class_for_editing(training_year, class_name, db_path=db_path)
+        if record is None:
+            raise ValueError(f"No class '{class_name}' in {training_year}")
+        missing = activation_blockers(record)
+        if missing:
+            raise ValueError(
+                f"'{class_name}' is not ready to go live — it still needs "
+                f"{', '.join(missing)}.")
+
+    conn = _connect(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE training_classes SET is_active = ?, modified_date = ? "
+            "WHERE training_year = ? AND class_name = ?",
+            (int(active), _now(), training_year, str(class_name).strip()))
+        changed = cursor.rowcount > 0
+        conn.commit()
+        if not changed:
+            raise ValueError(f"No class '{class_name}' in {training_year}")
+        return True
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Reading
 # ---------------------------------------------------------------------------
@@ -634,13 +721,25 @@ def get_class_row(training_year, class_name, db_path=DEFAULT_DB_PATH):
         conn.close()
 
 
-def get_class_names(training_year, db_path=DEFAULT_DB_PATH):
-    """Every class in a training year, in display order then name."""
+def get_class_names(training_year, db_path=DEFAULT_DB_PATH, include_inactive=False):
+    """
+    Every live class in a training year, in display order then name.
+
+    Inactive classes are left out by default, because that is what inactive means:
+    a class still being built has to be invisible everywhere a class is normally
+    listed, and a caller that has not been told about the flag listing it anyway is
+    exactly the leak the flag exists to prevent.
+
+    `include_inactive=True` is for the screens that manage classes rather than use
+    them - the Build Classes list, and the checks for whether a name is already
+    taken, which have to see a draft or they would collide with it.
+    """
+    clause = '' if include_inactive else ' AND is_active = 1'
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            "SELECT class_name FROM training_classes WHERE training_year = ? "
-            "ORDER BY display_order, class_name", (training_year,)).fetchall()
+            "SELECT class_name FROM training_classes WHERE training_year = ?"
+            f"{clause} ORDER BY display_order, class_name", (training_year,)).fetchall()
         return [row['class_name'] for row in rows]
     finally:
         conn.close()
@@ -821,6 +920,12 @@ class ClassCatalog:
                 'is_count_exempt': bool(row['is_count_exempt']),
                 'is_educator_only': (bool(row['is_educator_only'])
                                      if 'is_educator_only' in row.keys() else False),
+                # A class read straight by name still reports whether it is live, so
+                # a caller holding a name from somewhere other than a class listing
+                # (an existing enrollment, a report parameter) can tell.
+                'is_active': (bool(row['is_active'])
+                              if 'is_active' in row.keys() and row['is_active'] is not None
+                              else True),
                 'students_per_class': row['students_per_class'] or 21,
                 'nurses_medic_separate': 'Yes' if row['nurses_medic_separate'] else 'No',
                 'classes_per_day': row['classes_per_day'] or 1,
@@ -986,7 +1091,11 @@ class ClassCatalog:
     # -- assignments ------------------------------------------------------
 
     def get_assigned_classes(self, staff_name):
-        """The classes one staff member is assigned to this training year."""
+        """The live classes one staff member is assigned to this training year.
+
+        A class that is still being built is left out, which is what keeps it off
+        the registration screen while it is assigned to people already.
+        """
         try:
             conn = _connect(self.db_path)
         except Exception as e:
@@ -996,7 +1105,7 @@ class ClassCatalog:
             rows = conn.execute(
                 "SELECT c.class_name FROM training_class_assignments a "
                 "JOIN training_classes c ON c.id = a.class_id "
-                "WHERE a.staff_name = ? AND c.training_year = ? "
+                "WHERE a.staff_name = ? AND c.training_year = ? AND c.is_active = 1 "
                 "ORDER BY c.display_order, c.class_name",
                 (str(staff_name).strip(), self.training_year)).fetchall()
             return [row['class_name'] for row in rows]
@@ -1034,6 +1143,15 @@ class ClassCatalog:
         enrollments reads as deliberate rather than as a configuration mistake.
         """
         return bool(self.get_class_details(class_name).get('is_educator_only'))
+
+    def is_active(self, class_name):
+        """
+        True when a class is live - built, and visible to the people it is for.
+
+        A class not in the catalog reads as active, the same way its defaults read:
+        the answer for a missing class is decided by `_missing_sheet`, not here.
+        """
+        return bool(self.get_class_details(class_name).get('is_active', True))
 
     # -- staff attributes -------------------------------------------------
     #
@@ -1195,7 +1313,11 @@ def import_workbook(workbook_path, training_year, overwrite=False,
         if name and str(name).strip().upper() != 'STAFF NAME':
             staff_rows.append((row_index, str(name).strip()))
 
-    existing = set(get_class_names(training_year, db_path=db_path))
+    # Drafts count as already imported: `overwrite=False` means leave what is
+    # already in the catalog alone, and a class somebody is part way through
+    # building is exactly that.
+    existing = set(get_class_names(training_year, db_path=db_path,
+                                   include_inactive=True))
 
     for column_index, class_name in class_columns:
         if class_name in existing and not overwrite:

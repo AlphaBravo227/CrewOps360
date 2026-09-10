@@ -25,6 +25,8 @@ def _year_last_class_date(year_label):
         return None
     try:
         latest = None
+        # Live classes only. A year is held open by classes staff are still being
+        # taught, and nobody is being taught one that is not active.
         for class_name in catalog.get_class_names(year_label):
             record = catalog.get_class_row(year_label, class_name)
             if not record:
@@ -1113,25 +1115,55 @@ class AdminAccess:
             st.session_state.pop('training_class_deleting', None)
             st.rerun()
 
-        class_names = catalog.get_class_names(year)
+        # Drafts included: this is the screen that builds classes, and one that is
+        # not live yet is the whole reason to be here.
+        class_names = catalog.get_class_names(year, include_inactive=True)
         if not class_names:
             st.info(
                 f"{year} has no classes yet. Create one above, or import them from "
                 f"that year's roster workbook on the Import tab.")
             return
 
-        st.write(f"**{len(class_names)} class(es) in {year}**")
+        records = {}
+        for class_name in class_names:
+            record = catalog.load_class_for_editing(year, class_name)
+            if record:
+                records[class_name] = record
+
+        # A stored NULL means a class saved before the flag existed, which was live.
+        def _is_active(record):
+            stored = record['settings'].get('is_active')
+            return True if stored is None else bool(stored)
+
+        inactive = [name for name, record in records.items()
+                    if not _is_active(record)]
+        live_count = len(records) - len(inactive)
+        heading = f"**{live_count} live class(es) in {year}**"
+        if inactive:
+            heading += f" · {len(inactive)} not active"
+        st.write(heading)
 
         st.caption("Open a class to see its dates and locations. **Duplicate** "
                    "starts a new class set up like that one — quicker than building "
                    "a similar class from scratch. Delete lives inside a class, "
                    "under Edit.")
 
+        if inactive:
+            st.info(
+                f"**{len(inactive)} class(es) here are not active**, so nobody sees "
+                f"them: they stay off the registration screen, the educator signup "
+                f"list, the reports and the roster export until they are activated. "
+                f"Build them here as long as you need to.")
+
         for position, class_name in enumerate(class_names):
-            record = catalog.load_class_for_editing(year, class_name)
+            record = records.get(class_name)
             if not record:
                 continue
 
+            is_active = _is_active(record)
+            # What the class would still need before it could go live. Nothing to
+            # answer for one that already is.
+            missing = [] if is_active else catalog.activation_blockers(record)
             dates = record['dates']
             locations = sorted({option['location']
                                 for entry in dates for option in entry['options']
@@ -1157,13 +1189,24 @@ class AdminAccess:
             summary = f"**{class_name}** · {len(dates)} date(s)"
             if span:
                 summary += f" · {span}"
+            if not is_active:
+                # In front of the name rather than after the dates: a list scanned
+                # down the left edge should say which of these are live without
+                # anyone having to read to the end of the line.
+                summary = f"🚧 *Not active* — {summary}"
 
-            row = st.columns([6, 1, 1])
+            row = st.columns([5, 1, 1, 1])
             with row[0]:
                 with st.expander(summary, expanded=False):
                     # The collapsed line already carries the name, date count and
                     # span, so only what it left out belongs in here.
                     st.caption(f"{staffing} · {origin}")
+                    if not is_active:
+                        st.caption("🚧 Not active — no staff, educator or report sees "
+                                   "this class yet.")
+                        if missing:
+                            st.caption("Still needs " + ", ".join(missing)
+                                       + " before it can be activated.")
                     calendar_display = (record['settings'].get('calendar_display')
                                         or '').strip()
                     if calendar_display:
@@ -1175,13 +1218,47 @@ class AdminAccess:
                         st.caption(f"🔀 {len(multi_site)} date(s) run at more than "
                                    f"one location: {', '.join(multi_site)}")
             with row[1]:
+                # One click either way, and reversible with the next one, so no
+                # confirmation: activating shows a class that was built to be shown,
+                # and deactivating hides it without touching a date, an assignment or
+                # anybody's enrollment.
+                toggle = "Activate" if not is_active else "Deactivate"
+                # A class is only offered for activation once it would work when
+                # activated. Half-built, it shows staff a "not configured" warning
+                # instead of a schedule, so the button says what is missing rather
+                # than letting the class out in that state.
+                if not is_active and missing:
+                    hint = ("Not ready yet — this class still needs "
+                            + ", ".join(missing) + ". Finish it under Edit.")
+                elif not is_active:
+                    hint = ("Make this class live — the staff assigned to it see it "
+                            "on their registration screen.")
+                else:
+                    hint = ("Take this class back out of circulation. Its dates, "
+                            "settings and assigned staff are kept, and it stops "
+                            "appearing anywhere until it is activated again.")
+                if st.button(toggle, key=f"class_active_{position}",
+                             use_container_width=True,
+                             disabled=bool(missing), help=hint):
+                    try:
+                        catalog.set_class_active(year, class_name, not is_active)
+                    except Exception as e:
+                        st.error(f"Could not change {class_name}: {e}")
+                    else:
+                        handler = st.session_state.get('training_excel_handler')
+                        if handler is not None and hasattr(handler, 'invalidate'):
+                            handler.invalidate()
+                        # The form may be holding this class with the old flag in it.
+                        class_editor_ui.clear_draft()
+                        st.rerun()
+            with row[2]:
                 if st.button("Edit", key=f"class_edit_{position}",
                              use_container_width=True):
                     st.session_state.training_class_editing = class_name
                     st.session_state.training_class_creating = False
                     st.session_state.pop('training_class_deleting', None)
                     st.rerun()
-            with row[2]:
+            with row[3]:
                 # Opens the create form holding a copy. Nothing is written until it
                 # is saved, so this cannot quietly leave a half-built class behind.
                 if st.button("Duplicate", key=f"class_dup_{position}",
@@ -1271,7 +1348,9 @@ class AdminAccess:
                               help=f"{year}'s registered roster is "
                                    f"'{default_name or 'not set'}'.")
 
-        existing = catalog.get_class_names(year)
+        # Drafts count as already in the catalog: importing over one would replace a
+        # class somebody is part way through building.
+        existing = catalog.get_class_names(year, include_inactive=True)
         overwrite = st.checkbox(
             f"Replace classes already in {year}", value=False,
             key="class_import_overwrite",
@@ -2352,9 +2431,16 @@ class AdminAccess:
                 # because it names the workbook the year's classes were imported from
                 # and the one Build Classes offers first, so a missing file is worth
                 # noting and no longer worth an error.
-                class_count = len(catalog.get_class_names(label))
+                # Configured, not live: a year whose classes are all still being
+                # built has been worked on, and reporting it as empty here would send
+                # somebody off to build what is already there.
+                class_count = len(catalog.get_class_names(label, include_inactive=True))
+                live_count = len(catalog.get_class_names(label))
                 if class_count:
                     st.success(f"{class_count} class(es) configured for {label}")
+                    if live_count < class_count:
+                        st.caption(f"🚧 {class_count - live_count} of them are not "
+                                   f"active yet, so nobody sees them.")
                 else:
                     st.warning(
                         f"{label} has no classes yet. Build them in Training Admin > "
