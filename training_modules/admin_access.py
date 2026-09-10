@@ -1076,7 +1076,14 @@ class AdminAccess:
                 st.session_state['training_class_deleting'] = editing
                 st.rerun()
 
-        st.markdown(f"### {'Edit ' + editing if editing else 'New class'}")
+        copied_from = class_editor_ui.duplicate_source() if not editing else None
+        if editing:
+            heading = f"Edit {editing}"
+        elif copied_from:
+            heading = f"New class, copied from {copied_from}"
+        else:
+            heading = "New class"
+        st.markdown(f"### {heading}")
 
         if editing and st.session_state.get('training_class_deleting') == editing:
             self._confirm_class_delete(year, editing, catalog)
@@ -1094,8 +1101,13 @@ class AdminAccess:
 
     def _show_class_list(self, year, catalog):
         """Every class in the year, with what it holds and a way into the editor."""
+        from training_modules import class_editor_ui
+
         if st.button("➕ Create a new class", type="primary",
                      key="class_list_create"):
+            # A blank form, even if the last thing the form held was a copy of
+            # something that was never saved.
+            class_editor_ui.clear_draft()
             st.session_state.training_class_creating = True
             st.session_state.pop('training_class_editing', None)
             st.session_state.pop('training_class_deleting', None)
@@ -1110,8 +1122,10 @@ class AdminAccess:
 
         st.write(f"**{len(class_names)} class(es) in {year}**")
 
-        st.caption("Open a class to see its dates and locations. Delete lives "
-                   "inside a class, under Edit.")
+        st.caption("Open a class to see its dates and locations. **Duplicate** "
+                   "starts a new class set up like that one — quicker than building "
+                   "a similar class from scratch. Delete lives inside a class, "
+                   "under Edit.")
 
         for position, class_name in enumerate(class_names):
             record = catalog.load_class_for_editing(year, class_name)
@@ -1144,7 +1158,7 @@ class AdminAccess:
             if span:
                 summary += f" · {span}"
 
-            row = st.columns([6, 1])
+            row = st.columns([6, 1, 1])
             with row[0]:
                 with st.expander(summary, expanded=False):
                     # The collapsed line already carries the name, date count and
@@ -1167,6 +1181,20 @@ class AdminAccess:
                     st.session_state.training_class_creating = False
                     st.session_state.pop('training_class_deleting', None)
                     st.rerun()
+            with row[2]:
+                # Opens the create form holding a copy. Nothing is written until it
+                # is saved, so this cannot quietly leave a half-built class behind.
+                if st.button("Duplicate", key=f"class_dup_{position}",
+                             use_container_width=True,
+                             help="Start a new class set up like this one, to edit "
+                                  "and save under its own name."):
+                    if class_editor_ui.start_duplicate(year, class_name):
+                        st.session_state.training_class_creating = True
+                        st.session_state.pop('training_class_editing', None)
+                        st.session_state.pop('training_class_deleting', None)
+                        st.rerun()
+                    else:
+                        st.error(f"Could not read {class_name} to copy it.")
 
     def _confirm_class_delete(self, year, class_name, catalog):
         """Ask before deleting, and say what the deletion leaves behind."""
