@@ -341,6 +341,8 @@ def _grouping_overview(groupings):
     st.caption(f"{len(active)} active grouping(s), "
                f"{len(groupings) - len(active)} archived.")
 
+    _grouping_export(groupings, active)
+
     # Staff in no grouping at all see no class that is assigned by grouping, which is
     # the failure this page exists to make visible.
     ungrouped = staff_groupings.get_ungrouped_staff()
@@ -349,6 +351,71 @@ def _grouping_overview(groupings):
             st.write(", ".join(ungrouped))
             st.caption("Normal for management and the non-clinical roles. Anyone else "
                        "here gets no class assigned by grouping.")
+
+
+def _grouping_export(groupings, active):
+    """Download the groupings as an Excel file, a column of names per grouping."""
+    include_archived = st.checkbox(
+        "Include archived groupings in the export", value=False,
+        key="staff_db_grouping_export_archived",
+        help="Archived groupings are exported under their name followed by "
+             "'(archived)'.")
+
+    exported = groupings if include_archived else active
+    if not exported:
+        st.caption("No groupings to export.")
+        return
+
+    table = _grouping_export_frame(exported)
+    stamp = datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M%S')
+    st.download_button(
+        "📥 Download groupings (Excel)",
+        data=_grouping_export_bytes(table),
+        file_name=f"staff_groupings_{stamp}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="One sheet, one column per grouping, the grouping name as the header "
+             "row and its members below it.")
+    st.caption(f"{len(table.columns)} grouping(s) in the export, "
+               f"longest is {len(table.index)} name(s).")
+
+
+def _grouping_export_frame(groupings):
+    """
+    The groupings side by side: one column each, its name the header row.
+
+    The shape the education office reconciles against a spreadsheet — a column of
+    names under the grouping it belongs to — so the columns are ragged and padded
+    with blanks to the length of the largest grouping. Members are the active staff
+    still on the roster, which is what the Members count above reports.
+    """
+    columns = {}
+    for grouping in groupings:
+        header = _grouping_label(grouping)
+        # Grouping names are unique, but the "(archived)" label they are exported
+        # under is not guaranteed to be, and a repeated key would drop a column.
+        while header in columns:
+            header = f"{header} "
+        columns[header] = staff_groupings.get_members(grouping['id'])
+
+    depth = max((len(names) for names in columns.values()), default=0)
+    return pd.DataFrame({header: names + [''] * (depth - len(names))
+                         for header, names in columns.items()})
+
+
+def _grouping_export_bytes(table):
+    """One-sheet workbook of the grouping columns, sized to be read as it opens."""
+    from openpyxl.utils import get_column_letter
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        table.to_excel(writer, sheet_name='Groupings', index=False)
+        sheet = writer.sheets['Groupings']
+        for position, header in enumerate(table.columns, start=1):
+            longest = max([len(str(header))]
+                          + [len(str(value)) for value in table[header]])
+            sheet.column_dimensions[get_column_letter(position)].width = \
+                min(longest + 2, 40)
+    return buffer.getvalue()
 
 
 def _grouping_editor(groupings):
