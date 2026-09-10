@@ -58,14 +58,37 @@ longer on the roster. Validation only requires that a manager is on the roster �
 the MGMT flag must not make all of their reports unsaveable — and a stored manager is
 re-checked only when the field itself is being changed.
 
+Two editors, as with `is_educator_at`: the **Edit** tab sets one staff member's
+manager, and the **Managers** tab does it the other way round — pick a manager, tick
+everybody who reports to them, save once (`set_managers()`). That tab also shows a
+report count per manager, who has no manager yet, and an Excel download of both.
+
+#### Where the assignments came from
+
 Managers used to live in a `direct_reports` table (`staff_name`, `manager_initials`)
 written outside the app and read only by the compliance report.
-`migrate_legacy_managers()` seeds this column from it once per row: each value is
-matched against the MGMT staff by name first, then by initials, and never when two
-managers share initials. Values that match nobody are printed and left blank for an
-admin to set from the picker. A row is marked as dealt with as soon as its staff member
-is on the roster, so a manager an admin later clears is never seeded back, and rows
-whose staff member has not been imported yet are retried on the next run.
+`migrate_legacy_managers()` seeds this column from it once per row, resolving each
+value through `match_legacy_manager()`, which tries three things in order:
+
+1. the value is a roster name outright (`"Bowman"`);
+2. it is the initials of a whole roster name (only reachable where a name has more than
+   one word);
+3. its **last** letter is a surname initial — `"JB"` is First-Last initials and this
+   roster stores the surname alone, so it resolves to `Bowman` provided exactly one
+   MGMT staff member's surname starts with B.
+
+Two managers who fit the same value make it ambiguous, and it is left alone rather than
+guessed at. Values that resolve to nobody are reported and left blank for an admin to
+set. The Managers tab lists every legacy row, what it resolved to and why not when it
+didn't, with an **Apply what resolves** button (`force=True`) — the seed only ever
+fills a blank manager, so re-running it after ticking somebody's MGMT box is safe and
+never overwrites an assignment made in the app.
+
+A row is marked as dealt with as soon as its staff member is on the roster, so a
+manager an admin later clears is never seeded back, and rows whose staff member has not
+been imported yet are retried on the next run. The markers are versioned
+(`legacy_managers_migrated_v2`), which is how the surname-initial matching got one
+automatic pass over databases the first version had already written off.
 
 ### Blank is not zero
 
@@ -185,11 +208,13 @@ Shewan.
 ## Maintaining the roster
 
 Clinical Track Hub → sidebar **Admin Area** → **Manage Staff Database**. The page is
-admin-password gated and has six tabs:
+admin-password gated and has seven tabs:
 
 - **Roster** — filter by name/role/active/management/grouping, and download as Excel.
 - **Groupings** — create a grouping, decide who is in it, archive or delete it, and
   download every grouping as Excel (one column per grouping, its members below it).
+- **Managers** — assign a manager's direct reports in one step, see who has no manager,
+  and apply what the legacy `direct_reports` table still resolves to.
 - **Add Staff** — new hires, including their shift requirements and groupings.
 - **Edit / Rename / Remove** — attributes, requirements, groupings, active status, name
   changes, deletion.
@@ -307,6 +332,7 @@ from modules.staff_database import (
     is_management, is_dual, is_educator_at, get_no_matrix, get_seniority,
     get_shifts_per_pay_period, get_night_minimum, get_weekend_minimum, get_email,
     get_manager, get_manager_map, get_manager_options, get_direct_reports,
+    staff_without_manager,
     get_role_mapping, get_seniority_mapping, get_no_matrix_mapping,
     get_requirements_map,
     build_preferences_df, build_requirements_df,

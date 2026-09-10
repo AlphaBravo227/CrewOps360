@@ -470,8 +470,8 @@ def check_manager_migration():
 
             # The roster arrived after the table was created, so the marker is not set
             # yet and the seed runs now.
-            ran = staffdb.migrate_legacy_managers()
-            check("the seed runs once the roster exists", ran)
+            ran, summary = staffdb.migrate_legacy_managers()
+            check("the seed runs once the roster exists", ran, str(summary))
             check("initials match an MGMT staff member",
                   staffdb.get_manager('Legacy Report') == 'Legacy Boss',
                   str(staffdb.get_manager('Legacy Report')))
@@ -493,7 +493,51 @@ def check_manager_migration():
                   staffdb.get_manager('Not On Roster') == 'Legacy Boss',
                   str(staffdb.get_manager('Not On Roster')))
             check("the migration stops once every legacy row is dealt with",
-                  staffdb.migrate_legacy_managers() is False)
+                  staffdb.migrate_legacy_managers()[0] is False)
+
+            preview = {row['staff_name']: row for row in staffdb.legacy_manager_rows()}
+            check("the legacy table can be previewed without writing to it",
+                  preview['Legacy Unmatched']['match'] is None
+                  and preview['Legacy Unmatched']['reason'] == 'no match'
+                  and preview['Legacy Report']['match'] == 'Legacy Boss',
+                  str(preview.get('Legacy Unmatched')))
+
+            # First-and-last initials against a roster that stores surnames only:
+            # 'AB' should find 'Boss' through the last initial.
+            staffdb.add_staff('Quill', 'NURSE', is_management=True,
+                              changed_by='self-check', validate=False)
+            manager, reason = staffdb.match_legacy_manager('AQ')
+            check("first-last initials resolve through the surname initial",
+                  manager == 'Quill' and reason == 'surname initial',
+                  f"{manager} / {reason}")
+
+            staffdb.add_staff('Quinn', 'NURSE', is_management=True,
+                              changed_by='self-check', validate=False)
+            manager, reason = staffdb.match_legacy_manager('AQ')
+            check("two managers with the same surname initial are refused",
+                  manager is None and reason == 'ambiguous', f"{manager} / {reason}")
+
+            ok, message = staffdb.set_managers('Quill', ['Legacy Report',
+                                                          'Legacy Unmatched'],
+                                               changed_by='self-check')
+            check("a manager's direct reports can be set in one go",
+                  ok and staffdb.get_direct_reports('Quill') == ['Legacy Report',
+                                                                 'Legacy Unmatched'],
+                  message)
+
+            ok, message = staffdb.set_managers('Quill', ['Legacy Report'],
+                                               changed_by='self-check')
+            check("dropping somebody from the list clears their manager",
+                  ok and staffdb.get_direct_reports('Quill') == ['Legacy Report']
+                  and staffdb.get_manager('Legacy Unmatched') is None, message)
+
+            check("staff with no manager are listed",
+                  'Legacy Unmatched' in staffdb.staff_without_manager()
+                  and 'Legacy Report' not in staffdb.staff_without_manager())
+
+            ok, message = staffdb.set_managers('Quill', ['Quill'],
+                                               changed_by='self-check')
+            check("a manager cannot be put in their own report list", not ok, message)
         finally:
             staffdb.set_db_path(previous_path)
 

@@ -589,6 +589,201 @@ def _grouping_settings_editor(grouping):
                    "the grouping was a mistake.")
 
 
+# Bumped after a manager write, so this tab's pickers re-read the roster instead of
+# handing back the value the browser still holds. Same fix as the Groupings tab.
+_MANAGER_NONCE = 'staff_db_manager_nonce'
+
+
+def _manager_key(name, *parts):
+    """A session key for a Managers-tab widget, under the current nonce."""
+    suffix = '_'.join(str(part) for part in parts)
+    nonce = st.session_state.get(_MANAGER_NONCE, 0)
+    return f"staff_db_mgr_{name}_{suffix}_{nonce}" if suffix \
+        else f"staff_db_mgr_{name}_{nonce}"
+
+
+def _manager_changed():
+    st.session_state[_MANAGER_NONCE] = st.session_state.get(_MANAGER_NONCE, 0) + 1
+
+
+def _managers_tab():
+    """Assign direct reports a manager at a time, rather than one staff member at a time."""
+    st.markdown("#### Managers")
+    st.caption(
+        "Who reports to whom. The Edit tab sets one staff member's manager; this does "
+        "it the other way round — pick a manager and tick everybody who reports to "
+        "them. The manager list is the staff flagged Management (MGMT).")
+
+    managers = staffdb.get_manager_options()
+    if not managers:
+        st.warning("Nobody on the roster is flagged **Management (MGMT)** yet, so "
+                   "there is nobody to assign as a manager. Tick that box on the "
+                   "Edit tab for each manager first.")
+        return
+
+    _manager_bulk_editor(managers)
+    st.markdown("---")
+    _manager_coverage()
+    st.markdown("---")
+    _legacy_manager_panel()
+
+
+def _manager_bulk_editor(managers):
+    """One manager's whole list of direct reports, saved in a single step."""
+    st.markdown("##### Assign direct reports")
+
+    chosen = st.selectbox(
+        "Manager", options=managers,
+        format_func=lambda name: f"{name} — "
+                                 f"{len(staffdb.get_direct_reports(name))} report(s)",
+        key=_manager_key('choice'))
+
+    current = staffdb.get_direct_reports(chosen, include_inactive=True)
+    # Inactive reports stay in the options: dropping them would clear somebody's
+    # manager the next time anybody pressed Save.
+    options = [name for name in
+               sorted(dict.fromkeys(list(staffdb.get_staff_names(include_inactive=True))
+                                    + list(current)), key=str.lower)
+               if name.lower() != chosen.lower()]
+
+    role_columns = st.columns([3, 2])
+    with role_columns[0]:
+        roles = st.multiselect(
+            "Add everyone in these roles", options=_selectable_roles(),
+            key=_manager_key('roles'),
+            help="A shortcut for filling the list. The staff are copied in — nothing "
+                 "stays tied to the role afterwards.")
+    with role_columns[1]:
+        st.write("")
+        if st.button("➕ Add them", use_container_width=True, disabled=not roles,
+                     key=_manager_key('add_roles')):
+            added = [name for name in staffdb.get_staff_names(roles=list(roles))
+                     if name.lower() != chosen.lower()]
+            success, message = staffdb.set_managers(
+                chosen, sorted(set(current) | set(added)), changed_by='admin')
+            _manager_changed()
+            st.success(f"✅ {message}") if success else st.error(f"❌ {message}")
+            st.rerun()
+
+    reports = st.multiselect(
+        f"Direct reports of {chosen} ({len(current)})",
+        options=options, default=current, key=_manager_key('reports', chosen))
+
+    save_columns = st.columns([2, 2, 3])
+    with save_columns[0]:
+        if st.button("💾 Save direct reports", type="primary",
+                     use_container_width=True, key=_manager_key('save', chosen)):
+            success, message = staffdb.set_managers(chosen, reports,
+                                                    changed_by='admin')
+            _manager_changed()
+            st.success(f"✅ {message}") if success else st.error(f"❌ {message}")
+            st.rerun()
+    with save_columns[1]:
+        if st.button("🧹 Clear the list", use_container_width=True,
+                     disabled=not current, key=_manager_key('clear', chosen)):
+            success, message = staffdb.set_managers(chosen, [], changed_by='admin')
+            _manager_changed()
+            st.success(f"✅ {message}") if success else st.error(f"❌ {message}")
+            st.rerun()
+    with save_columns[2]:
+        st.caption("Saving takes anybody removed from this list off that manager "
+                   "and leaves their Manager blank. Staff who report to somebody "
+                   "else are untouched unless you tick them here.")
+
+
+def _manager_coverage():
+    """How the roster is divided up, and who is still unassigned."""
+    st.markdown("##### Coverage")
+
+    counts = pd.DataFrame([{
+        'Manager': name,
+        'Direct reports': len(staffdb.get_direct_reports(name)),
+    } for name in staffdb.get_manager_options()])
+    st.dataframe(counts, use_container_width=True, hide_index=True)
+
+    unassigned = staffdb.staff_without_manager()
+    if not unassigned:
+        st.success("✅ Every active staff member has a manager on file.")
+        return
+    with st.expander(f"⚠️ {len(unassigned)} active staff have no manager"):
+        st.write(", ".join(unassigned))
+
+    st.download_button(
+        "📥 Download the manager list (Excel)",
+        data=_excel_bytes({
+            'Managers': counts,
+            'Reports': pd.DataFrame([{
+                'Staff Name': record['staff_name'],
+                'Role': record['role'],
+                'Manager': record['manager'] or '',
+            } for record in staffdb.get_all_staff(include_inactive=True)]),
+        }),
+        file_name=f"staff_managers_"
+                  f"{datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M%S')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Two sheets: a report count per manager, and every staff member with "
+             "the manager on file for them.")
+
+
+def _legacy_manager_panel():
+    """
+    What the old direct_reports table can still supply.
+
+    That table held manager *initials* while this roster stores surnames, so a value
+    like "AB" only resolves when exactly one manager's surname starts with B. This
+    shows every row and what it resolved to, so an admin can see what was recovered
+    and what has to be set by hand rather than guessing from a blank column.
+    """
+    st.markdown("##### From the old direct_reports table")
+
+    if not staffdb.legacy_manager_table_exists():
+        st.info("There is no `direct_reports` table in this database, so there is "
+                "nothing to carry over — managers are set here or on the Edit tab.")
+        return
+
+    rows = staffdb.legacy_manager_rows()
+    if not rows:
+        st.info("The `direct_reports` table is empty.")
+        return
+
+    table = pd.DataFrame([{
+        'Staff Name': row['staff_name'],
+        'On the roster': row['on_roster'],
+        'Recorded as': row['legacy_value'],
+        'Manager now': row['current'] or '',
+        'Resolves to': row['match'] or '',
+        'Why not': '' if row['match'] else row['reason'],
+    } for row in rows])
+    st.dataframe(table, use_container_width=True, hide_index=True)
+
+    fillable = [row for row in rows
+                if row['match'] and row['on_roster'] and not row['current']]
+    unresolved = sorted({row['legacy_value'] for row in rows
+                         if not row['match'] and row['legacy_value']})
+    st.caption(
+        f"{len(rows)} legacy row(s). {len(fillable)} would fill a blank Manager now; "
+        f"{len(unresolved)} recorded value(s) match no MGMT staff member "
+        f"({', '.join(unresolved[:12])}{'…' if len(unresolved) > 12 else ''}).")
+
+    apply_columns = st.columns([2, 3])
+    with apply_columns[0]:
+        if st.button("↩️ Apply what resolves", use_container_width=True,
+                     disabled=not fillable, key=_manager_key('apply_legacy')):
+            ran, summary = staffdb.migrate_legacy_managers(force=True,
+                                                           changed_by='admin')
+            _manager_changed()
+            if ran:
+                st.success(f"✅ Filled {summary['matched']} manager(s) from "
+                           "direct_reports.")
+            else:
+                st.warning("⚠️ Nothing to apply.")
+            st.rerun()
+    with apply_columns[1]:
+        st.caption("Only fills a blank Manager — it never overwrites an assignment "
+                   "made here. Safe to run again after ticking somebody's MGMT box, "
+                   "which is what lets more of these values resolve.")
+
+
 def _manager_select(key, current=None, exclude=None):
     """
     The Manager picker: the staff flagged MGMT, plus blank for nobody.
@@ -1104,14 +1299,17 @@ def display_staff_database_admin():
 
     st.markdown("---")
 
-    roster_tab, groupings_tab, add_tab, edit_tab, import_tab, history_tab = st.tabs(
-        ["📋 Roster", "👪 Groupings", "➕ Add Staff", "✏️ Edit / Rename / Remove",
-         "📥 Import from Excel", "🕓 History"])
+    (roster_tab, groupings_tab, managers_tab, add_tab, edit_tab, import_tab,
+     history_tab) = st.tabs(
+        ["📋 Roster", "👪 Groupings", "🧑\u200d💼 Managers", "➕ Add Staff",
+         "✏️ Edit / Rename / Remove", "📥 Import from Excel", "🕓 History"])
 
     with roster_tab:
         _roster_tab()
     with groupings_tab:
         _groupings_tab()
+    with managers_tab:
+        _managers_tab()
     with add_tab:
         _add_tab()
     with edit_tab:

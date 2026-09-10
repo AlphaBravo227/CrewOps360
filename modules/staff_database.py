@@ -268,14 +268,19 @@ def initialize_staff_tables():
         return False
 
 
-_MANAGER_MIGRATION_KEY = 'legacy_managers_migrated'
+# Versioned: the first pass matched a legacy value only against a manager's full
+# initials, which cannot hit a roster that stores surnames alone ("JB" against
+# "Bowman"). match_legacy_manager() now also reads the last initial as the surname's,
+# so the markers are re-keyed to give the better matching one automatic pass. Re-running
+# is safe — the seed only ever fills a blank manager.
+_MANAGER_MIGRATION_KEY = 'legacy_managers_migrated_v2'
 
 # The legacy rows already dealt with, so a manager an admin has since cleared is never
 # seeded back. Kept per row rather than as one global marker because the seed runs from
 # initialize_staff_tables(), which an import calls once per staff member — a single
 # marker would be set by the first of those calls and the rest of the roster would
 # never be seeded at all.
-_MANAGER_SEEDED_KEY = 'legacy_managers_seeded'
+_MANAGER_SEEDED_KEY = 'legacy_managers_seeded_v2'
 
 
 def _get_staff_meta(key):
@@ -315,61 +320,167 @@ def _initials_key(value):
     return re.sub(r'[^A-Za-z]', '', str(value or '')).upper()
 
 
-def migrate_legacy_managers():
+def _manager_index():
+    """
+    The lookups a legacy manager value is resolved through.
+
+    Three of them, because the legacy column held initials while this roster stores
+    the surname alone: an exact name, the initials of the whole roster name (which
+    only helps where a name has more than one word), and the *last* letter of the
+    initials against the first letter of the surname — "AEB" or "AB" is First-Last
+    initials, and its last letter is the surname's, which is what this roster keeps.
+    Each index maps to a list so a value that fits two managers can be refused rather
+    than guessed at.
+    """
+    managers = get_all_staff(include_inactive=True, management_only=True)
+    index = {'managers': managers, 'by_name': {}, 'by_initials': {}, 'by_surname': {}}
+    for record in managers:
+        name = record['staff_name']
+        index['by_name'][name.lower()] = name
+        index['by_initials'].setdefault(_initials(name), []).append(name)
+        surname = re.split(r'[^A-Za-z]+', name.strip())[-1:] or ['']
+        if surname[0]:
+            index['by_surname'].setdefault(surname[0][0].upper(), []).append(name)
+    return index
+
+
+def match_legacy_manager(value, index=None):
+    """
+    Resolve one legacy manager value to a roster name.
+
+    Returns:
+        tuple: (manager name or None, how it was matched). The reason is one of
+        'name', 'initials', 'surname initial', 'ambiguous' or 'no match', so the
+        admin page can say why a value was left alone.
+    """
+    index = index or _manager_index()
+    text = clean_name(value)
+    if not text:
+        return None, 'no match'
+
+    exact = index['by_name'].get(text.lower())
+    if exact:
+        return exact, 'name'
+
+    letters = _initials_key(text)
+    if not letters:
+        return None, 'no match'
+
+    for key, reason in ((letters, 'initials'), (letters[-1], 'surname initial')):
+        candidates = index['by_initials'].get(key) if reason == 'initials' \
+            else index['by_surname'].get(key)
+        if not candidates:
+            continue
+        if len(candidates) == 1:
+            return candidates[0], reason
+        return None, 'ambiguous'
+
+    return None, 'no match'
+
+
+def legacy_manager_table_exists():
+    """True if the legacy direct_reports table is still in the database."""
+    try:
+        cursor = _get_conn().cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                       "AND name='direct_reports'")
+        return cursor.fetchone() is not None
+    except Exception:
+        return False
+
+
+def legacy_manager_rows():
+    """
+    What the legacy direct_reports table holds and what each row resolves to, without
+    writing anything — the admin page shows this before offering to apply it.
+
+    Returns:
+        list: dicts with staff_name (as the roster spells it where it is on the
+        roster), legacy_value, on_roster, current (the manager on file now), match
+        (the resolved manager or None) and reason.
+    """
+    if not legacy_manager_table_exists():
+        return []
+    try:
+        cursor = _get_conn().cursor()
+        cursor.execute("SELECT staff_name, manager_initials FROM direct_reports")
+        legacy = cursor.fetchall()
+    except Exception as e:
+        print(f"Error reading direct_reports: {e}")
+        return []
+
+    index = _manager_index()
+    rows = []
+    for staff_name, value in legacy:
+        report = _lookup(staff_name)
+        manager, reason = match_legacy_manager(value, index)
+        if manager and report and manager.lower() == report['staff_name'].lower():
+            manager, reason = None, 'is themselves'
+        rows.append({
+            'staff_name': report['staff_name'] if report else clean_name(staff_name),
+            'legacy_value': clean_name(value),
+            'on_roster': report is not None,
+            'current': (report or {}).get('manager'),
+            'match': manager,
+            'reason': reason,
+        })
+    rows.sort(key=lambda row: row['staff_name'].lower())
+    return rows
+
+
+def migrate_legacy_managers(force=False, changed_by=None):
     """
     Seed the manager column from the legacy direct_reports table, once per row.
 
     direct_reports (staff_name, manager_initials) was written outside the app and read
     by nothing but the training compliance report. Its manager values are initials,
-    while this column holds a roster name, so each one is matched against the MGMT
-    staff — by name first, then by initials, and never when two managers share the
-    same initials. What cannot be matched is reported and left blank for an admin to
-    set from the picker.
+    while this column holds a roster name, so each one goes through
+    match_legacy_manager(); a value that fits two managers, or none, is reported and
+    left blank for an admin to set from the picker.
 
     A row is recorded as dealt with as soon as its staff member is on the roster, so a
     manager somebody clears afterwards stays cleared. A row whose staff member is not
     on the roster yet (mid-import) is left for the next run.
 
+    Args:
+        force (bool): ignore those markers and look at every row again. Only ever
+            fills a blank manager — an assignment already on the roster is never
+            overwritten — so it is safe to re-run after ticking somebody's MGMT box.
+
     Returns:
-        bool: True when the migration looked at the legacy table.
+        tuple: (ran, summary) where summary has 'matched', 'pending', 'unmatched'
+        (the legacy values nothing could be made of) and 'total'.
     """
-    if _get_staff_meta(_MANAGER_MIGRATION_KEY):
-        return False
+    summary = {'matched': 0, 'pending': 0, 'unmatched': [], 'total': 0}
+    if not force and _get_staff_meta(_MANAGER_MIGRATION_KEY):
+        return False, summary
+    if not legacy_manager_table_exists():
+        # Nothing to migrate from. Not marked as done: the table may still be
+        # created by whatever wrote it before this column existed.
+        return False, summary
     try:
         conn = _get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' "
-                       "AND name='direct_reports'")
-        if not cursor.fetchone():
-            # Nothing to migrate from. Not marked as done: the table may still be
-            # created by whatever wrote it before this column existed.
-            return False
-
         cursor.execute("SELECT staff_name, manager_initials FROM direct_reports")
         legacy = cursor.fetchall()
+        summary['total'] = len(legacy)
 
-        managers = get_all_staff(include_inactive=True, management_only=True)
-        if not managers:
+        index = _manager_index()
+        if not index['managers']:
             # The roster (or its MGMT flags) has not been imported yet — every value
             # would fail to match. Left unmarked so the seed runs once it can work.
-            return False
-        by_name = {record['staff_name'].lower(): record['staff_name']
-                   for record in managers}
-        by_initials = {}
-        for record in managers:
-            by_initials.setdefault(_initials(record['staff_name']), []).append(
-                record['staff_name'])
+            return False, summary
 
         try:
             handled = set(json.loads(_get_staff_meta(_MANAGER_SEEDED_KEY) or '[]'))
         except (TypeError, ValueError):
             handled = set()
+        if force:
+            handled = set()
 
-        matched = 0
-        pending = 0
         unmatched = set()
         now = _now()
-        for staff_name, initials in legacy:
+        for staff_name, value in legacy:
             key = clean_name(staff_name).lower()
             if not key or key in handled:
                 continue
@@ -377,42 +488,112 @@ def migrate_legacy_managers():
             if not report:
                 # Not on the roster yet. Try again next time rather than writing this
                 # row off — an import adds the roster one staff member at a time.
-                pending += 1
+                summary['pending'] += 1
                 continue
 
             handled.add(key)
-            value = clean_name(initials)
-            if not value:
-                continue
-            manager = by_name.get(value.lower())
+            manager, _ = match_legacy_manager(value, index)
+            if manager and manager.lower() == report['staff_name'].lower():
+                manager = None
             if not manager:
-                candidates = by_initials.get(_initials_key(value), [])
-                manager = candidates[0] if len(candidates) == 1 else None
-            if not manager or manager.lower() == report['staff_name'].lower():
-                unmatched.add(value)
+                if clean_name(value):
+                    unmatched.add(clean_name(value))
                 continue
             if report['manager']:
                 continue
             cursor.execute("UPDATE staff SET manager = ?, modified_date = ? "
                            "WHERE id = ?", (manager, now, report['id']))
-            matched += 1
+            _log_audit(cursor, report['staff_name'], 'updated',
+                       {'before': {'manager': None}, 'after': {'manager': manager}},
+                       changed_by or 'direct_reports migration')
+            summary['matched'] += 1
 
+        summary['unmatched'] = sorted(unmatched)
         _set_staff_meta(cursor, _MANAGER_SEEDED_KEY, json.dumps(sorted(handled)))
-        if not pending:
+        if not summary['pending']:
             _set_staff_meta(cursor, _MANAGER_MIGRATION_KEY,
                             f"{len(handled)} legacy row(s) seeded by {now}")
         conn.commit()
         invalidate_cache()
-        if matched:
-            print(f"Seeded {matched} manager(s) from direct_reports.")
-        if unmatched:
+        if summary['matched']:
+            print(f"Seeded {summary['matched']} manager(s) from direct_reports.")
+        if summary['unmatched']:
             print("Manager values with no MGMT staff member to match: "
-                  f"{', '.join(sorted(unmatched))}.")
-        return True
+                  f"{', '.join(summary['unmatched'])}.")
+        return True, summary
 
     except Exception as e:
         print(f"Error seeding managers from direct_reports: {e}")
-        return False
+        return False, summary
+
+
+def set_managers(manager_name, staff_names, changed_by=None):
+    """
+    Make exactly these staff the direct reports of one manager.
+
+    Anybody currently reporting to them and not in the list is cleared, which is what
+    makes the admin page's picker behave like the grouping membership editor. Staff
+    who report to somebody else are untouched unless they are named here.
+
+    Returns:
+        tuple: (success, message)
+    """
+    manager = to_manager(manager_name)
+    if not manager:
+        return False, "Choose a manager first."
+    if not _lookup(manager):
+        return False, f"'{manager}' is not on the staff roster."
+
+    wanted = {}
+    for name in staff_names or []:
+        record = _lookup(name)
+        if not record:
+            return False, f"'{clean_name(name)}' is not on the staff roster."
+        if record['staff_name'].lower() == manager.lower():
+            return False, "A staff member cannot be their own manager."
+        wanted[record['staff_name']] = record
+
+    current = {name for name in get_direct_reports(manager, include_inactive=True)}
+    added = [name for name in wanted if name not in current]
+    removed = [name for name in current if name not in wanted]
+    if not added and not removed:
+        return True, f"No changes to {manager}'s direct reports."
+
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        now = _now()
+        for name in added:
+            cursor.execute("UPDATE staff SET manager = ?, modified_date = ? "
+                           "WHERE id = ?", (manager, now, wanted[name]['id']))
+            _log_audit(cursor, name, 'updated',
+                       {'before': {'manager': wanted[name]['manager']},
+                        'after': {'manager': manager}}, changed_by)
+        for name in removed:
+            record = _lookup(name)
+            cursor.execute("UPDATE staff SET manager = NULL, modified_date = ? "
+                           "WHERE id = ?", (now, record['id']))
+            _log_audit(cursor, name, 'updated',
+                       {'before': {'manager': manager}, 'after': {'manager': None}},
+                       changed_by)
+        conn.commit()
+        invalidate_cache()
+
+        parts = []
+        if added:
+            parts.append(f"added {len(added)}")
+        if removed:
+            parts.append(f"removed {len(removed)}")
+        return True, f"{manager}'s direct reports updated ({', '.join(parts)})."
+    except Exception as e:
+        return False, f"Error updating {manager}'s direct reports: {e}"
+
+
+def staff_without_manager(include_inactive=False):
+    """Active staff with no manager on file, alphabetically."""
+    return [record['staff_name'] for record
+            in get_all_staff(include_inactive=include_inactive)
+            if not record['manager']]
 
 
 def staff_table_exists():
