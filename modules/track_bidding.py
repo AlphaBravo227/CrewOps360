@@ -195,12 +195,12 @@ def _load_bidding_data_files(track_name=None):
 def _load_requirements_map(requirements_df):
     """
     Parse a requirements frame into {staff_name: {shifts_per_pay_period, night_minimum,
-    weekend_minimum, weekend_group, email}}.
+    weekend_minimum, email}}.
 
     The frame comes from the staff database (see staff_database.build_requirements_df)
-    and keeps Requirements.xlsx's positional column layout (STAFF NAME, SHIFTS PER PAY
-    PERIOD, NIGHT MINIMUM, WEEKEND MINIMUM, WEEKEND GROUP, EMAIL), matching the
-    per-staff parsing in _display_bidding_staff_interface. Staff with a blank SHIFTS PER
+    and keeps Requirements.xlsx's positional column layout, minus the retired WEEKEND
+    GROUP column (STAFF NAME, SHIFTS PER PAY PERIOD, NIGHT MINIMUM, WEEKEND MINIMUM,
+    EMAIL), matching the per-staff parsing in _display_bidding_staff_interface. Staff with a blank SHIFTS PER
     PAY PERIOD are management who don't bid on tracks — shifts_per_pay_period stays None
     for them, which is what callers use to exclude them from the bidding roster.
     """
@@ -220,7 +220,6 @@ def _load_requirements_map(requirements_df):
             'shifts_per_pay_period': None,
             'night_minimum': None,
             'weekend_minimum': None,
-            'weekend_group': None,
             'email': None,
         }
         if len(cols) >= 2 and pd.notna(row.iloc[1]):
@@ -230,11 +229,7 @@ def _load_requirements_map(requirements_df):
         if len(cols) >= 4 and pd.notna(row.iloc[3]):
             entry['weekend_minimum'] = int(float(row.iloc[3]))
         if len(cols) >= 5 and pd.notna(row.iloc[4]):
-            wg = str(row.iloc[4]).strip().upper()
-            if wg in ['A', 'B', 'C', 'D', 'E']:
-                entry['weekend_group'] = wg
-        if len(cols) >= 6 and pd.notna(row.iloc[5]):
-            email = str(row.iloc[5]).strip()
+            email = str(row.iloc[4]).strip()
             if email:
                 entry['email'] = email
 
@@ -2772,7 +2767,6 @@ def _display_bidding_staff_interface(
     shifts_per_pay_period = 0
     night_minimum = 0
     weekend_minimum = 0
-    weekend_group = None
 
     if requirements_df is not None and not requirements_df.empty:
         try:
@@ -2794,20 +2788,15 @@ def _display_bidding_staff_interface(
                         night_minimum = int(float(row.iloc[2]))
                     if pd.notna(row.iloc[3]):
                         weekend_minimum = int(float(row.iloc[3]))
-                if len(requirements_df.columns) >= 5 and pd.notna(row.iloc[4]):
-                    wg = str(row.iloc[4]).strip().upper()
-                    if wg in ['A', 'B', 'C', 'D', 'E']:
-                        weekend_group = wg
         except Exception as e:
             st.warning(f"Error loading requirements: {e}")
 
     # Requirements display
     st.markdown("### Staff Requirements")
-    rc = st.columns(4)
+    rc = st.columns(3)
     rc[0].metric("Shifts per Pay Period", shifts_per_pay_period)
     rc[1].metric("Night Minimum", night_minimum)
     rc[2].metric("Weekend Minimum", weekend_minimum)
-    rc[3].metric("Weekend Group", weekend_group or "None")
 
     # Staff info
     staff_info = preferences_df[preferences_df[staff_col_prefs] == selected_staff].iloc[0]
@@ -2848,7 +2837,6 @@ def _display_bidding_staff_interface(
     st.session_state.shifts_per_pay_period = shifts_per_pay_period
     st.session_state.night_minimum = night_minimum
     st.session_state.weekend_minimum = weekend_minimum
-    st.session_state.weekend_group = weekend_group
 
     # Session state keys for bidding (namespaced to avoid collision with clinical hub)
     bid_changes_key = f'bid_track_changes_{bid_track_name}'
@@ -2941,7 +2929,7 @@ def _display_bidding_staff_interface(
             staff_col_prefs, staff_col_tracks, role_col, no_matrix_col,
             reduced_rest_col, seniority_col,
             shifts_per_pay_period, night_minimum, weekend_minimum,
-            staff_preassignments, weekend_group, requirements_df,
+            staff_preassignments, requirements_df,
             capacity, bid_track_name, bid_changes_key, bid_modified_key
         )
 
@@ -2951,8 +2939,7 @@ def _display_bidding_staff_interface(
         current_track = _build_track()
         is_valid = display_comprehensive_validation(
             current_track, days, shifts_per_pay_period, night_minimum,
-            weekend_minimum, staff_preassignments, weekend_group,
-            requirements_df, selected_staff
+            weekend_minimum, staff_preassignments
         )
         st.session_state[bid_modified_key]['valid'] = is_valid
         st.session_state.modified_track = st.session_state[bid_modified_key]
@@ -2992,7 +2979,7 @@ def _display_track_selection_tab(
     staff_col_prefs, staff_col_tracks, role_col, no_matrix_col,
     reduced_rest_col, seniority_col,
     shifts_per_pay_period, night_minimum, weekend_minimum,
-    preassignments, weekend_group, requirements_df,
+    preassignments, requirements_df,
     capacity, bid_track_name, bid_changes_key, bid_modified_key
 ):
     """Track Selection tab — same as Track Modification but for bidding."""
@@ -3003,11 +2990,10 @@ def _display_track_selection_tab(
 
     # Requirements
     st.markdown("### Requirements")
-    rc = st.columns(4)
+    rc = st.columns(3)
     rc[0].metric("Shifts/Pay Period", shifts_per_pay_period)
     rc[1].metric("Night Min", night_minimum)
     rc[2].metric("Weekend Min", weekend_minimum)
-    rc[3].metric("Weekend Group", weekend_group or "None")
 
     st.info(f"Selecting shifts for **{bid_track_name}** bidding cycle.")
 
@@ -3116,7 +3102,7 @@ def _display_track_selection_tab(
 
     display_track_modification_interface_enhanced(
         selected_staff, options_by_day, reference_track, days,
-        preassignments, use_database_logic, has_db_track, staff_role, weekend_group,
+        preassignments, use_database_logic, has_db_track, staff_role,
         day_assignments, night_assignments, assignment_details
     )
 
@@ -3138,8 +3124,7 @@ def _display_track_selection_tab(
 
     val_result = validate_track_comprehensive(
         vt, shifts_per_pay_period, night_minimum,
-        weekend_minimum, preassignments, days, weekend_group,
-        requirements_df, selected_staff
+        weekend_minimum, preassignments, days
     )
     is_valid = val_result['overall_valid']
     st.session_state.modified_track['valid'] = is_valid
@@ -3216,17 +3201,15 @@ def _display_bid_submission(
                 "check your Junk/Spam folder."
             )
 
-        weekend_group = st.session_state.get('weekend_group')
         validation_result = validate_track_comprehensive(
             saved_bid['track_data'], shifts_per_pay_period, night_minimum,
-            weekend_minimum, preassignments, days, weekend_group,
-            staff_name=selected_staff
+            weekend_minimum, preassignments, days
         )
         pdf_bytes, pdf_filename = generate_bid_summary_pdf(
             selected_staff, saved_bid['track_data'], days, bid_track_name,
             saved_bid['version'], saved_bid['submission_date'],
             shifts_per_pay_period, night_minimum, weekend_minimum,
-            preassignments, validation_result, weekend_group
+            preassignments, validation_result
         )
 
         st.markdown("### Bid Summary PDF")
@@ -3380,11 +3363,9 @@ def _display_bid_submission(
                         bid_result = get_bid_track_from_db(selected_staff, bid_track_name)
                         if bid_result[0]:
                             saved_bid = bid_result[1]
-                            weekend_group = st.session_state.get('weekend_group')
                             validation_result = validate_track_comprehensive(
                                 saved_bid['track_data'], shifts_per_pay_period, night_minimum,
-                                weekend_minimum, preassignments, days, weekend_group,
-                                staff_name=selected_staff
+                                weekend_minimum, preassignments, days
                             )
 
                             staff_email = None
@@ -3397,7 +3378,7 @@ def _display_bid_submission(
                                 selected_staff, saved_bid['track_data'], days, bid_track_name,
                                 saved_bid['version'], saved_bid['submission_date'],
                                 shifts_per_pay_period, night_minimum, weekend_minimum,
-                                preassignments, validation_result, weekend_group
+                                preassignments, validation_result
                             )
 
                             admin_ok, admin_msg = send_bid_submission_notification(

@@ -274,8 +274,10 @@ def check_requirements_parity():
     original = pd.read_excel(DEFAULT_REQUIREMENTS_PATH)
     built = staffdb.build_requirements_df()
 
+    # WEEKEND GROUP was retired, so the frame is the file's layout without it.
+    expected_columns = [c for c in original.columns if c != 'WEEKEND GROUP']
     check("build_requirements_df reproduces the Requirements column layout",
-          list(built.columns) == list(original.columns),
+          list(built.columns) == expected_columns,
           f"got {list(built.columns)}")
 
     original = original.set_index(original['STAFF NAME'].map(staffdb.clean_name))
@@ -289,7 +291,6 @@ def check_requirements_parity():
         ('SHIFTS PER PAY PERIOD', staffdb.to_optional_int),
         ('NIGHT MINIMUM', staffdb.to_optional_int),
         ('WEEKEND MINIMUM', staffdb.to_optional_int),
-        ('WEEKEND GROUP', staffdb.to_weekend_group),
         ('EMAIL', staffdb.to_email),
     ]
     differences = []
@@ -327,9 +328,9 @@ def check_requirements_parity():
           all(staffdb.get_email(name) == email for name, email in emails.items()))
 
     requirements_map = staffdb.get_requirements_map()
-    check("get_requirements_map carries all five fields",
+    check("get_requirements_map carries all four fields",
           all(set(entry) == {'shifts_per_pay_period', 'night_minimum',
-                             'weekend_minimum', 'weekend_group', 'email'}
+                             'weekend_minimum', 'email'}
               for entry in requirements_map.values()))
 
 
@@ -338,13 +339,12 @@ def check_requirements_editing():
     print("\nRequirements editing")
 
     staffdb.add_staff('Testcase Reqs', 'MEDIC', shifts_per_pay_period=6,
-                      night_minimum=2, weekend_minimum=5, weekend_group='B',
+                      night_minimum=2, weekend_minimum=5,
                       email='testcase.reqs@example.org', changed_by='self-check')
     record = staffdb.get_staff('Testcase Reqs')
     check("requirements save on add",
           record and record['shifts_per_pay_period'] == 6
           and record['night_minimum'] == 2 and record['weekend_minimum'] == 5
-          and record['weekend_group'] == 'B'
           and record['email'] == 'testcase.reqs@example.org',
           str(record))
 
@@ -352,20 +352,10 @@ def check_requirements_editing():
                                        changed_by='self-check')
     check("an invalid email is rejected", not ok, message)
 
-    ok, message = staffdb.update_staff('Testcase Reqs', weekend_group='Z',
-                                       changed_by='self-check')
-    check("an unknown weekend group is rejected rather than silently cleared",
-          not ok and staffdb.get_weekend_group('Testcase Reqs') == 'B', message)
-
     ok, message = staffdb.update_staff('Testcase Reqs', night_minimum='abc',
                                        changed_by='self-check')
     check("an unparseable number is rejected rather than silently cleared",
           not ok and staffdb.get_night_minimum('Testcase Reqs') == 2, message)
-
-    ok, message = staffdb.update_staff('Testcase Reqs', weekend_group='',
-                                       changed_by='self-check')
-    check("a blank weekend group clears it",
-          ok and staffdb.get_weekend_group('Testcase Reqs') is None, message)
 
     ok, message = staffdb.update_staff('Testcase Reqs', shifts_per_pay_period=-1,
                                        changed_by='self-check')
@@ -386,6 +376,126 @@ def check_requirements_editing():
           ok and staffdb.get_shifts_per_pay_period('Testcase Reqs') == 0, message)
 
     staffdb.delete_staff('Testcase Reqs', changed_by='self-check', force=True)
+
+
+def check_managers():
+    """The manager field: the picker, saving, renaming and deleting a manager."""
+    print("\nManagers")
+
+    staffdb.add_staff('Testcase Boss', 'NURSE', is_management=True,
+                      changed_by='self-check')
+    staffdb.add_staff('Testcase Report', 'MEDIC', manager='Testcase Boss',
+                      changed_by='self-check')
+
+    check("the manager saves on add",
+          staffdb.get_manager('Testcase Report') == 'Testcase Boss',
+          str(staffdb.get_staff('Testcase Report')))
+
+    check("the picker offers the MGMT staff",
+          'Testcase Boss' in staffdb.get_manager_options()
+          and 'Testcase Report' not in staffdb.get_manager_options())
+
+    check("direct reports read back",
+          staffdb.get_direct_reports('Testcase Boss') == ['Testcase Report'])
+
+    ok, message = staffdb.update_staff('Testcase Report', manager='Nobody At All',
+                                       changed_by='self-check')
+    check("a manager who is not on the roster is rejected",
+          not ok and staffdb.get_manager('Testcase Report') == 'Testcase Boss', message)
+
+    ok, message = staffdb.update_staff('Testcase Report', manager='Testcase Report',
+                                       changed_by='self-check')
+    check("somebody cannot be their own manager", not ok, message)
+
+    ok, message = staffdb.update_staff('Testcase Report', manager='testcase boss',
+                                       changed_by='self-check')
+    check("a manager is stored as the roster spells them",
+          ok and staffdb.get_manager('Testcase Report') == 'Testcase Boss', message)
+
+    # An unrelated edit must not be blocked by revalidating the stored manager.
+    ok, message = staffdb.update_staff('Testcase Report', night_minimum=3,
+                                       changed_by='self-check')
+    check("an unrelated edit leaves the manager alone",
+          ok and staffdb.get_manager('Testcase Report') == 'Testcase Boss', message)
+
+    ok, message, rows = staffdb.rename_staff('Testcase Boss', 'Testcase Chief',
+                                             changed_by='self-check')
+    check("renaming a manager follows through to their reports",
+          ok and staffdb.get_manager('Testcase Report') == 'Testcase Chief'
+          and rows.get('staff.manager') == 1, message)
+
+    ok, message = staffdb.delete_staff('Testcase Chief', changed_by='self-check')
+    check("deleting a manager clears the reports pointing at them",
+          ok and staffdb.get_manager('Testcase Report') is None, message)
+
+    ok, message = staffdb.update_staff('Testcase Report', manager='',
+                                       changed_by='self-check')
+    check("a blank manager clears the field",
+          ok and staffdb.get_manager('Testcase Report') is None, message)
+
+    staffdb.delete_staff('Testcase Report', changed_by='self-check')
+
+
+def check_manager_migration():
+    """The legacy direct_reports table seeds the manager column, once."""
+    print("\nMigration off the legacy direct_reports table")
+
+    previous_path = staffdb.get_db_path()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, 'managers.db')
+        staffdb.set_db_path(db_path)
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.executescript("""
+                CREATE TABLE direct_reports (
+                    staff_name TEXT, manager_initials TEXT);
+                INSERT INTO direct_reports VALUES
+                    ('Legacy Report', 'LB'),
+                    ('Legacy By Name', 'Legacy Boss'),
+                    ('Legacy Unmatched', 'ZZ'),
+                    ('Not On Roster', 'LB');
+            """)
+            conn.commit()
+            conn.close()
+
+            staffdb.initialize_staff_tables()
+            staffdb.add_staff('Legacy Boss', 'NURSE', is_management=True,
+                              changed_by='self-check', validate=False)
+            staffdb.add_staff('Legacy Report', 'MEDIC', changed_by='self-check',
+                              validate=False)
+            staffdb.add_staff('Legacy By Name', 'MEDIC', changed_by='self-check',
+                              validate=False)
+            staffdb.add_staff('Legacy Unmatched', 'MEDIC', changed_by='self-check',
+                              validate=False)
+
+            # The roster arrived after the table was created, so the marker is not set
+            # yet and the seed runs now.
+            ran = staffdb.migrate_legacy_managers()
+            check("the seed runs once the roster exists", ran)
+            check("initials match an MGMT staff member",
+                  staffdb.get_manager('Legacy Report') == 'Legacy Boss',
+                  str(staffdb.get_manager('Legacy Report')))
+            check("a manager named outright is matched too",
+                  staffdb.get_manager('Legacy By Name') == 'Legacy Boss')
+            check("initials with nobody to match are left blank",
+                  staffdb.get_manager('Legacy Unmatched') is None)
+
+            staffdb.update_staff('Legacy Report', manager='', changed_by='self-check')
+            staffdb.migrate_legacy_managers()
+            check("a manager an admin cleared is not seeded back",
+                  staffdb.get_manager('Legacy Report') is None,
+                  str(staffdb.get_manager('Legacy Report')))
+
+            staffdb.add_staff('Not On Roster', 'MEDIC', changed_by='self-check',
+                              validate=False)
+            staffdb.migrate_legacy_managers()
+            check("a legacy row waits for its staff member to reach the roster",
+                  staffdb.get_manager('Not On Roster') == 'Legacy Boss',
+                  str(staffdb.get_manager('Not On Roster')))
+            check("the migration stops once every legacy row is dealt with",
+                  staffdb.migrate_legacy_managers() is False)
+        finally:
+            staffdb.set_db_path(previous_path)
 
 
 def check_roster_issues():
@@ -661,6 +771,8 @@ def main():
         check_groupings()
         check_roster_management()
         check_requirements_editing()
+        check_managers()
+        check_manager_migration()
 
         # A second import must not disturb what is already there.
         print("\nRe-import")

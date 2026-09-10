@@ -22,8 +22,8 @@ The eligibility rules, in one place:
     consecutive-shift rules across the Block C → Block A seam, which that validator
     walks past (see its docstring). What blocks a swap is ENFORCED_RULES only:
     shifts per pay period, the per-person weekly limit (weekly_shift_limit), rest,
-    consecutive shifts and the cycle seam. Night minimum, weekend minimum and
-    weekend group are ADVISORY_RULES — a volunteer is explicitly allowed to drop
+    consecutive shifts and the cycle seam. Night minimum and weekend minimum
+    are ADVISORY_RULES — a volunteer is explicitly allowed to drop
     below those to cover a need, and is told what it costs rather than being
     silently excluded.
 
@@ -421,12 +421,11 @@ ENFORCED_RULES = ('shifts_per_pay_period', 'shifts_per_week', 'rest_requirements
 # need is worth giving up a night or a weekend for, so a volunteer is allowed to drop
 # below these — the whole point is to free them to move. They're still evaluated and
 # reported, so nobody gives one up without being told.
-ADVISORY_RULES = ('night_minimum', 'weekend_minimum', 'weekend_group_assignment')
+ADVISORY_RULES = ('night_minimum', 'weekend_minimum')
 
 _ADVISORY_TEXT = {
     'night_minimum': 'drops you below your night requirement',
     'weekend_minimum': 'drops you below your weekend requirement',
-    'weekend_group_assignment': 'leaves one of your weekend-group periods short',
 }
 
 
@@ -497,9 +496,9 @@ def validate_track_for_staff(staff_name, track_data, report_ctx, baseline_track=
     requirements and preassignments, plus the cycle-wrap check the shared validator
     doesn't cover.
 
-    'overall_valid' is recomputed over ENFORCED_RULES only — night minimum, weekend
-    minimum and weekend group are evaluated but never block a swap (see
-    ADVISORY_RULES). Anything they'd have blocked is listed under 'advisories'
+    'overall_valid' is recomputed over ENFORCED_RULES only — night minimum and
+    weekend minimum are evaluated but never block a swap (see ADVISORY_RULES).
+    Anything they'd have blocked is listed under 'advisories'
     instead, for the UI to warn about.
 
     'shifts_per_week' is likewise replaced with this staff member's own weekly limit
@@ -538,7 +537,6 @@ def validate_track_for_staff(staff_name, track_data, report_ctx, baseline_track=
         weekend_minimum=req.get('weekend_minimum') or 0,
         preassignments=preassignments,
         days=days,
-        weekend_group=req.get('weekend_group'),
     )
 
     # Replace the shared validator's flat "fewer than 4 per week" with this staff
@@ -572,7 +570,6 @@ def validate_track_for_staff(staff_name, track_data, report_ctx, baseline_track=
             weekend_minimum=req.get('weekend_minimum') or 0,
             preassignments=preassignments,
             days=days,
-            weekend_group=req.get('weekend_group'),
         )
         already_short = {rule for rule in ADVISORY_RULES if not base_result[rule]['status']}
 

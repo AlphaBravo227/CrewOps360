@@ -203,8 +203,8 @@ def validate_candidate_swap(name, source_day, target_day, period, report_ctx):
     `target_day` (same period, net-zero shift count)?
 
     Delegates to the Needs Swap validator so this table and the staff-facing view
-    apply one rule set. In particular that means night minimum, weekend minimum and
-    weekend group do NOT block a candidate — someone covering a need is allowed to
+    apply one rule set. In particular that means night minimum and weekend minimum
+    do NOT block a candidate — someone covering a need is allowed to
     drop below those, so they come back as 'advisories' to show the admin instead of
     quietly removing the person. It also adds the Block C → Block A cycle-seam check,
     which the shared validator can't see, and measures advisories against the
@@ -613,7 +613,6 @@ def candidates_workbook(shortfalls, report_ctx, track_name, on_progress=None):
 _ADVISORY_SUMMARY = {
     'night_minimum': 'below night minimum',
     'weekend_minimum': 'below weekend minimum',
-    'weekend_group_assignment': 'weekend group short',
 }
 
 

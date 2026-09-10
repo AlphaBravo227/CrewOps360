@@ -138,18 +138,17 @@ class ExcelAdminFunctions:
         """Generate compliance report showing enrollment status vs assignments - FIXED for cursor recursion"""
         staff_list = self.excel.get_staff_list()
         
-        # NEW: Get manager information from direct_reports table
+        # Who reports to whom is a roster attribute, maintained on the Staff Database
+        # page (Add / Edit a Staff Member). It used to be read from a direct_reports
+        # table keyed by initials that nothing in the app wrote; staff.manager is now
+        # the single source, and the roster's own migration seeded it from that table.
         manager_dict = {}
         try:
-            self.db.connect()
-            self.db.cursor.execute('SELECT staff_name, manager_initials FROM direct_reports')
-            for row in self.db.cursor.fetchall():
-                manager_dict[row['staff_name']] = row['manager_initials'] if row['manager_initials'] else ''
-            self.db.disconnect()
+            from modules import staff_database as staffdb
+            manager_dict = {name.lower(): manager for name, manager
+                            in staffdb.get_manager_map(include_inactive=True).items()}
         except Exception as e:
             print(f"Error loading manager data: {e}")
-            if hasattr(self.db, 'disconnect'):
-                self.db.disconnect()
         
         report_data = []
         
@@ -308,7 +307,7 @@ class ExcelAdminFunctions:
 
             report_data.append({
                 'Staff Name': staff_name,
-                'Manager': manager_dict.get(staff_name, 'N/A'),
+                'Manager': manager_dict.get(str(staff_name).strip().lower(), 'N/A'),
                 'Total Assigned': total_assigned,
                 'Total Enrolled': total_enrolled,
                 'Completion Rate': completion_rate / 100,

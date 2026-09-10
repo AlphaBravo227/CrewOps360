@@ -8,7 +8,7 @@ every page load:
 
     - "upload files/Preferences v6.xlsx" -> STAFF NAME, ROLE, No Matrix, Seniority
     - "upload files/Requirements.xlsx" -> SHIFTS PER PAY PERIOD, NIGHT MINIMUM,
-      WEEKEND MINIMUM, WEEKEND GROUP, EMAIL
+      WEEKEND MINIMUM, EMAIL
     - "training/upload/FY26 Education Classes Roster.xlsx" (Class_Enrollment sheet)
       -> STAFF NAME, Role, MGMT, DUAL, Educator AT
 
@@ -40,6 +40,7 @@ it touched in `staff_name_history`.
 
 import json
 import os
+import re
 import sqlite3
 import threading
 from datetime import datetime
@@ -65,9 +66,6 @@ UNASSIGNED_ROLE = 'UNASSIGNED'
 # for training/enrollment purposes only.
 CLINICAL_ROLES = ['NURSE', 'MEDIC']
 
-# Weekend groups as spelled in Requirements.xlsx's WEEKEND GROUP column.
-WEEKEND_GROUPS = ['A', 'B', 'C', 'D', 'E']
-
 # Every (table, column) pair in the database that stores a staff name as free text.
 # Discovered dynamically against the live schema in _staff_reference_columns() so a new
 # table picks up rename support automatically; this list only says which *column names*
@@ -81,7 +79,7 @@ STAFF_NAME_COLUMNS = [
 ]
 
 # Tables owned by this module, excluded from rename propagation (handled explicitly).
-_OWN_TABLES = {'staff', 'staff_name_history', 'staff_audit_log'}
+_OWN_TABLES = {'staff', 'staff_name_history', 'staff_audit_log', 'staff_meta'}
 
 # Tables that hold a staff name as an attribute of the roster rather than as a record of
 # something that happened. A rename has to rewrite them like any other reference, but
@@ -176,7 +174,7 @@ def initialize_staff_tables():
             shifts_per_pay_period INTEGER,
             night_minimum INTEGER,
             weekend_minimum INTEGER,
-            weekend_group TEXT,
+            manager TEXT,
             email TEXT,
             is_active INTEGER NOT NULL DEFAULT 1,
             notes TEXT,
@@ -195,11 +193,20 @@ def initialize_staff_tables():
             ('shifts_per_pay_period', 'INTEGER'),
             ('night_minimum', 'INTEGER'),
             ('weekend_minimum', 'INTEGER'),
-            ('weekend_group', 'TEXT'),
+            ('manager', 'TEXT'),
             ('email', 'TEXT'),
         ):
             if column not in staff_columns:
                 cursor.execute(f"ALTER TABLE staff ADD COLUMN {column} {definition}")
+
+        # weekend_group was retired: the weekend-group rule is gone from bidding, so
+        # the column has no reader left. Dropping it needs SQLite 3.35+; where that
+        # fails the column simply stays behind unread, which is harmless.
+        if 'weekend_group' in staff_columns:
+            try:
+                cursor.execute("ALTER TABLE staff DROP COLUMN weekend_group")
+            except sqlite3.OperationalError as e:
+                print(f"Leaving the retired weekend_group column in place: {e}")
 
         # Every add/update/delete/activate, with a JSON diff of what changed.
         cursor.execute('''
@@ -228,6 +235,16 @@ def initialize_staff_tables():
         )
         ''')
 
+        # A key/value table for one-time migration markers — the manager seed below
+        # has to know it has already run, since an admin clearing a manager must not
+        # be undone by the next start-up.
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS staff_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        ''')
+
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_staff_active ON staff(is_active)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_staff_role ON staff(role)')
 
@@ -240,10 +257,161 @@ def initialize_staff_tables():
         # staff_groupings reads the roster through this one.
         from . import staff_groupings
         staff_groupings.initialize_grouping_tables()
+
+        # Managers used to live in a direct_reports table keyed by initials, written
+        # outside the app. The first run brings what can be matched into the roster.
+        migrate_legacy_managers()
         return True
 
     except Exception as e:
         print(f"Error initializing staff tables: {e}")
+        return False
+
+
+_MANAGER_MIGRATION_KEY = 'legacy_managers_migrated'
+
+# The legacy rows already dealt with, so a manager an admin has since cleared is never
+# seeded back. Kept per row rather than as one global marker because the seed runs from
+# initialize_staff_tables(), which an import calls once per staff member — a single
+# marker would be set by the first of those calls and the rest of the roster would
+# never be seeded at all.
+_MANAGER_SEEDED_KEY = 'legacy_managers_seeded'
+
+
+def _get_staff_meta(key):
+    """One migration marker, or None when it has not been set."""
+    try:
+        cursor = _get_conn().cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                       "AND name='staff_meta'")
+        if not cursor.fetchone():
+            return None
+        cursor.execute("SELECT value FROM staff_meta WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def _set_staff_meta(cursor, key, value):
+    cursor.execute("INSERT INTO staff_meta (key, value) VALUES (?, ?) "
+                   "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                   (key, str(value)))
+
+
+def _initials(name):
+    """The initials of a name — "Van Dyke" is VD, "Bell" is B."""
+    return ''.join(word[0] for word in re.split(r'[^A-Za-z]+', str(name or ''))
+                   if word).upper()
+
+
+def _initials_key(value):
+    """
+    A legacy manager value reduced to letters, for comparing against _initials().
+
+    The legacy column already held initials ("LB"), which _initials() would read as
+    one word and shorten to "L" — so the value is only stripped and upper-cased.
+    """
+    return re.sub(r'[^A-Za-z]', '', str(value or '')).upper()
+
+
+def migrate_legacy_managers():
+    """
+    Seed the manager column from the legacy direct_reports table, once per row.
+
+    direct_reports (staff_name, manager_initials) was written outside the app and read
+    by nothing but the training compliance report. Its manager values are initials,
+    while this column holds a roster name, so each one is matched against the MGMT
+    staff — by name first, then by initials, and never when two managers share the
+    same initials. What cannot be matched is reported and left blank for an admin to
+    set from the picker.
+
+    A row is recorded as dealt with as soon as its staff member is on the roster, so a
+    manager somebody clears afterwards stays cleared. A row whose staff member is not
+    on the roster yet (mid-import) is left for the next run.
+
+    Returns:
+        bool: True when the migration looked at the legacy table.
+    """
+    if _get_staff_meta(_MANAGER_MIGRATION_KEY):
+        return False
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                       "AND name='direct_reports'")
+        if not cursor.fetchone():
+            # Nothing to migrate from. Not marked as done: the table may still be
+            # created by whatever wrote it before this column existed.
+            return False
+
+        cursor.execute("SELECT staff_name, manager_initials FROM direct_reports")
+        legacy = cursor.fetchall()
+
+        managers = get_all_staff(include_inactive=True, management_only=True)
+        if not managers:
+            # The roster (or its MGMT flags) has not been imported yet — every value
+            # would fail to match. Left unmarked so the seed runs once it can work.
+            return False
+        by_name = {record['staff_name'].lower(): record['staff_name']
+                   for record in managers}
+        by_initials = {}
+        for record in managers:
+            by_initials.setdefault(_initials(record['staff_name']), []).append(
+                record['staff_name'])
+
+        try:
+            handled = set(json.loads(_get_staff_meta(_MANAGER_SEEDED_KEY) or '[]'))
+        except (TypeError, ValueError):
+            handled = set()
+
+        matched = 0
+        pending = 0
+        unmatched = set()
+        now = _now()
+        for staff_name, initials in legacy:
+            key = clean_name(staff_name).lower()
+            if not key or key in handled:
+                continue
+            report = _lookup(staff_name)
+            if not report:
+                # Not on the roster yet. Try again next time rather than writing this
+                # row off — an import adds the roster one staff member at a time.
+                pending += 1
+                continue
+
+            handled.add(key)
+            value = clean_name(initials)
+            if not value:
+                continue
+            manager = by_name.get(value.lower())
+            if not manager:
+                candidates = by_initials.get(_initials_key(value), [])
+                manager = candidates[0] if len(candidates) == 1 else None
+            if not manager or manager.lower() == report['staff_name'].lower():
+                unmatched.add(value)
+                continue
+            if report['manager']:
+                continue
+            cursor.execute("UPDATE staff SET manager = ?, modified_date = ? "
+                           "WHERE id = ?", (manager, now, report['id']))
+            matched += 1
+
+        _set_staff_meta(cursor, _MANAGER_SEEDED_KEY, json.dumps(sorted(handled)))
+        if not pending:
+            _set_staff_meta(cursor, _MANAGER_MIGRATION_KEY,
+                            f"{len(handled)} legacy row(s) seeded by {now}")
+        conn.commit()
+        invalidate_cache()
+        if matched:
+            print(f"Seeded {matched} manager(s) from direct_reports.")
+        if unmatched:
+            print("Manager values with no MGMT staff member to match: "
+                  f"{', '.join(sorted(unmatched))}.")
+        return True
+
+    except Exception as e:
+        print(f"Error seeding managers from direct_reports: {e}")
         return False
 
 
@@ -376,17 +544,20 @@ def to_optional_int(value):
         return None
 
 
-def to_weekend_group(value):
-    """Normalize a weekend group to a single letter A-E, or None."""
-    if value is None:
+def to_manager(value):
+    """
+    A manager's name as the roster spells it, or None when blank.
+
+    Stored as a name rather than an id because that is what every reader of this
+    column wants — the roster table, the exports and the compliance report all print
+    it — and because rename_staff() rewrites it along with every other staff-name
+    reference in the database.
+    """
+    name = clean_name(value)
+    if not name:
         return None
-    try:
-        if pd.isna(value):
-            return None
-    except (TypeError, ValueError):
-        pass
-    text = str(value).strip().upper()
-    return text if text in WEEKEND_GROUPS else None
+    record = _lookup(name)
+    return record['staff_name'] if record else name
 
 
 def to_email(value):
@@ -469,7 +640,7 @@ def _select_staff_rows():
         SELECT id, staff_name, role, is_management, is_dual, is_educator_at,
                no_matrix, seniority, is_active, notes, created_date, modified_date,
                shifts_per_pay_period, night_minimum, weekend_minimum,
-               weekend_group, email
+               manager, email
         FROM staff
     ''')
     return cursor.fetchall()
@@ -517,7 +688,7 @@ def _roster():
                     'shifts_per_pay_period': row[12],
                     'night_minimum': row[13],
                     'weekend_minimum': row[14],
-                    'weekend_group': row[15],
+                    'manager': row[15],
                     'email': row[16],
                 }
                 record['clinical_role'] = clinical_role_of(record)
@@ -559,8 +730,8 @@ def get_staff(staff_name):
     Returns:
         dict or None: keys staff_name, role, clinical_role, effective_role,
         is_management, is_dual, is_educator_at, no_matrix, seniority,
-        shifts_per_pay_period, night_minimum, weekend_minimum, weekend_group,
-        email, is_active, notes.
+        shifts_per_pay_period, night_minimum, weekend_minimum, manager, email,
+        is_active, notes.
     """
     record = _lookup(staff_name)
     return dict(record) if record else None
@@ -705,12 +876,42 @@ def get_weekend_minimum(staff_name, default=None):
     return record['weekend_minimum']
 
 
-def get_weekend_group(staff_name, default=None):
-    """Weekend group (A-E), or default when not assigned."""
+def get_manager(staff_name, default=None):
+    """The name of this staff member's manager, or default when none is on file."""
     record = _lookup(staff_name)
-    if not record or not record['weekend_group']:
+    if not record or not record['manager']:
         return default
-    return record['weekend_group']
+    return record['manager']
+
+
+def get_manager_map(include_inactive=True):
+    """{staff_name: manager name} for everyone who has one on file."""
+    return {record['staff_name']: record['manager']
+            for record in get_all_staff(include_inactive=include_inactive)
+            if record['manager']}
+
+
+def get_manager_options(include_inactive=False):
+    """
+    The names a Manager picker offers: the staff flagged MGMT, alphabetically.
+
+    Management is the flag that says who can be somebody's manager, so the picker is
+    built from it rather than from a second list an admin would have to maintain.
+    """
+    return sorted((record['staff_name'] for record
+                   in get_all_staff(include_inactive=include_inactive,
+                                    management_only=True)),
+                  key=str.lower)
+
+
+def get_direct_reports(manager_name, include_inactive=False):
+    """The staff who report to one manager, alphabetically."""
+    name = clean_name(manager_name).lower()
+    if not name:
+        return []
+    return [record['staff_name'] for record
+            in get_all_staff(include_inactive=include_inactive)
+            if (record['manager'] or '').lower() == name]
 
 
 def get_email(staff_name, default=None):
@@ -787,8 +988,8 @@ def _with_override(record, overrides, field):
 
 def get_requirements_map(include_inactive=False):
     """
-    {staff_name: {shifts_per_pay_period, night_minimum, weekend_minimum, weekend_group,
-    email}} — the mapping the bidding code builds its roster and notifications from.
+    {staff_name: {shifts_per_pay_period, night_minimum, weekend_minimum, email}} —
+    the mapping the bidding code builds its roster and notifications from.
 
     Night and weekend minimums carry the active cycle's relaxations, if any (see
     active_cycle_minimum_overrides).
@@ -799,7 +1000,6 @@ def get_requirements_map(include_inactive=False):
             'shifts_per_pay_period': record['shifts_per_pay_period'],
             'night_minimum': _with_override(record, overrides, 'night_minimum'),
             'weekend_minimum': _with_override(record, overrides, 'weekend_minimum'),
-            'weekend_group': record['weekend_group'],
             'email': record['email'],
         }
         for record in get_all_staff(include_inactive=include_inactive)
@@ -911,7 +1111,7 @@ def get_staff_dataframe(include_inactive=True):
     records = get_all_staff(include_inactive=include_inactive)
     columns = ['staff_name', 'role', 'clinical_role', 'is_management', 'is_dual',
                'is_educator_at', 'no_matrix', 'seniority', 'shifts_per_pay_period',
-               'night_minimum', 'weekend_minimum', 'weekend_group', 'email',
+               'night_minimum', 'weekend_minimum', 'manager', 'email',
                'is_active', 'notes', 'created_date', 'modified_date']
     if not records:
         return pd.DataFrame(columns=columns)
@@ -922,11 +1122,10 @@ def get_staff_dataframe(include_inactive=True):
 # Requirements compatibility
 # ──────────────────────────────────────────────
 
-# Column order of Requirements.xlsx. Several validators read this frame positionally
-# (row.iloc[4] for the weekend group, len(columns) >= 5 checks), so the order matters as
-# much as the names.
+# Column order of Requirements.xlsx, minus the retired WEEKEND GROUP column. Readers
+# take the columns by name; nothing reads this frame positionally any more.
 REQUIREMENTS_COLUMNS = ['STAFF NAME', 'SHIFTS PER PAY PERIOD', 'NIGHT MINIMUM',
-                        'WEEKEND MINIMUM', 'WEEKEND GROUP', 'EMAIL']
+                        'WEEKEND MINIMUM', 'EMAIL']
 
 
 def build_requirements_df(include_inactive=False, clinical_only=True):
@@ -957,7 +1156,6 @@ def build_requirements_df(include_inactive=False, clinical_only=True):
         'SHIFTS PER PAY PERIOD': record['shifts_per_pay_period'],
         'NIGHT MINIMUM': _with_override(record, overrides, 'night_minimum'),
         'WEEKEND MINIMUM': _with_override(record, overrides, 'weekend_minimum'),
-        'WEEKEND GROUP': record['weekend_group'],
         'EMAIL': record['email'],
     } for record in records]
 
@@ -1084,7 +1282,8 @@ def build_preferences_df(include_inactive=False, clinical_only=True):
 
 _EDITABLE_FIELDS = ['role', 'is_management', 'is_dual', 'is_educator_at', 'no_matrix',
                     'seniority', 'shifts_per_pay_period', 'night_minimum',
-                    'weekend_minimum', 'weekend_group', 'email', 'is_active', 'notes']
+                    'weekend_minimum', 'manager', 'email',
+                    'is_active', 'notes']
 
 # Fields where NULL is a meaningful value, so an update passing None clears them.
 _NULLABLE_INT_FIELDS = ['shifts_per_pay_period', 'night_minimum', 'weekend_minimum']
@@ -1102,7 +1301,7 @@ def _log_audit(cursor, staff_name, action, changes=None, changed_by=None):
 
 def validate_staff_fields(staff_name, role, seniority=None, exclude_name=None,
                           shifts_per_pay_period=None, night_minimum=None,
-                          weekend_minimum=None, weekend_group=None, email=None):
+                          weekend_minimum=None, manager=None, email=None):
     """
     Check a proposed roster row.
 
@@ -1159,11 +1358,16 @@ def validate_staff_fields(staff_name, role, seniority=None, exclude_name=None,
         elif number > ceiling:
             errors.append(f"{label} cannot exceed {ceiling}.")
 
-    if weekend_group not in (None, ''):
-        group = str(weekend_group).strip().upper()
-        if group not in WEEKEND_GROUPS:
-            errors.append(f"Weekend group must be one of {', '.join(WEEKEND_GROUPS)}, "
-                          "or left blank.")
+    if manager not in (None, ''):
+        # Only that the manager is somebody on the roster. Whether they still carry the
+        # MGMT flag is deliberately not checked here: clearing that flag must not make
+        # every one of their reports unsaveable until an admin visits each of them.
+        supervisor = clean_name(manager)
+        if not _lookup(supervisor):
+            errors.append(f"'{supervisor}' is not on the staff roster, so they cannot "
+                          "be listed as a manager.")
+        elif name and supervisor.lower() == name.lower():
+            errors.append("A staff member cannot be their own manager.")
 
     if email not in (None, ''):
         address = str(email).strip()
@@ -1176,7 +1380,7 @@ def validate_staff_fields(staff_name, role, seniority=None, exclude_name=None,
 
 def add_staff(staff_name, role, is_management=False, is_dual=False, is_educator_at=False,
               no_matrix=False, seniority=None, shifts_per_pay_period=None,
-              night_minimum=None, weekend_minimum=None, weekend_group=None, email=None,
+              night_minimum=None, weekend_minimum=None, manager=None, email=None,
               is_active=True, notes=None, changed_by=None, validate=True):
     """
     Add a staff member to the roster.
@@ -1193,7 +1397,7 @@ def add_staff(staff_name, role, is_management=False, is_dual=False, is_educator_
             shifts_per_pay_period=shifts_per_pay_period,
             night_minimum=night_minimum,
             weekend_minimum=weekend_minimum,
-            weekend_group=weekend_group,
+            manager=manager,
             email=email,
         )
         if errors:
@@ -1215,14 +1419,14 @@ def add_staff(staff_name, role, is_management=False, is_dual=False, is_educator_
         cursor.execute('''
             INSERT INTO staff (staff_name, role, is_management, is_dual, is_educator_at,
                                no_matrix, seniority, shifts_per_pay_period,
-                               night_minimum, weekend_minimum, weekend_group, email,
+                               night_minimum, weekend_minimum, manager, email,
                                is_active, notes, created_date, modified_date)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (name, canonical, to_flag(is_management), to_flag(is_dual),
               to_flag(is_educator_at), to_flag(no_matrix), to_seniority(seniority),
               to_optional_int(shifts_per_pay_period), to_optional_int(night_minimum),
-              to_optional_int(weekend_minimum), to_weekend_group(weekend_group),
-              to_email(email), to_flag(is_active), notes, now, now))
+              to_optional_int(weekend_minimum), to_manager(manager), to_email(email),
+              to_flag(is_active), notes, now, now))
         _log_audit(cursor, name, 'added', {
             'role': canonical,
             'is_management': bool(to_flag(is_management)),
@@ -1233,7 +1437,7 @@ def add_staff(staff_name, role, is_management=False, is_dual=False, is_educator_
             'shifts_per_pay_period': to_optional_int(shifts_per_pay_period),
             'night_minimum': to_optional_int(night_minimum),
             'weekend_minimum': to_optional_int(weekend_minimum),
-            'weekend_group': to_weekend_group(weekend_group),
+            'manager': to_manager(manager),
             'email': to_email(email),
             'is_active': bool(is_active),
         }, changed_by)
@@ -1251,11 +1455,11 @@ def update_staff(staff_name, changed_by=None, validate=True, **fields):
     Update attributes of an existing staff member. Only the fields passed are changed.
 
     Accepted fields: role, is_management, is_dual, is_educator_at, no_matrix, seniority,
-    shifts_per_pay_period, night_minimum, weekend_minimum, weekend_group, email,
+    shifts_per_pay_period, night_minimum, weekend_minimum, manager, email,
     is_active, notes. Use rename_staff() to change the name.
 
-    Passing None for seniority, a requirements number, the weekend group or the email
-    clears that field — blank is a meaningful value for all of them.
+    Passing None for seniority, a requirements number, the manager or the email clears
+    that field — blank is a meaningful value for all of them.
 
     Which groupings a staff member belongs to is not a field here; it lives in
     staff_groupings.set_groupings_for_staff().
@@ -1289,12 +1493,8 @@ def update_staff(staff_name, changed_by=None, validate=True, **fields):
             if number is None and str(value if value is not None else '').strip():
                 return False, f"'{value}' is not a whole number ({key.replace('_', ' ')})."
             updates[key] = number
-        elif key == 'weekend_group':
-            group = to_weekend_group(value)
-            if group is None and str(value if value is not None else '').strip():
-                return False, (f"Weekend group must be one of "
-                               f"{', '.join(WEEKEND_GROUPS)}, or left blank.")
-            updates['weekend_group'] = group
+        elif key == 'manager':
+            updates['manager'] = to_manager(value)
         elif key == 'email':
             updates['email'] = to_email(value)
         elif key == 'notes':
@@ -1312,7 +1512,9 @@ def update_staff(staff_name, changed_by=None, validate=True, **fields):
                                               record['shifts_per_pay_period']),
             night_minimum=updates.get('night_minimum', record['night_minimum']),
             weekend_minimum=updates.get('weekend_minimum', record['weekend_minimum']),
-            weekend_group=updates.get('weekend_group', record['weekend_group']),
+            # Only when the manager is being changed: re-checking the stored value
+            # would block an unrelated edit if that manager had since left the roster.
+            manager=updates.get('manager'),
             email=updates.get('email', record['email']),
         )
         if errors:
@@ -1483,6 +1685,14 @@ def rename_staff(old_name, new_name, changed_by=None, propagate=True):
         cursor.execute("UPDATE staff SET staff_name = ?, modified_date = ? WHERE id = ?",
                        (new, now, record['id']))
 
+        # The staff table is this module's own, so _staff_reference_columns() skips it.
+        # Renaming a manager still has to follow through to the people who report to
+        # them, or their Manager column would point at a name no longer on the roster.
+        cursor.execute("UPDATE staff SET manager = ?, modified_date = ? "
+                       "WHERE manager = ? COLLATE NOCASE", (new, now, old))
+        if cursor.rowcount:
+            rows_updated['staff.manager'] = cursor.rowcount
+
         if propagate:
             for table, column in _staff_reference_columns():
                 cursor.execute(
@@ -1548,6 +1758,12 @@ def delete_staff(staff_name, changed_by=None, force=False):
         conn = _get_conn()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM staff WHERE id = ?", (record['id'],))
+        # Same reasoning for the people who reported to them: a Manager pointing at
+        # somebody off the roster is worse than a blank one, and the picker could not
+        # offer them again anyway.
+        cursor.execute("UPDATE staff SET manager = NULL, modified_date = ? "
+                       "WHERE manager = ? COLLATE NOCASE", (_now(), name))
+        orphaned_reports = cursor.rowcount
         # Grouping membership is part of the roster entry, not a record of something
         # that happened, so it goes with it rather than being left behind pointing at
         # a name that is no longer on the roster.
@@ -1555,7 +1771,8 @@ def delete_staff(staff_name, changed_by=None, force=False):
         staff_groupings.remove_staff_from_all(name, cursor=cursor)
         _log_audit(cursor, name, 'deleted',
                    {'record': {k: record[k] for k in _EDITABLE_FIELDS},
-                    'forced': bool(force), 'orphaned_rows': references}, changed_by)
+                    'forced': bool(force), 'orphaned_rows': references,
+                    'reports_unassigned': orphaned_reports}, changed_by)
         conn.commit()
         invalidate_cache()
         if references:

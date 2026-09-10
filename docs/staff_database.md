@@ -12,7 +12,7 @@ Staff identity and attributes used to be re-read from Excel uploads on every pag
 | Spreadsheet | Supplied |
 | --- | --- |
 | `upload files/Preferences v6.xlsx` | `STAFF NAME`, `ROLE`, `No Matrix`, `Seniority` |
-| `upload files/Requirements.xlsx` | `SHIFTS PER PAY PERIOD`, `NIGHT MINIMUM`, `WEEKEND MINIMUM`, `WEEKEND GROUP`, `EMAIL` |
+| `upload files/Requirements.xlsx` | `SHIFTS PER PAY PERIOD`, `NIGHT MINIMUM`, `WEEKEND MINIMUM`, `EMAIL` (its `WEEKEND GROUP` column is no longer read) |
 | `training/upload/FY26 Education Classes Roster.xlsx` (`Class_Enrollment`) | `STAFF NAME`, `Role`, `MGMT`, `DUAL`, `Educator AT` |
 
 All of it now comes from the `staff` table. A staff member can be added, edited,
@@ -35,14 +35,37 @@ Table `staff` (in `data/medflight_tracks.db`):
 | `shifts_per_pay_period` | Required shifts per 14-day period. `NULL` marks non-bidding staff. |
 | `night_minimum` | Minimum night shifts per cycle. |
 | `weekend_minimum` | Minimum weekend shifts per cycle. |
-| `weekend_group` | Weekend group A–E, or `NULL`. |
+| `manager` | Who this staff member reports to, as a roster name. Set from a picker of the staff flagged `is_management`. `NULL` for nobody. |
 | `email` | Used for bid notifications and confirmations. |
 | `is_active` | Inactive staff keep their history but disappear from staff pickers. |
 | `notes`, `created_date`, `modified_date` | Housekeeping. |
 
 Two supporting tables record changes: `staff_audit_log` (every add/update/activate/
 deactivate/rename/delete, with a JSON diff) and `staff_name_history` (name changes and
-which tables they rewrote).
+which tables they rewrote). A third, `staff_meta`, holds one-time migration markers.
+
+### Managers
+
+`manager` holds the name of the staff member somebody reports to. The Add and Edit forms
+offer it as a picker built from `is_management`, so ticking **Management (MGMT)** on
+someone's own record is what makes them selectable as a manager; the roster table, the
+roster export and the training compliance report all read this one column.
+
+Because it holds a name, it moves with the roster: renaming a manager rewrites their
+reports' `manager` (counted as `staff.manager` in the rename result), and deleting a
+manager clears it on everyone who pointed at them rather than leaving a name that is no
+longer on the roster. Validation only requires that a manager is on the roster — losing
+the MGMT flag must not make all of their reports unsaveable — and a stored manager is
+re-checked only when the field itself is being changed.
+
+Managers used to live in a `direct_reports` table (`staff_name`, `manager_initials`)
+written outside the app and read only by the compliance report.
+`migrate_legacy_managers()` seeds this column from it once per row: each value is
+matched against the MGMT staff by name first, then by initials, and never when two
+managers share initials. Values that match nobody are printed and left blank for an
+admin to set from the picker. A row is marked as dealt with as soon as its staff member
+is on the roster, so a manager an admin later clears is never seeded back, and rows
+whose staff member has not been imported yet are retried on the next run.
 
 ### Blank is not zero
 
@@ -164,8 +187,9 @@ Shewan.
 Clinical Track Hub → sidebar **Admin Area** → **Manage Staff Database**. The page is
 admin-password gated and has six tabs:
 
-- **Roster** — filter by name/role/active/management/grouping, and download as CSV.
-- **Groupings** — create a grouping, decide who is in it, archive or delete it.
+- **Roster** — filter by name/role/active/management/grouping, and download as Excel.
+- **Groupings** — create a grouping, decide who is in it, archive or delete it, and
+  download every grouping as Excel (one column per grouping, its members below it).
 - **Add Staff** — new hires, including their shift requirements and groupings.
 - **Edit / Rename / Remove** — attributes, requirements, groupings, active status, name
   changes, deletion.
@@ -281,8 +305,8 @@ from modules.staff_database import (
     get_staff, get_all_staff, get_staff_names,
     get_role, get_clinical_role, get_effective_role,
     is_management, is_dual, is_educator_at, get_no_matrix, get_seniority,
-    get_shifts_per_pay_period, get_night_minimum, get_weekend_minimum,
-    get_weekend_group, get_email,
+    get_shifts_per_pay_period, get_night_minimum, get_weekend_minimum, get_email,
+    get_manager, get_manager_map, get_manager_options, get_direct_reports,
     get_role_mapping, get_seniority_mapping, get_no_matrix_mapping,
     get_requirements_map,
     build_preferences_df, build_requirements_df,
@@ -293,7 +317,8 @@ Groupings are read from `modules/staff_groupings.py` rather than from here — s
 [Groupings](#groupings) above.
 
 `build_preferences_df()` and `build_requirements_df()` return DataFrames with
-Preferences v6's and Requirements' exact column layouts, built from the database. They
+Preferences v6's and Requirements' column layouts, built from the database (Requirements
+minus its retired `WEEKEND GROUP` column). They
 are what `app.py` and `modules/track_bidding.py` hand to the validators, the PDF
 generator, the hypothetical scheduler and the admin exports, so none of that code had to
 change.

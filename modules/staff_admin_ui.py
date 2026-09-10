@@ -40,6 +40,10 @@ _SHIFTS_HELP = ("Required shifts per 14-day pay period. Leave blank for manageme
 _EMAIL_HELP = ("Used to notify this staff member when their bid opens, and to send bid "
                "confirmations.")
 
+_MANAGER_HELP = ("Who this staff member reports to. The list is everyone flagged "
+                 "Management (MGMT), so a new manager becomes selectable here as soon "
+                 "as that box is ticked on their own record.")
+
 _GROUPING_HELP = ("The named lists of staff this person belongs to. Training classes "
                   "are assigned by grouping, so this is what decides which classes "
                   "reach them. Someone can be in as many as makes sense, or none.")
@@ -235,6 +239,7 @@ def _roster_tab():
         # clinical staff, so it is left blank for everyone else.
         'Track Role': (r['clinical_role']
                        if r['role'] in staffdb.CLINICAL_ROLES else ''),
+        'Manager': r['manager'] or '',
         'MGMT': r['is_management'],
         'Dual': r['is_dual'],
         'Educator AT': r['is_educator_at'],
@@ -243,7 +248,6 @@ def _roster_tab():
         'Shifts/Pay Period': r['shifts_per_pay_period'],
         'Night Min': r['night_minimum'],
         'Weekend Min': r['weekend_minimum'],
-        'Weekend Group': r['weekend_group'] or '',
         'Groupings': ', '.join(memberships.get(r['staff_name'], [])),
         'Email': r['email'] or '',
         'Active': r['is_active'],
@@ -254,14 +258,13 @@ def _roster_tab():
     st.dataframe(table, use_container_width=True, hide_index=True)
     st.caption(f"{len(table)} staff shown.")
 
-    buffer = io.StringIO()
-    table.to_csv(buffer, index=False)
+    stamp = datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M%S')
     st.download_button(
-        "📥 Download roster (CSV)",
-        data=buffer.getvalue(),
-        file_name=f"staff_roster_{datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv",
-    )
+        "📥 Download roster (Excel)",
+        data=_excel_bytes({'Roster': table}),
+        file_name=f"staff_roster_{stamp}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="The rows shown above, with the filters applied.")
 
 
 def _groupings_tab():
@@ -370,7 +373,7 @@ def _grouping_export(groupings, active):
     stamp = datetime.now(_eastern_tz).strftime('%Y%m%d_%H%M%S')
     st.download_button(
         "📥 Download groupings (Excel)",
-        data=_grouping_export_bytes(table),
+        data=_excel_bytes({'Groupings': table}),
         file_name=f"staff_groupings_{stamp}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         help="One sheet, one column per grouping, the grouping name as the header "
@@ -402,19 +405,25 @@ def _grouping_export_frame(groupings):
                          for header, names in columns.items()})
 
 
-def _grouping_export_bytes(table):
-    """One-sheet workbook of the grouping columns, sized to be read as it opens."""
+def _excel_bytes(frames):
+    """
+    An .xlsx of {sheet name: DataFrame}, with the columns sized to be read as it opens.
+
+    Every download on this page goes through here so the exports look alike, and so
+    nothing has to remember openpyxl's column-width API.
+    """
     from openpyxl.utils import get_column_letter
 
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-        table.to_excel(writer, sheet_name='Groupings', index=False)
-        sheet = writer.sheets['Groupings']
-        for position, header in enumerate(table.columns, start=1):
-            longest = max([len(str(header))]
-                          + [len(str(value)) for value in table[header]])
-            sheet.column_dimensions[get_column_letter(position)].width = \
-                min(longest + 2, 40)
+        for name, frame in frames.items():
+            frame.to_excel(writer, sheet_name=name, index=False)
+            sheet = writer.sheets[name]
+            for position, header in enumerate(frame.columns, start=1):
+                longest = max([len(str(header))]
+                              + [len(str(value)) for value in frame[header]])
+                sheet.column_dimensions[get_column_letter(position)].width = \
+                    min(longest + 2, 40)
     return buffer.getvalue()
 
 
@@ -580,6 +589,29 @@ def _grouping_settings_editor(grouping):
                    "the grouping was a mistake.")
 
 
+def _manager_select(key, current=None, exclude=None):
+    """
+    The Manager picker: the staff flagged MGMT, plus blank for nobody.
+
+    Args:
+        current (str, optional): the manager on file. Kept in the options even when
+            they no longer carry the MGMT flag, so opening someone's record and
+            saving it does not quietly clear their manager.
+        exclude (str, optional): a name to leave out — nobody manages themselves.
+    """
+    options = staffdb.get_manager_options()
+    if exclude:
+        options = [name for name in options if name.lower() != exclude.lower()]
+    stored = (current or '').strip()
+    if stored and stored not in options:
+        options = options + [stored]
+    return st.selectbox(
+        "Manager", options=[''] + options,
+        index=(options.index(stored) + 1) if stored in options else 0,
+        format_func=lambda name: "-- No manager --" if name == '' else name,
+        key=key, help=_MANAGER_HELP)
+
+
 def _add_tab():
     """Add a staff member."""
     st.markdown("#### Add a Staff Member")
@@ -597,6 +629,7 @@ def _add_tab():
                 "Seniority rank", min_value=0, max_value=9999, value=0, step=1,
                 help="1 = most senior. Leave at 0 for staff who do not bid (ranks must "
                      "be unique).")
+            manager = _manager_select("staff_db_add_manager")
         with cols[1]:
             is_management = st.checkbox("Management (MGMT)")
             is_dual = st.checkbox("Dual provider (DUAL)")
@@ -605,7 +638,7 @@ def _add_tab():
             is_active = st.checkbox("Active", value=True)
 
         st.markdown("**Shift Requirements**")
-        req_cols = st.columns(4)
+        req_cols = st.columns(3)
         with req_cols[0]:
             shifts_text = _optional_number_input("Shifts per pay period", None,
                                                  "staff_db_add_shifts", _SHIFTS_HELP)
@@ -615,10 +648,6 @@ def _add_tab():
         with req_cols[2]:
             weekends_text = _optional_number_input("Weekend minimum", None,
                                                    "staff_db_add_weekends")
-        with req_cols[3]:
-            weekend_group = st.selectbox("Weekend group",
-                                        options=[''] + staffdb.WEEKEND_GROUPS,
-                                        key="staff_db_add_group")
 
         add_by_id, add_option_ids = _grouping_options(include_archived=False)
         add_groupings = st.multiselect(
@@ -652,7 +681,7 @@ def _add_tab():
             shifts_per_pay_period=shifts,
             night_minimum=nights,
             weekend_minimum=weekends,
-            weekend_group=weekend_group or None,
+            manager=manager or None,
             email=email or None,
             is_active=is_active,
             notes=notes or None,
@@ -728,6 +757,9 @@ def _edit_tab():
                 "Seniority rank", min_value=0, max_value=9999,
                 value=int(record['seniority']) if record['seniority'] else 0, step=1,
                 help="1 = most senior. 0 clears the rank.")
+            manager = _manager_select(f"staff_db_edit_manager_{record['id']}",
+                                      current=record['manager'],
+                                      exclude=record['staff_name'])
         with cols[1]:
             is_management = st.checkbox("Management (MGMT)", value=record['is_management'])
             is_dual = st.checkbox("Dual provider (DUAL)", value=record['is_dual'])
@@ -736,7 +768,7 @@ def _edit_tab():
             no_matrix = st.checkbox("No Matrix", value=record['no_matrix'])
 
         st.markdown("**Shift Requirements**")
-        req_cols = st.columns(4)
+        req_cols = st.columns(3)
         with req_cols[0]:
             shifts_text = _optional_number_input(
                 "Shifts per pay period", record['shifts_per_pay_period'],
@@ -747,14 +779,6 @@ def _edit_tab():
         with req_cols[2]:
             weekends_text = _optional_number_input(
                 "Weekend minimum", record['weekend_minimum'], "staff_db_edit_weekends")
-        with req_cols[3]:
-            group_options = [''] + staffdb.WEEKEND_GROUPS
-            current_group = record['weekend_group'] or ''
-            if current_group not in group_options:
-                group_options.append(current_group)
-            weekend_group = st.selectbox(
-                "Weekend group", options=group_options,
-                index=group_options.index(current_group), key="staff_db_edit_group")
 
         # Only the groupings a picker can offer are editable here; an archived
         # grouping this staff member is still in is listed underneath instead, since
@@ -799,7 +823,7 @@ def _edit_tab():
             shifts_per_pay_period=shifts,
             night_minimum=nights,
             weekend_minimum=weekends,
-            weekend_group=weekend_group or None,
+            manager=manager or None,
             email=email or None,
             notes=notes,
             changed_by='admin',
@@ -921,7 +945,7 @@ def _import_tab():
         "(`Class_Enrollment` sheet): staff names plus Role, MGMT, DUAL and Educator AT. "
         "**No Matrix** and **Seniority** come from **Preferences v6**, along with each "
         "staff member's saved base-shift preference scores. **Shifts per pay period, "
-        "night and weekend minimums, weekend group and email** come from "
+        "night and weekend minimums and email** come from "
         "**Requirements**. "
         "Once imported, the app reads all of this from the database — these files are "
         "only re-read when you run an import here."

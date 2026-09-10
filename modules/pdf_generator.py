@@ -512,7 +512,7 @@ class BidSummaryPDF(FPDF):
 
 def _build_requirement_rows(shifts_by_pay_period, shifts_per_pay_period, night_count,
                              night_minimum, weekend_count, weekend_minimum,
-                             validation_result, weekend_group):
+                             validation_result):
     """
     Build (label, status, short_summary) rows for the Requirements Met table.
     Summaries are generated from counts/issue-lengths rather than the validator's
@@ -557,20 +557,12 @@ def _build_requirement_rows(shifts_by_pay_period, shifts_per_pay_period, night_c
             summary = "Consecutive-shift limit respected" if consec_res.get('status', True) else f"{n} sequence(s) too long"
             rows.append(("Consecutive Shift Limit", consec_res.get('status', True), summary))
 
-        wg_res = validation_result.get('weekend_group_assignment')
-        if wg_res is not None and weekend_group:
-            periods = wg_res.get('periods_validated', [])
-            met = sum(1 for p in periods if p.get('valid'))
-            total = len(periods)
-            summary = f"Group {weekend_group}: {met}/{total} periods met" if total else f"Group {weekend_group}"
-            rows.append(("Weekend Group", wg_res.get('status', True), summary))
-
     return rows
 
 
 def generate_bid_summary_pdf(staff_name, track_data, days, track_name, version, submission_date,
                               shifts_per_pay_period=0, night_minimum=0, weekend_minimum=0,
-                              preassignments=None, validation_result=None, weekend_group=None):
+                              preassignments=None, validation_result=None):
     """
     Generate a one-page PDF summarizing a submitted track bid: who/what/when,
     which requirements were met, key metrics, and a compact 6-week grid.
@@ -588,7 +580,6 @@ def generate_bid_summary_pdf(staff_name, track_data, days, track_name, version, 
         preassignments (dict, optional): Dictionary of day -> preassignment value
         validation_result (dict, optional): Result of validate_track_comprehensive(); if
             omitted, falls back to the three basic pay-period/night/weekend checks
-        weekend_group (str, optional): Weekend group assignment (A-E)
 
     Returns:
         tuple: (pdf_bytes, filename)
@@ -645,7 +636,7 @@ def generate_bid_summary_pdf(staff_name, track_data, days, track_name, version, 
     pdf.section_title('Requirements Met')
     rows = _build_requirement_rows(
         shifts_by_pay_period, shifts_per_pay_period, night_shifts, night_minimum,
-        weekend_shifts, weekend_minimum, validation_result, weekend_group
+        weekend_shifts, weekend_minimum, validation_result
     )
     pdf.set_font('Arial', 'B', 9)
     pdf.set_fill_color(220, 220, 220)

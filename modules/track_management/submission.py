@@ -607,9 +607,8 @@ def submit_track(selected_staff, staff_track, days, shifts_per_pay_period, night
     else:
         print("WARNING: Missing preferences data for role lookup")
     
-    # Get effective role and weekend group
+    # Get effective role
     effective_role = get_effective_role(staff_role)
-    weekend_group = st.session_state.get('weekend_group', None)
     
     print(f"DEBUG: Final role assignment for {selected_staff}: original='{staff_role}', effective='{effective_role}'")
     

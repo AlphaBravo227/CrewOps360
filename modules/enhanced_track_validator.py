@@ -1,13 +1,14 @@
 # modules/enhanced_track_validator.py
 """
 Enhanced track validator with specific Boston MedFlight rules
-Updated to handle AT preassignments and enforce all validation rules including weekend groups
+Handles AT preassignments and enforces every track rule. The weekend-group rule was
+retired with the roster column it read, so validation no longer looks at one.
 """
 
 import pandas as pd
 from datetime import datetime, timedelta
 
-def validate_track_comprehensive(track_data, shifts_per_pay_period=0, night_minimum=0, weekend_minimum=5, preassignments=None, days=None, weekend_group=None, requirements_df=None, staff_name=None):
+def validate_track_comprehensive(track_data, shifts_per_pay_period=0, night_minimum=0, weekend_minimum=5, preassignments=None, days=None):
     """
     Comprehensive track validation against all Boston MedFlight requirements
     
@@ -18,9 +19,6 @@ def validate_track_comprehensive(track_data, shifts_per_pay_period=0, night_mini
         weekend_minimum (int): Minimum weekend shifts required (>=)
         preassignments (dict, optional): Dictionary of day -> preassignment value
         days (list, optional): Ordered list of days for sequence validation
-        weekend_group (str, optional): Weekend group assignment (A, B, C, D, E)
-        requirements_df (DataFrame, optional): Requirements DataFrame for weekend group lookup
-        staff_name (str, optional): Staff name for weekend group lookup
         
     Returns:
         dict: Comprehensive validation results
@@ -32,7 +30,6 @@ def validate_track_comprehensive(track_data, shifts_per_pay_period=0, night_mini
         'shifts_per_week': {'status': True, 'details': '', 'issues': []},
         'rest_requirements': {'status': True, 'details': '', 'issues': []},
         'consecutive_shifts': {'status': True, 'details': '', 'issues': []},
-        'weekend_group_assignment': {'status': True, 'details': '', 'issues': []},
         'overall_valid': True
     }
     
@@ -67,303 +64,10 @@ def validate_track_comprehensive(track_data, shifts_per_pay_period=0, night_mini
     consecutive_shifts_result = validate_consecutive_shifts_limit(combined_track, days)
     results['consecutive_shifts'] = consecutive_shifts_result
     
-    # 7. NEW: Validate weekend group assignment (A, B, C, D, E)
-    weekend_group_result = validate_weekend_group_assignment(combined_track, weekend_group, days, requirements_df, staff_name)
-    results['weekend_group_assignment'] = weekend_group_result
-    
     # Determine overall validity
     results['overall_valid'] = all(result['status'] for result in results.values() if result != results['overall_valid'])
     
     return results
-
-def validate_weekend_group_assignment(combined_track, weekend_group, days, requirements_df=None, staff_name=None):
-    """
-    Validate weekend group assignment for a staff member
-    
-    Args:
-        combined_track (dict): Combined track data
-        weekend_group (str): Weekend group assignment (A, B, C, D, E)
-        days (list): List of schedule days
-        requirements_df (DataFrame, optional): Requirements DataFrame for weekend group lookup
-        staff_name (str, optional): Staff name for weekend group lookup
-        
-    Returns:
-        dict: Validation result for weekend group assignment
-    """
-    result = {'status': True, 'details': '', 'issues': [], 'weekend_days': [], 'periods_validated': []}
-    
-    # Get weekend group from requirements if not provided
-    if not weekend_group and requirements_df is not None and staff_name:
-        weekend_group = get_staff_weekend_group_inline(staff_name, requirements_df)
-    
-    if not weekend_group:
-        result['details'] = "No weekend group assignment found"
-        return result
-    
-    # Use inline weekend group validation since import might not work
-    wg_result = validate_weekend_group_assignment_inline(combined_track, weekend_group, days)
-    
-    # Copy results
-    result['status'] = wg_result['status']
-    result['details'] = wg_result['details']
-    result['issues'] = wg_result.get('issues', [])
-    result['weekend_group'] = weekend_group
-    result['periods_validated'] = wg_result.get('periods_validated', [])
-    
-    # Get weekend days for highlighting
-    weekend_days = get_weekend_days_for_group_inline(weekend_group)
-    
-    # Map to actual schedule days
-    result['weekend_days'] = []
-    for weekend_day in weekend_days:
-        schedule_day = map_weekend_day_to_schedule_day_inline(weekend_day, days)
-        if schedule_day:
-            result['weekend_days'].append(schedule_day)
-    
-    return result
-
-# Inline weekend group functions to avoid import issues
-def get_staff_weekend_group_inline(staff_name, requirements_df):
-    """
-    Get the weekend group assignment for a staff member
-    """
-    if requirements_df is None or requirements_df.empty:
-        return None
-    
-    try:
-        # Find staff member in requirements
-        staff_found = False
-        staff_req = None
-        
-        # Try different possible staff column names
-        possible_staff_cols = [
-            requirements_df.columns[0],
-            'STAFF NAME', 'Staff Name', 'staff name', 'Name', 'NAME'
-        ]
-        
-        for col_name in possible_staff_cols:
-            if col_name in requirements_df.columns:
-                staff_req = requirements_df[requirements_df[col_name] == staff_name]
-                if not staff_req.empty:
-                    staff_found = True
-                    break
-                    
-                # Try case-insensitive match
-                staff_req = requirements_df[requirements_df[col_name].str.lower() == staff_name.lower()]
-                if not staff_req.empty:
-                    staff_found = True
-                    break
-        
-        if not staff_found or staff_req.empty:
-            return None
-        
-        # Get weekend group from column 4 (0-indexed)
-        if len(requirements_df.columns) >= 5:  # Column 4 exists
-            weekend_group = staff_req.iloc[0].iloc[4]
-            
-            if pd.notna(weekend_group):
-                weekend_group = str(weekend_group).strip().upper()
-                if weekend_group in ['A', 'B', 'C', 'D', 'E']:
-                    return weekend_group
-        
-        return None
-        
-    except Exception as e:
-        return None
-
-def get_weekend_days_for_group_inline(weekend_group):
-    """
-    Get all weekend days for a specific group
-    """
-    WEEKEND_GROUPS = {
-        'A': {
-            'type': 'Every Other',
-            'periods': [
-                ['Fri C 6', 'Sat C 6', 'Sun A 1'],  # Period 1
-                ['Fri A 2', 'Sat A 2', 'Sun B 3'],  # Period 2
-                ['Fri B 4', 'Sat B 4', 'Sun C 5']   # Period 3
-            ]
-        },
-        'B': {
-            'type': 'Every Other',
-            'periods': [
-                ['Fri A 1', 'Sat A 1', 'Sun A 2'],  # Period 1
-                ['Fri B 3', 'Sat B 3', 'Sun B 4'],  # Period 2
-                ['Fri C 5', 'Sat C 5', 'Sun C 6']   # Period 3
-            ]
-        },
-        'C': {
-            'type': 'Every Third',
-            'periods': [
-                ['Fri C 6', 'Sat C 6', 'Sun A 1'],  # Period 1
-                ['Fri B 3', 'Sat B 3', 'Sun B 4']   # Period 2
-            ]
-        },
-        'D': {
-            'type': 'Every Third',
-            'periods': [
-                ['Fri A 1', 'Sat A 1', 'Sun A 2'],  # Period 1
-                ['Fri B 4', 'Sat B 4', 'Sun C 5']   # Period 2
-            ]
-        },
-        'E': {
-            'type': 'Every Third',
-            'periods': [
-                ['Fri A 2', 'Sat A 2', 'Sun B 3'],  # Period 1
-                ['Fri C 5', 'Sat C 5', 'Sun C 6']   # Period 2
-            ]
-        }
-    }
-    
-    if weekend_group not in WEEKEND_GROUPS:
-        return []
-    
-    all_days = []
-    for period in WEEKEND_GROUPS[weekend_group]['periods']:
-        all_days.extend(period)
-    
-    return all_days
-
-def map_weekend_day_to_schedule_day_inline(weekend_day, days):
-    """
-    Map a weekend group day (e.g., 'Fri A 1') to actual schedule day
-    """
-    # Parse the weekend day format
-    parts = weekend_day.split()
-    if len(parts) != 3:
-        return None
-    
-    day_name, block, week = parts
-    
-    # Find matching day in schedule
-    for schedule_day in days:
-        schedule_parts = schedule_day.split()
-        if len(schedule_parts) >= 1:
-            schedule_day_name = schedule_parts[0]
-            
-            # Check if day names match (Fri, Sat, Sun)
-            if schedule_day_name == day_name:
-                # Check if it contains the block and week
-                if block in schedule_day and week in schedule_day:
-                    return schedule_day
-    
-    return None
-
-def validate_weekend_group_assignment_inline(track_data, weekend_group, days):
-    """
-    Validate weekend group assignment for a staff member
-    """
-    WEEKEND_GROUPS = {
-        'A': {
-            'type': 'Every Other',
-            'periods': [
-                ['Fri C 6', 'Sat C 6', 'Sun A 1'],  # Period 1
-                ['Fri A 2', 'Sat A 2', 'Sun B 3'],  # Period 2
-                ['Fri B 4', 'Sat B 4', 'Sun C 5']   # Period 3
-            ]
-        },
-        'B': {
-            'type': 'Every Other',
-            'periods': [
-                ['Fri A 1', 'Sat A 1', 'Sun A 2'],  # Period 1
-                ['Fri B 3', 'Sat B 3', 'Sun B 4'],  # Period 2
-                ['Fri C 5', 'Sat C 5', 'Sun C 6']   # Period 3
-            ]
-        },
-        'C': {
-            'type': 'Every Third',
-            'periods': [
-                ['Fri C 6', 'Sat C 6', 'Sun A 1'],  # Period 1
-                ['Fri B 3', 'Sat B 3', 'Sun B 4']   # Period 2
-            ]
-        },
-        'D': {
-            'type': 'Every Third',
-            'periods': [
-                ['Fri A 1', 'Sat A 1', 'Sun A 2'],  # Period 1
-                ['Fri B 4', 'Sat B 4', 'Sun C 5']   # Period 2
-            ]
-        },
-        'E': {
-            'type': 'Every Third',
-            'periods': [
-                ['Fri A 2', 'Sat A 2', 'Sun B 3'],  # Period 1
-                ['Fri C 5', 'Sat C 5', 'Sun C 6']   # Period 2
-            ]
-        }
-    }
-    
-    result = {
-        'status': True,
-        'details': '',
-        'issues': [],
-        'weekend_group': weekend_group,
-        'periods_validated': []
-    }
-    
-    if weekend_group not in WEEKEND_GROUPS:
-        result['status'] = False
-        result['details'] = f"Invalid weekend group: {weekend_group}"
-        return result
-    
-    # Get weekend group configuration
-    group_config = WEEKEND_GROUPS[weekend_group]
-    periods = group_config['periods']
-    
-    # Validate each period
-    total_periods = len(periods)
-    periods_with_minimum = 0
-    
-    for period_idx, period_days in enumerate(periods):
-        period_num = period_idx + 1
-        period_shifts = 0
-        period_details = []
-        
-        # Check each day in the period
-        for weekend_day in period_days:
-            # Map to actual schedule day
-            schedule_day = map_weekend_day_to_schedule_day_inline(weekend_day, days)
-            
-            if schedule_day:
-                assignment = track_data.get(schedule_day, "")
-                
-                # Count weekend shifts (N on Friday, D or N on Saturday/Sunday)
-                day_name = weekend_day.split()[0]
-                
-                if day_name == "Fri" and assignment == "N":
-                    period_shifts += 1
-                    period_details.append(f"{schedule_day}: Friday Night")
-                elif day_name in ["Sat", "Sun"] and assignment in ["D", "N"]:
-                    shift_type = "Day" if assignment == "D" else "Night"
-                    period_shifts += 1
-                    period_details.append(f"{schedule_day}: {day_name} {shift_type}")
-        
-        # Check if period meets minimum (2 shifts)
-        period_valid = period_shifts >= 2
-        if period_valid:
-            periods_with_minimum += 1
-        
-        result['periods_validated'].append({
-            'period': period_num,
-            'days': period_days,
-            'shifts_worked': period_shifts,
-            'shifts_required': 2,
-            'valid': period_valid,
-            'details': period_details
-        })
-        
-        if not period_valid:
-            result['issues'].append(f"Period {period_num}: {period_shifts} shifts (minimum 2 required)")
-    
-    # Overall validation
-    if periods_with_minimum == total_periods:
-        result['status'] = True
-        result['details'] = f"Weekend Group {weekend_group}: All {total_periods} periods meet minimum requirement"
-    else:
-        result['status'] = False
-        result['details'] = f"Weekend Group {weekend_group}: {periods_with_minimum}/{total_periods} periods meet minimum requirement"
-    
-    return result
 
 def create_combined_track(track_data, preassignments=None):
     """
@@ -802,84 +506,4 @@ def get_validation_recommendations(validation_result):
     if not validation_result['consecutive_shifts']['status']:
         recommendations.append("Break up consecutive shift sequences (max 4 in a row, 5 if nights included)")
     
-    if not validation_result['weekend_group_assignment']['status']:
-        recommendations.append("Work required weekend shifts according to your assigned weekend group")
-    
     return recommendations
-
-def get_weekend_days_for_highlighting(weekend_group, days):
-    """
-    Get weekend days that should be highlighted for a specific weekend group
-    
-    Args:
-        weekend_group (str): Weekend group (A, B, C, D, E)
-        days (list): List of schedule days
-        
-    Returns:
-        list: List of days that should be highlighted as weekend requirements
-    """
-    if not weekend_group:
-        return []
-    
-    # Use the inline function
-    return get_weekend_days_for_highlighting_inline(weekend_group, days)
-
-def get_weekend_days_for_highlighting_inline(weekend_group, days):
-    """
-    Get weekend days that should be highlighted for a specific weekend group
-    """
-    if not weekend_group:
-        return []
-    
-    # Weekend group definitions
-    WEEKEND_GROUPS = {
-        'A': {
-            'periods': [
-                ['Fri C 6', 'Sat C 6', 'Sun A 1'],  # Period 1
-                ['Fri A 2', 'Sat A 2', 'Sun B 3'],  # Period 2
-                ['Fri B 4', 'Sat B 4', 'Sun C 5']   # Period 3
-            ]
-        },
-        'B': {
-            'periods': [
-                ['Fri A 1', 'Sat A 1', 'Sun A 2'],  # Period 1
-                ['Fri B 3', 'Sat B 3', 'Sun B 4'],  # Period 2
-                ['Fri C 5', 'Sat C 5', 'Sun C 6']   # Period 3
-            ]
-        },
-        'C': {
-            'periods': [
-                ['Fri C 6', 'Sat C 6', 'Sun A 1'],  # Period 1
-                ['Fri B 3', 'Sat B 3', 'Sun B 4']   # Period 2
-            ]
-        },
-        'D': {
-            'periods': [
-                ['Fri A 1', 'Sat A 1', 'Sun A 2'],  # Period 1
-                ['Fri B 4', 'Sat B 4', 'Sun C 5']   # Period 2
-            ]
-        },
-        'E': {
-            'periods': [
-                ['Fri A 2', 'Sat A 2', 'Sun B 3'],  # Period 1
-                ['Fri C 5', 'Sat C 5', 'Sun C 6']   # Period 2
-            ]
-        }
-    }
-    
-    if weekend_group not in WEEKEND_GROUPS:
-        return []
-    
-    # Get all weekend days for the group
-    all_weekend_days = []
-    for period in WEEKEND_GROUPS[weekend_group]['periods']:
-        all_weekend_days.extend(period)
-    
-    # Map to actual schedule days
-    highlight_days = []
-    for weekend_day in all_weekend_days:
-        schedule_day = map_weekend_day_to_schedule_day_inline(weekend_day, days)
-        if schedule_day:
-            highlight_days.append(schedule_day)
-    
-    return highlight_days

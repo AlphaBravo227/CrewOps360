@@ -1,13 +1,13 @@
 # modules/track_management/editor.py
 """
-UPDATED: Track editor with enhanced hypothetical scheduler display and fixed weekend group highlighting
+Track editor with the enhanced hypothetical scheduler display.
 """
 
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 from modules.enhanced_track_validator import validate_track_comprehensive
-from modules.enhanced_validation_display import display_comprehensive_validation, create_validation_summary_card, get_weekend_group_highlighting_info
+from modules.enhanced_validation_display import display_comprehensive_validation, create_validation_summary_card
 from modules.track_modification_core import calculate_all_modification_options
 from modules.db_utils import get_track_from_db
 from modules.track_management.utils import reset_track_session_state
@@ -37,26 +37,15 @@ def modify_track_enhanced(
     """
     st.subheader(f"Track Modification for {selected_staff}")
     
-    # Get weekend group for this staff member
-    weekend_group = None
-    if requirements_df is not None:
-        from modules.weekend_group_validator import get_staff_weekend_group
-        weekend_group = get_staff_weekend_group(selected_staff, requirements_df)
-    
     # Display requirements prominently
     st.markdown("### 📋 Requirements for Track Modification")
-    req_cols = st.columns(4)
+    req_cols = st.columns(3)
     with req_cols[0]:
         st.metric("Shifts per Pay Period", shifts_per_pay_period, help="Exact match required")
     with req_cols[1]:
         st.metric("Night Minimum", night_minimum, help="Minimum required (>=)")
     with req_cols[2]:
         st.metric("Weekend Minimum", weekend_minimum, help="Minimum required (>=)")
-    with req_cols[3]:
-        if weekend_group:
-            st.metric("Weekend Group", weekend_group, help="Your assigned weekend group")
-        else:
-            st.metric("Weekend Group", "None", help="No weekend group assigned")
     
     # Check track source setting
     use_database_logic = st.session_state.get('track_source', "Annual Rebid") == "Annual Rebid"
@@ -175,9 +164,8 @@ def modify_track_enhanced(
     2. Use **"Validate Block"** buttons to save individual 2-week blocks
     3. Pre-assignments (AT, if any) are shown as selected and locked
     4. Days where your role is needed are highlighted in green — darker green means it's the highest ranked hypothetical shift based on your preferences
-    5. **Weekend group days are highlighted in yellow** (if assigned to a weekend group)
-    6. Go to the Submission tab when you're satisfied with your track
-    7. **Note:** Hypothetical shifts are not guaranteed base assignments — your submitted track only designates a "D" or "N" for each day.
+    5. Go to the Submission tab when you're satisfied with your track
+    6. **Note:** Hypothetical shifts are not guaranteed base assignments — your submitted track only designates a "D" or "N" for each day.
     """)
     
     # Show preassignments if any
@@ -193,11 +181,10 @@ def modify_track_enhanced(
     # Get current track for validation
     current_track = build_validation_track(selected_staff, days, preassignments)
     
-    # Display comprehensive validation WITH weekend group information
     # This automatically updates whenever the user makes changes due to Streamlit's reactive nature
     is_valid = display_comprehensive_validation(
         current_track, days, shifts_per_pay_period, night_minimum, 
-        weekend_minimum, preassignments, weekend_group, requirements_df, selected_staff
+        weekend_minimum, preassignments
     )
     
     # Store validity in session state (this updates automatically)
@@ -207,19 +194,19 @@ def modify_track_enhanced(
     # Display track modification interface WITH enhanced hypothetical scheduler display
     display_track_modification_interface_enhanced(
         selected_staff, options_by_day, reference_track, days, 
-        preassignments, use_database_logic, has_db_track, staff_role, weekend_group,
+        preassignments, use_database_logic, has_db_track, staff_role,
         day_assignments, night_assignments, assignment_details
     )
     
     # Final validation with proper navigation and clear description
     st.markdown("### 📊 Final Track Validation")
-    st.info("**Purpose:** This performs a comprehensive validation of your entire 6-week track against all requirements including pay periods, weekend groups, consecutive shifts, and rest requirements. Use this before going to the Submission tab.")
+    st.info("**Purpose:** This performs a comprehensive validation of your entire 6-week track against all requirements including pay periods, consecutive shifts, and rest requirements. Use this before going to the Submission tab.")
     
     if st.button("Validate Complete Track", key="final_validation", use_container_width=True, type="primary"):
         complete_track = build_validation_track(selected_staff, days, preassignments)
         final_valid = display_comprehensive_validation(
             complete_track, days, shifts_per_pay_period, night_minimum, 
-            weekend_minimum, preassignments, weekend_group, requirements_df, selected_staff
+            weekend_minimum, preassignments
         )
         
         st.session_state.modified_track['valid'] = final_valid
@@ -342,16 +329,12 @@ def _render_six_week_overview(selected_staff, days, reference_track, preassignme
     """, unsafe_allow_html=True)
 
 
-def display_track_modification_interface_enhanced(selected_staff, options_by_day, reference_track, days, preassignments, use_database_logic, has_db_track, staff_role, weekend_group=None, day_assignments=None, night_assignments=None, assignment_details=None):
+def display_track_modification_interface_enhanced(selected_staff, options_by_day, reference_track, days, preassignments, use_database_logic, has_db_track, staff_role, day_assignments=None, night_assignments=None, assignment_details=None):
     """
-    UPDATED: Display the track modification interface with enhanced hypothetical scheduler display and fixed weekend group highlighting
+    Display the track modification interface with the enhanced hypothetical scheduler display
     """
     
-    # Get weekend group highlighting information with FIXED mapping
-    weekend_highlight_info = get_weekend_group_highlighting_info_fixed(weekend_group, days)
-    weekend_highlight_days = weekend_highlight_info.get('highlight_days', [])
-    
-    # Color legend - UPDATED to include weekend group highlighting  
+    # Color legend
     legend_items = [
         ('<span class="legend-box" style="background-color: #d4edda;"></span>', 'Day Shift'),
         ('<span class="legend-box" style="background-color: #cce5ff;"></span>', 'Night Shift'),
@@ -363,10 +346,6 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
     
     if not use_database_logic:
         legend_items.insert(-1, ('<span class="legend-box" style="background-color: #fff3cd;"></span>', 'Changed Assignment'))
-    
-    # NEW: Add weekend group highlighting to legend
-    if weekend_group and weekend_highlight_days:
-        legend_items.insert(-1, ('<span class="legend-box" style="background-color: #fff3cd; border: 2px solid #f0ad4e;"></span>', f'Weekend Group {weekend_group} Days'))
     
     legend_html = f"""
     <style>
@@ -397,10 +376,6 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
     """
     
     st.markdown(legend_html, unsafe_allow_html=True)
-    
-    # Show weekend group information if available - FIXED formatting
-    if weekend_group:
-        st.info(f"🟡 **Weekend Group {weekend_group}:** Days highlighted in yellow are part of your weekend group requirements.")
     
     # Create tabs for blocks. Styled via a small injected script rather than CSS
     # scoped to st.container(key=...)'s generated class name — that class name's
@@ -515,7 +490,6 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                 for idx, day in enumerate(week_days):
                     with radio_cols[idx + 1]:
                         is_preassigned = preassignments and day in preassignments
-                        is_weekend_group_day = day in weekend_highlight_days
 
                         # Compact label for the radio widget only (e.g. "Sun A1" instead of
                         # "Sun A 1") so it never wraps to a second line.
@@ -563,7 +537,6 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                 'has_options': True,
                                 'is_preassigned': True,
                                 'preassign_value': preassign_value,
-                                'is_weekend_group_day': is_weekend_group_day,
                             }
 
                         else:
@@ -608,7 +581,6 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                             day_states[day] = {
                                 'has_options': True,
                                 'is_preassigned': False,
-                                'is_weekend_group_day': is_weekend_group_day,
                                 'day_available': day_available,
                                 'night_available': night_available,
                                 'day_info': day_info,
@@ -738,21 +710,14 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                         if not state.get('has_options'):
                             continue
 
-                        is_weekend_group_day = state['is_weekend_group_day']
-
                         if state['is_preassigned']:
                             preassign_value = state['preassign_value']
 
                             preassign_style = "background-color: #e2e3e5; padding: 5px; border-radius: 3px; text-align: center;"
-                            if is_weekend_group_day:
-                                preassign_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center;"
-
-                            weekend_display = f'🟡 Weekend Group {weekend_group}' if is_weekend_group_day else ""
 
                             st.markdown(f"""
                             <div style="{preassign_style}">
                                 <strong>🔒 Preassigned: {preassign_value}</strong>
-                                {weekend_display}
                             </div>
                             """, unsafe_allow_html=True)
                             continue
@@ -776,18 +741,8 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                         if day_assignments and day in day_assignments:
                             day_shift_name = day_assignments[day]
 
-                        # Check if this is a Friday (day shifts on Friday don't count as weekend)
-                        day_parts = day.split()
-                        is_friday = len(day_parts) > 0 and day_parts[0] == "Fri"
-
-                        # Don't highlight Friday day shifts yellow (only Friday nights count as weekend)
-                        if is_weekend_group_day and not is_friday:
-                            indicator_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center; container-type: inline-size; overflow-wrap: break-word;"
-                            weekend_indicator = f'Weekend Group {weekend_group}'
-                        else:
-                            is_week_best_day = day_pref is not None and day_pref == best_day_rank
-                            indicator_style = _need_indicator_style(day_pref, is_week_best_day)
-                            weekend_indicator = ''
+                        is_week_best_day = day_pref is not None and day_pref == best_day_rank
+                        indicator_style = _need_indicator_style(day_pref, is_week_best_day)
 
                         # Black outline when this is what they've actually picked for
                         # their proposed track — a clear "this is your selection" marker
@@ -810,14 +765,11 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                             f'<br><span style="{day_shift_value_style}">{day_shift_name}</span>'
                             if day_shift_name else ''
                         )
-                        weekend_display = f'🟡 {weekend_indicator}' if weekend_indicator else ''
-
                         st.markdown(f"""
                         <div style="{indicator_style}">
                             <strong style="font-size: 16px;">Day Need ({day_needs_count})</strong>
                             {shift_display}
                             {pref_display}
-                            {weekend_display}
                         </div>
                         """, unsafe_allow_html=True)
 
@@ -840,7 +792,6 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                         if not state.get('has_options') or state.get('is_preassigned'):
                             continue
 
-                        is_weekend_group_day = state['is_weekend_group_day']
                         day_available = state['day_available']
                         night_available = state['night_available']
 
@@ -863,14 +814,8 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                             else:
                                 night_shift_value_style = "font-size: 18px; font-weight: 500;"
 
-                            # Night shifts always count as weekend (including Friday nights)
-                            if is_weekend_group_day:
-                                indicator_style = "background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center; container-type: inline-size; overflow-wrap: break-word;"
-                                weekend_indicator = f'Weekend Group {weekend_group}'
-                            else:
-                                is_week_best_night = night_pref is not None and night_pref == best_night_rank
-                                indicator_style = _need_indicator_style(night_pref, is_week_best_night)
-                                weekend_indicator = ''
+                            is_week_best_night = night_pref is not None and night_pref == best_night_rank
+                            indicator_style = _need_indicator_style(night_pref, is_week_best_night)
 
                             # Black outline when this is what they've actually picked for
                             # their proposed track.
@@ -885,37 +830,13 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
                                 f'<br><span style="{night_shift_value_style}">{night_shift_name}</span>'
                                 if night_shift_name else ''
                             )
-                            weekend_display = f'🟡 {weekend_indicator}' if weekend_indicator else ''
-
                             st.markdown(f"""
                             <div style="{indicator_style}">
                                 <strong style="font-size: 16px;">Night Need ({night_needs_count})</strong>
                                 {shift_display}
                                 {pref_display}
-                                {weekend_display}
                             </div>
                             """, unsafe_allow_html=True)
-
-                        elif is_weekend_group_day and not day_available and not night_available:
-                            # Show weekend group indicator even if no shifts are needed
-                            day_parts = day.split()
-                            is_friday = len(day_parts) > 0 and day_parts[0] == "Fri"
-
-                            # Only show weekend group indicator for non-Friday days, or Friday with note about night shifts
-                            if not is_friday:
-                                st.markdown(f"""
-                                <div style="background-color: #fff3cd; border: 2px solid #f0ad4e; padding: 5px; border-radius: 3px; text-align: center;">
-                                    <strong>🟡 Weekend Group {weekend_group}</strong>
-                                    <br>This day is part of your weekend requirements
-                                </div>
-                                """, unsafe_allow_html=True)
-                            else:
-                                st.markdown(f"""
-                                <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 5px; border-radius: 3px; text-align: center;">
-                                    <strong>Weekend Group {weekend_group}</strong>
-                                    <br><small>Only Friday <em>night</em> shifts count as weekend</small>
-                                </div>
-                                """, unsafe_allow_html=True)
 
                         else:
                             st.markdown("""
@@ -930,123 +851,6 @@ def display_track_modification_interface_enhanced(selected_staff, options_by_day
             # run, fill in the overview placeholder reserved earlier with fresh data.
             with overview_placeholder.container():
                 _render_six_week_overview(selected_staff, days, reference_track, preassignments)
-
-def get_weekend_group_highlighting_info_fixed(weekend_group, days):
-    """
-    FIXED: Get information about which days should be highlighted for weekend group requirements
-    This version properly handles Block A highlighting
-    """
-    if not weekend_group:
-        return {'highlight_days': [], 'weekend_group': None}
-    
-    try:
-        # Use fixed function to avoid import issues
-        highlight_days = get_weekend_days_for_highlighting_fixed(weekend_group, days)
-        
-        return {
-            'highlight_days': highlight_days,
-            'weekend_group': weekend_group,
-            'highlight_color': '#fff3cd',  # Light yellow
-            'highlight_info': f"Weekend Group {weekend_group} required days"
-        }
-    except Exception as e:
-        return {'highlight_days': [], 'weekend_group': weekend_group, 'error': str(e)}
-
-def get_weekend_days_for_highlighting_fixed(weekend_group, days):
-    """
-    FIXED: Get weekend days that should be highlighted for a specific weekend group
-    This version properly handles all blocks including Block A
-    """
-    if not weekend_group:
-        return []
-    
-    # Weekend group definitions
-    WEEKEND_GROUPS = {
-        'A': {
-            'periods': [
-                ['Fri C 6', 'Sat C 6', 'Sun A 1'],  # Period 1
-                ['Fri A 2', 'Sat A 2', 'Sun B 3'],  # Period 2
-                ['Fri B 4', 'Sat B 4', 'Sun C 5']   # Period 3
-            ]
-        },
-        'B': {
-            'periods': [
-                ['Fri A 1', 'Sat A 1', 'Sun A 2'],  # Period 1
-                ['Fri B 3', 'Sat B 3', 'Sun B 4'],  # Period 2
-                ['Fri C 5', 'Sat C 5', 'Sun C 6']   # Period 3
-            ]
-        },
-        'C': {
-            'periods': [
-                ['Fri C 6', 'Sat C 6', 'Sun A 1'],  # Period 1
-                ['Fri B 3', 'Sat B 3', 'Sun B 4']   # Period 2
-            ]
-        },
-        'D': {
-            'periods': [
-                ['Fri A 1', 'Sat A 1', 'Sun A 2'],  # Period 1
-                ['Fri B 4', 'Sat B 4', 'Sun C 5']   # Period 2
-            ]
-        },
-        'E': {
-            'periods': [
-                ['Fri A 2', 'Sat A 2', 'Sun B 3'],  # Period 1
-                ['Fri C 5', 'Sat C 5', 'Sun C 6']   # Period 2
-            ]
-        }
-    }
-    
-    if weekend_group not in WEEKEND_GROUPS:
-        return []
-    
-    # Get all weekend days for the group
-    all_weekend_days = []
-    for period in WEEKEND_GROUPS[weekend_group]['periods']:
-        all_weekend_days.extend(period)
-    
-    # Map to actual schedule days with FIXED mapping logic
-    highlight_days = []
-    for weekend_day in all_weekend_days:
-        schedule_day = map_weekend_day_to_schedule_day_fixed(weekend_day, days)
-        if schedule_day:
-            highlight_days.append(schedule_day)
-    
-    return highlight_days
-
-def map_weekend_day_to_schedule_day_fixed(weekend_day, days):
-    """
-    FIXED: Map a weekend group day (e.g., 'Fri A 1') to actual schedule day
-    This version properly handles Block A and all other blocks consistently
-    """
-    # Parse the weekend day format
-    parts = weekend_day.split()
-    if len(parts) != 3:
-        return None
-    
-    day_name, block, week = parts
-    
-    # Find matching day in schedule with improved logic
-    for schedule_day in days:
-        schedule_parts = schedule_day.split()
-        if len(schedule_parts) >= 3:  # Ensure we have day, block, and week
-            schedule_day_name = schedule_parts[0]
-            schedule_block = schedule_parts[1]
-            schedule_week = schedule_parts[2]
-            
-            # Check if day names match (Fri, Sat, Sun)
-            if schedule_day_name == day_name:
-                # Check exact match first
-                if schedule_block == block and schedule_week == week:
-                    return schedule_day
-        
-        # Fallback: check if the schedule day contains both block and week
-        # This handles different formatting conventions
-        if day_name in schedule_day and block in schedule_day and week in schedule_day:
-            # Make sure it's the right day of week
-            if schedule_day.startswith(day_name):
-                return schedule_day
-    
-    return None
 
 def build_validation_track(selected_staff, days, preassignments=None):
     """Build complete track for validation"""

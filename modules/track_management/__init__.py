@@ -1,6 +1,6 @@
 # modules/track_management/__init__.py - UPDATED WITH PREFERENCE EDITOR TAB
 """
-Updated track management interface with enhanced validation, weekend groups, preference editor, and separate validation tab
+Track management interface with enhanced validation, preference editor, and separate validation tab
 """
 
 __version__ = "2.3.0"
@@ -42,7 +42,7 @@ def display_staff_track_interface(
     preassignment_df=None
 ):
     """
-    Main interface function for staff track management with enhanced validation including weekend groups and preference editing
+    Main interface function for staff track management with enhanced validation and preference editing
     """
     st.header("Staff Track Management")
     
@@ -56,11 +56,10 @@ def display_staff_track_interface(
     use_database_logic = st.session_state.get('track_source', "Annual Rebid") == "Annual Rebid"
     st.session_state['using_database_logic'] = use_database_logic
 
-    # Extract requirements for this staff member including weekend group
+    # Extract requirements for this staff member
     shifts_per_pay_period = 0
     night_minimum = 0
     weekend_minimum = 0
-    weekend_group = None
     
     if requirements_df is not None and not requirements_df.empty:
         try:
@@ -97,34 +96,21 @@ def display_staff_track_interface(
                         if pd.notna(staff_row.iloc[3]):
                             weekend_minimum = int(float(staff_row.iloc[3]))
                     
-                    # NEW: Get weekend group from column 4 (0-indexed)
-                    if len(requirements_df.columns) >= 5:
-                        if pd.notna(staff_row.iloc[4]):
-                            weekend_group = str(staff_row.iloc[4]).strip().upper()
-                            # Validate weekend group
-                            if weekend_group not in ['A', 'B', 'C', 'D', 'E']:
-                                weekend_group = None
-                            
                 except (ValueError, IndexError, TypeError) as e:
                     st.warning(f"Error loading requirements: {e}")
                     
         except Exception as e:
             st.error(f"Error processing requirements file: {str(e)}")
     
-    # Display requirements including weekend group
+    # Display requirements
     st.markdown("### 📋 Staff Requirements")
-    req_cols = st.columns(4)
+    req_cols = st.columns(3)
     with req_cols[0]:
         st.metric("Shifts per Pay Period", shifts_per_pay_period, help="Exact match required")
     with req_cols[1]:
         st.metric("Night Minimum", night_minimum, help="Minimum required (>=)")
     with req_cols[2]:
         st.metric("Weekend Minimum", weekend_minimum, help="Minimum required (>=)")
-    with req_cols[3]:
-        if weekend_group:
-            st.metric("Weekend Group", weekend_group, help=f"Assigned to weekend group {weekend_group}")
-        else:
-            st.metric("Weekend Group", "None", help="No weekend group assigned")
     
     # Get staff information
     staff_info = preferences_df[preferences_df[staff_col_prefs] == selected_staff].iloc[0]
@@ -182,11 +168,10 @@ def display_staff_track_interface(
             if day not in current_track_data or not current_track_data[day]:
                 current_track_data[day] = preassignment
     
-    # Store requirements in session state including weekend group
+    # Store requirements in session state
     st.session_state.shifts_per_pay_period = shifts_per_pay_period
     st.session_state.night_minimum = night_minimum
     st.session_state.weekend_minimum = weekend_minimum
-    st.session_state.weekend_group = weekend_group  # NEW: Store weekend group
     
     # Reset and clear buttons
     reset_col, clear_col = st.columns(2)
@@ -274,7 +259,7 @@ def display_staff_track_interface(
     with tabs[3]:  # Track Modification - UPDATED: Removed validation dashboard from here
         is_new_track = st.session_state.get('is_new_track', use_database_logic and not has_db_track)
         
-        # UPDATED: Pass weekend group and requirements_df to modification function, but without validation dashboard
+        # Pass requirements_df to the modification function, but without the validation dashboard
         modify_track_enhanced_without_validation(
             selected_staff,
             staff_track_df,
@@ -292,13 +277,13 @@ def display_staff_track_interface(
             preassignments=staff_preassignments,
             is_new_track=is_new_track,
             weekend_minimum=weekend_minimum,
-            requirements_df=requirements_df  # Pass requirements_df for weekend group lookup
+            requirements_df=requirements_df
         )
     
     with tabs[4]:  # NEW: Validation Tab
         display_validation_tab(
             selected_staff, days, shifts_per_pay_period, night_minimum, 
-            weekend_minimum, staff_preassignments, weekend_group, requirements_df
+            weekend_minimum, staff_preassignments
         )
     
     with tabs[5]:  # Submission
@@ -490,26 +475,21 @@ def display_staff_track_interface(
             with summary_cols[2]:
                 st.metric("Total Shifts", total_shifts)        
                 
-def display_validation_tab(selected_staff, days, shifts_per_pay_period, night_minimum, weekend_minimum, staff_preassignments, weekend_group, requirements_df):
+def display_validation_tab(selected_staff, days, shifts_per_pay_period, night_minimum, weekend_minimum, staff_preassignments):
     """
-    NEW: Display the validation tab with comprehensive track validation
+    Display the validation tab with comprehensive track validation
     """
     st.subheader(f"Track Validation for {selected_staff}")
     
     # Display requirements prominently
     st.markdown("### 📋 Validation Requirements")
-    req_cols = st.columns(4)
+    req_cols = st.columns(3)
     with req_cols[0]:
         st.metric("Shifts per Pay Period", shifts_per_pay_period, help="Exact match required")
     with req_cols[1]:
         st.metric("Night Minimum", night_minimum, help="Minimum required (>=)")
     with req_cols[2]:
         st.metric("Weekend Minimum", weekend_minimum, help="Minimum required (>=)")
-    with req_cols[3]:
-        if weekend_group:
-            st.metric("Weekend Group", weekend_group, help="Your assigned weekend group")
-        else:
-            st.metric("Weekend Group", "None", help="No weekend group assigned")
     
     # Get current track for validation
     current_track = build_validation_track(selected_staff, days, staff_preassignments)
@@ -525,14 +505,12 @@ def display_validation_tab(selected_staff, days, shifts_per_pay_period, night_mi
     - Weekly shift limits (< 4 per week)
     - Rest requirements (2 days after nights, no nights before AT)
     - Consecutive shift limits (max 4 in a row, 5 if nights included)
-    - Weekend group assignments (if applicable)
     """)
     
-    # Display comprehensive validation WITH weekend group information
     # This automatically updates whenever the user makes changes due to Streamlit's reactive nature
     is_valid = display_comprehensive_validation(
         current_track, days, shifts_per_pay_period, night_minimum, 
-        weekend_minimum, staff_preassignments, weekend_group, requirements_df, selected_staff
+        weekend_minimum, staff_preassignments
     )
     
     # Store validity in session state (this updates automatically)
@@ -550,7 +528,7 @@ def display_validation_tab(selected_staff, days, shifts_per_pay_period, night_mi
             current_track = build_validation_track(selected_staff, days, staff_preassignments)
             is_valid = display_comprehensive_validation(
                 current_track, days, shifts_per_pay_period, night_minimum, 
-                weekend_minimum, staff_preassignments, weekend_group, requirements_df, selected_staff
+                weekend_minimum, staff_preassignments
             )
             
             st.session_state.modified_track['valid'] = is_valid
@@ -581,7 +559,6 @@ def display_validation_tab(selected_staff, days, shifts_per_pay_period, night_mi
         
         **Consecutive Limits:** You cannot work more than 4 shifts in a row (5 if the sequence includes night shifts)
         
-        **Weekend Groups:** If assigned to a weekend group (A, B, C, D, E), you must work the required weekend periods
         """)
     
     # Show current validation status summary
@@ -616,26 +593,15 @@ def modify_track_enhanced_without_validation(
     
     st.subheader(f"Track Modification for {selected_staff}")
     
-    # Get weekend group for this staff member
-    weekend_group = None
-    if requirements_df is not None:
-        from modules.weekend_group_validator import get_staff_weekend_group
-        weekend_group = get_staff_weekend_group(selected_staff, requirements_df)
-    
     # Display requirements prominently
     st.markdown("### 📋 Requirements for Track Modification")
-    req_cols = st.columns(4)
+    req_cols = st.columns(3)
     with req_cols[0]:
         st.metric("Shifts per Pay Period", shifts_per_pay_period, help="Exact match required")
     with req_cols[1]:
         st.metric("Night Minimum", night_minimum, help="Minimum required (>=)")
     with req_cols[2]:
         st.metric("Weekend Minimum", weekend_minimum, help="Minimum required (>=)")
-    with req_cols[3]:
-        if weekend_group:
-            st.metric("Weekend Group", weekend_group, help="Your assigned weekend group")
-        else:
-            st.metric("Weekend Group", "None", help="No weekend group assigned")
     
     # Check track source setting
     use_database_logic = st.session_state.get('track_source', "Annual Rebid") == "Annual Rebid"
@@ -757,9 +723,8 @@ def modify_track_enhanced_without_validation(
     2. Use **"Validate Block"** buttons to save individual 2-week blocks
     3. Pre-assignments (AT, if any) are shown as selected and locked
     4. Days where your role is needed are highlighted in green — darker green means it's the highest ranked hypothetical shift based on your preferences
-    5. **Weekend group days are highlighted in yellow** (if assigned to a weekend group)
-    6. Go to the **Validation tab** to check your complete track, then proceed to Submission when ready
-    7. **Note:** Hypothetical shifts are not guaranteed base assignments — your submitted track only designates a "D" or "N" for each day.
+    5. Go to the **Validation tab** to check your complete track, then proceed to Submission when ready
+    6. **Note:** Hypothetical shifts are not guaranteed base assignments — your submitted track only designates a "D" or "N" for each day.
     """)
     
     # Show preassignments if any
@@ -771,7 +736,7 @@ def modify_track_enhanced_without_validation(
     from .editor import display_track_modification_interface_enhanced
     display_track_modification_interface_enhanced(
         selected_staff, options_by_day, reference_track, days, 
-        preassignments, use_database_logic, has_db_track, staff_role, weekend_group,
+        preassignments, use_database_logic, has_db_track, staff_role,
         day_assignments, night_assignments, assignment_details
     )
     
@@ -786,7 +751,7 @@ def modify_track_enhanced_without_validation(
     from ..enhanced_track_validator import validate_track_comprehensive
     validation_result = validate_track_comprehensive(
         current_track, shifts_per_pay_period, night_minimum, 
-        weekend_minimum, preassignments, days, weekend_group, requirements_df, selected_staff
+        weekend_minimum, preassignments, days
     )
     
     # Store validity in session state

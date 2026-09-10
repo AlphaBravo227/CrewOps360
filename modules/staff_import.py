@@ -25,8 +25,10 @@ from the two spreadsheets that used to be read on every page load:
         SHIFTS PER PAY PERIOD -> staff.shifts_per_pay_period
         NIGHT MINIMUM         -> staff.night_minimum
         WEEKEND MINIMUM       -> staff.weekend_minimum
-        WEEKEND GROUP         -> staff.weekend_group
         EMAIL                 -> staff.email
+
+    A WEEKEND GROUP column is ignored: the weekend-group rule was retired, so the
+    roster no longer keeps the letter.
 
 Import is idempotent: staff already on the roster are left alone unless
 update_existing is set, so an admin's later edits are never silently overwritten by a
@@ -47,7 +49,6 @@ from .staff_database import (
     to_flag,
     to_optional_int,
     to_seniority,
-    to_weekend_group,
 )
 
 _eastern_tz = pytz.timezone('America/New_York')
@@ -67,7 +68,7 @@ SECONDARY_NAME_SOURCES = [
 
 # Requirements fields, in the order the spreadsheet holds them.
 REQUIREMENTS_FIELDS = ['shifts_per_pay_period', 'night_minimum', 'weekend_minimum',
-                       'weekend_group', 'email']
+                       'email']
 
 # Preferences v6 shift-score columns, split by shift type for the preference tables.
 _DAY_SHIFT_COLUMNS = ['D7B', 'D7P', 'D9L', 'D11M', 'D11B', 'FW', 'MG', 'GR', 'LG', 'PG']
@@ -197,7 +198,7 @@ def read_preferences_attributes(preferences_path=DEFAULT_PREFERENCES_PATH):
 
 def read_requirements_attributes(requirements_path=DEFAULT_REQUIREMENTS_PATH):
     """
-    Read shifts per pay period, night/weekend minimums, weekend group and email from
+    Read shifts per pay period, night/weekend minimums and email from
     Requirements.xlsx.
 
     Blank numeric cells are kept as None rather than 0 — a blank SHIFTS PER PAY PERIOD is
@@ -222,7 +223,6 @@ def read_requirements_attributes(requirements_path=DEFAULT_REQUIREMENTS_PATH):
     shifts_col = _find_column(df, 'SHIFTS PER PAY PERIOD', 'Shifts Per Pay Period')
     night_col = _find_column(df, 'NIGHT MINIMUM', 'Night Minimum')
     weekend_col = _find_column(df, 'WEEKEND MINIMUM', 'Weekend Minimum')
-    group_col = _find_column(df, 'WEEKEND GROUP', 'Weekend Group')
     email_col = _find_column(df, 'EMAIL', 'Email', 'Email Address')
 
     records = {}
@@ -235,7 +235,6 @@ def read_requirements_attributes(requirements_path=DEFAULT_REQUIREMENTS_PATH):
             'shifts_per_pay_period': to_optional_int(row[shifts_col]) if shifts_col else None,
             'night_minimum': to_optional_int(row[night_col]) if night_col else None,
             'weekend_minimum': to_optional_int(row[weekend_col]) if weekend_col else None,
-            'weekend_group': to_weekend_group(row[group_col]) if group_col else None,
             'email': to_email(row[email_col]) if email_col else None,
         }
     return records, None
@@ -286,7 +285,6 @@ def _merge_attributes(roster_record, preferences_record, requirements_record=Non
         'shifts_per_pay_period': None,
         'night_minimum': None,
         'weekend_minimum': None,
-        'weekend_group': None,
         'email': None,
     }
     conflicts = []
@@ -562,7 +560,6 @@ def import_staff_roster(roster_path=DEFAULT_ROSTER_PATH,
                 shifts_per_pay_period=record['shifts_per_pay_period'],
                 night_minimum=record['night_minimum'],
                 weekend_minimum=record['weekend_minimum'],
-                weekend_group=record['weekend_group'],
                 email=record['email'],
                 is_active=True,
                 changed_by=changed_by,
