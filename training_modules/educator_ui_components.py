@@ -1,16 +1,23 @@
 # training_modules/educator_ui_components.py
 """
-Enhanced UI Components specifically for educator signup functionality
-Now shows the names of staff members who have signed up when multiple educators are needed
+UI components for educator signup.
+
+The opportunity list is laid out like the staff enrollment screen: one collapsed
+panel per class, a summary grid of every date inside it, and the signup itself for
+one date at a time. Before that, every date drew its own row of status columns,
+rosters and buttons, so a class with a dozen dates ran to several screens and the
+only way to find out what the fourth date offered was to scroll past three others.
 """
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta
+
+from .class_catalog import date_indices
 
 class EducatorUIComponents:
     
     @staticmethod
     def display_educator_opportunities(educator_manager, staff_name):
-        """Display available educator opportunities for a staff member"""
+        """The classes needing educators, one collapsed panel each."""
         result = educator_manager.get_educator_opportunities_with_status(staff_name)
         
         # Handle both old and new return formats
@@ -41,151 +48,303 @@ class EducatorUIComponents:
         for opportunity in opportunities:
             class_name = opportunity['class_name']
             instructor_count = opportunity['instructor_count']
-            
-            # Create expander for each class
-            with st.expander(f"**{class_name}** (Need {instructor_count} educator{'s' if instructor_count != 1 else ''} per date)"):
-                
-                # Show class details
-                class_details = opportunity['class_details']
-                EducatorUIComponents._display_class_info_for_educators(class_details)
-                
-                st.markdown("---")
-                st.write("**📅 Available Dates:**")
-                
-                for date_info in opportunity['date_status']:
-                    date = date_info['date']
-                    current_signups = date_info['current_signups']
-                    max_signups = date_info['max_signups']
-                    is_signed_up = date_info['is_signed_up']
-                    is_full = date_info['is_full']
-                    conflict_info = date_info['conflict_info']
-                    
-                    # Get the list of educators who have signed up for this date
-                    educator_roster = educator_manager.get_class_educator_roster(class_name, date)
-                    signed_up_educators = [e['staff_name'] for e in educator_roster if e['status'] == 'active']
-                    
-                    # Create columns for date display
-                    col1, col2, col3, col4 = st.columns([3, 2, 2, 2])
-                    
-                    with col1:
-                        st.write(f"**📅 {date}**")
-                        
-                        # Show conflict info if available
-                        if conflict_info:
-                            if conflict_info.startswith('ℹ️'):
-                                st.info(conflict_info)
-                            else:
-                                st.warning(f"⚠️ {conflict_info}")
-                    
-                    with col2:
-                        # Show signup status
-                        signup_status = f"Signed up: {current_signups}/{max_signups}"
-                        if is_full:
-                            st.error(f"🔴 {signup_status} (Full)")
-                        elif current_signups >= max_signups * 0.8:
-                            st.warning(f"🟡 {signup_status}")
-                        else:
-                            st.success(f"🟢 {signup_status}")
-                        
-                        # Show the names of educators who have signed up (if multiple educators needed)
-                        if max_signups > 1 and signed_up_educators:
-                            st.write("**👨‍🏫 Signed up:**")
-                            for educator_name in signed_up_educators:
-                                if educator_name == staff_name:
-                                    st.write(f"• **{educator_name}** (You)")
-                                else:
-                                    st.write(f"• {educator_name}")
-                        elif max_signups > 1 and not signed_up_educators:
-                            st.write("**👨‍🏫 Signed up:** *None yet*")
-                    
-                    with col3:
-                        if is_signed_up:
-                            st.success("✅ Signed Up")
-                        elif is_full:
-                            st.error("Full")
-                        else:
-                            st.write("Available")
-                    
-                    with col4:
-                        button_key = f"educator_{class_name}_{date}_{staff_name}".replace(" ", "_").replace("/", "_")
-                        
-                        if is_signed_up:
-                            # Show cancel button
-                            if st.button("Cancel", key=f"cancel_{button_key}"):
-                                existing_signup = educator_manager.db.check_existing_educator_signup(
-                                    staff_name, class_name, date,
-                                    training_year=educator_manager.training_year
-                                )
-                                if existing_signup and educator_manager.cancel_educator_signup(existing_signup['id']):
-                                    st.success("Educator signup cancelled!")
-                                    st.rerun()
-                                else:
-                                    st.error("Error cancelling signup")
-                        
-                        elif not is_full:
-                            # Show signup button with conflict handling
-                            if conflict_info and not conflict_info.startswith('ℹ️'):
-                                # Real conflict - show override option
-                                EducatorUIComponents._handle_educator_signup_with_conflict(
-                                    educator_manager, staff_name, class_name, date, 
-                                    conflict_info, button_key
-                                )
-                            else:
-                                # No conflict or AT info only - normal signup
-                                if st.button("Sign Up", key=f"signup_{button_key}"):
-                                    
-                                    with st.spinner("Processing educator signup..."):
-                                        try:
-                                            success, message = educator_manager.signup_as_educator(
-                                                staff_name, class_name, date
-                                            )
-                                            
-                                            if success:
-                                                # Store success in session state
-                                                st.session_state['educator_signup_success'] = True
-                                                st.session_state['educator_signup_message'] = "Successfully signed up as educator!"
-                                                st.rerun()
-                                            else:
-                                                st.error(f"Signup failed: {message}")
-                                        except Exception as e:
-                                            st.error(f"Error during signup: {str(e)}")
-                                            import traceback
-                                            traceback.print_exc()
+            class_details = opportunity['class_details'] or {}
+            is_two_day = opportunity.get('is_two_day', False)
+            date_status = opportunity.get('date_status') or []
 
+            signed_up_dates = [entry['date'] for entry in date_status
+                               if entry['is_signed_up']]
 
-                        else:
-                            st.write("Full")
-                    
+            # What the panel says while closed, so a class needing nothing from you
+            # doesn't have to be opened to find that out.
+            title = (f"**{class_name}** (Need {instructor_count} "
+                     f"educator{'s' if instructor_count != 1 else ''} per date)")
+            if len(signed_up_dates) == 1:
+                title += " ✅ Signed up"
+            elif signed_up_dates:
+                title += f" ✅ Signed up ({len(signed_up_dates)} dates)"
+            elif date_status and all(entry['is_full'] for entry in date_status):
+                title += " 🔴 Fully staffed"
+
+            with st.expander(title, expanded=False):
+                st.caption(" • ".join(EducatorUIComponents._class_facts(
+                    class_details, instructor_count, is_two_day)))
+
+                if is_two_day:
+                    st.info("📅 **Two-day class:** each day takes its own educator "
+                            "signup. You can sign up for one day or both.")
+
+                locations = EducatorUIComponents._date_attribute_map(
+                    class_details, 'location', is_two_day)
+
+                if not date_status:
+                    st.warning("No dates configured for this class.")
+                    continue
+
+                EducatorUIComponents._display_educator_date_summary(
+                    class_details, date_status, is_two_day, locations)
+
+                # Only one date's signup is drawn at a time. Which date is a choice
+                # the summary above has already given the user enough to make.
+                chosen_date = date_status[0]['date']
+                if len(date_status) > 1:
                     st.markdown("---")
-    
+                    dates = [entry['date'] for entry in date_status]
+                    default_index = next(
+                        (i for i, date in enumerate(dates) if date in signed_up_dates), 0)
+                    labels = {entry['date']: EducatorUIComponents._radio_label(entry)
+                              for entry in date_status}
+                    chosen_date = st.radio(
+                        "**Sign up for:**",
+                        options=dates,
+                        index=default_index,
+                        format_func=lambda date: labels[date],
+                        horizontal=True,
+                        key=f"educator_date_choice_{class_name}"
+                    )
+
+                # Defaulted rather than indexed: the picker's stored choice can
+                # outlive the dates it was made from, and a class dropping off the
+                # list must not take the whole tab down with it.
+                chosen = next((entry for entry in date_status
+                               if entry['date'] == chosen_date), date_status[0])
+                EducatorUIComponents._display_date_signup(
+                    educator_manager, staff_name, class_name, chosen, is_two_day,
+                    locations.get(chosen_date))
+
     @staticmethod
-    def _display_class_info_for_educators(class_details):
-        """Display class information relevant for educators"""
-        if not class_details:
-            st.error("No class details available")
-            return
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write(f"**📚 Class:** {class_details.get('class_name', 'Unknown')}")
-            st.write(f"**👥 Max Students:** {class_details.get('students_per_class', '21')}")
-            instructor_count = class_details.get('instructors_per_day', 0)
-            st.write(f"**👨‍🏫 Educators Needed:** {instructor_count}")
-        
-        with col2:
-            if class_details.get('is_two_day_class', 'No').lower() == 'yes':
-                st.write("• **Two-day class format**")
-                st.info("⚠️ 2-Day Class: Each day requires separate educator signup. You can sign up for one or both days.")
-            if class_details.get('is_staff_meeting', False):
-                st.write("• **Staff Meeting**")
-        
-        # Display class times
-        st.write("**🕐 Class Times:**")
+    def _class_facts(class_details, instructor_count, is_two_day):
+        """The one-line read of what the class is, above its dates."""
+        facts = [f"👨‍🏫 {instructor_count} educator"
+                 f"{'s' if instructor_count != 1 else ''} needed per date"]
+
         times = EducatorUIComponents._get_class_times(class_details)
-        for time_slot in times:
-            st.write(f"• {time_slot}")
-    
+        if len(times) <= 2:
+            facts.append(f"🕐 {' / '.join(times)}")
+        else:
+            first = times[0].split('-')[0].strip()
+            last = times[-1].split('-')[-1].strip()
+            facts.append(f"🕐 {len(times)} sessions ({first} - {last})")
+
+        # A class our own staff don't attend has no student capacity worth printing -
+        # the seat count on it is a leftover, not a fact about the class.
+        if class_details.get('is_educator_only'):
+            facts.append("🎓 External class - staff don't attend")
+        else:
+            facts.append(f"👥 Max {class_details.get('students_per_class', 21)} students")
+
+        if class_details.get('is_staff_meeting', False):
+            facts.append("📣 Staff meeting")
+        if is_two_day:
+            facts.append("📅 Two-day class")
+        return facts
+
+    @staticmethod
+    def _date_attribute_map(class_details, attribute, is_two_day):
+        """One of a date's attributes, keyed by every date it covers.
+
+        A two-day class is offered to educators as two separate days, but its
+        locations and night-prior flags are stored against the first of them - so
+        day two is keyed to the same values rather than reading as a date with
+        nothing known about it.
+        """
+        values = {}
+        for index in date_indices(class_details):
+            date = class_details.get(f'date_{index}')
+            if not date:
+                continue
+            value = class_details.get(f'date_{index}_{attribute}')
+            values[date] = value
+            if is_two_day:
+                try:
+                    day_2 = (datetime.strptime(date, '%m/%d/%Y')
+                             + timedelta(days=1)).strftime('%m/%d/%Y')
+                except ValueError:
+                    continue
+                values.setdefault(day_2, value)
+        return values
+
+    @staticmethod
+    def _staffing_text(entry):
+        """How close one date is to being staffed."""
+        current, needed = entry['current_signups'], entry['max_signups']
+        if entry['is_full']:
+            return f"🔴 Full ({current}/{needed})"
+        if needed and current >= needed * 0.8:
+            return f"🟡 {current} of {needed} signed up"
+        return f"🟢 {current} of {needed} signed up"
+
+    @staticmethod
+    def _radio_label(entry):
+        """A date on the picker, marked with what you'd find if you opened it."""
+        label = entry['date']
+        if entry['is_signed_up']:
+            label += " ✅"
+        elif entry['is_full']:
+            label += " 🔴"
+        return label
+
+    @staticmethod
+    def _display_educator_date_summary(class_details, date_status, is_two_day,
+                                       locations):
+        """Every date of one class, and what each still needs, as one grid.
+
+        The same unit an educator signs up for gets one row, so the dates, their
+        locations and their remaining spots can be compared without opening any.
+        """
+        night_prior = EducatorUIComponents._date_attribute_map(
+            class_details, 'can_work_n_prior', is_two_day)
+
+        rows = []
+        shows_night_prior = False
+        flag_reasons = set()
+        for entry in date_status:
+            date = entry['date']
+
+            date_label = date
+            if night_prior.get(date):
+                date_label += " 🌙"
+                shows_night_prior = True
+
+            # The mark only says something is in the way. What it is stays with the
+            # signup below, next to the override or the explanation for it.
+            conflict_cell = ""
+            conflict_info = entry.get('conflict_info') or ""
+            if conflict_info.startswith('ℹ️'):
+                conflict_cell = "ℹ️"
+                flag_reasons.add('info')
+            elif conflict_info:
+                conflict_cell = "🟡"
+                flag_reasons.add('track')
+
+            rows.append({
+                "Date": date_label,
+                "Location": locations.get(date) or "",
+                "Educators": EducatorUIComponents._staffing_text(entry),
+                "Conflict": conflict_cell,
+                "You": "✅ Signed up" if entry['is_signed_up'] else "",
+            })
+
+        # A column with nothing to say in any row is dropped rather than filled with
+        # placeholders down its length: most classes run at one place, and a track
+        # conflict column means nothing to someone without a track. Every dropped
+        # column is width the remaining ones get back.
+        columns = ["Date", "Location", "Educators", "Conflict", "You"]
+        if not flag_reasons:
+            columns.remove("Conflict")
+        if not any(row["Location"] for row in rows):
+            columns.remove("Location")
+        else:
+            for row in rows:
+                row["Location"] = row["Location"] or "Not specified"
+
+        header = ("| " + " | ".join(columns) + " |\n"
+                  + "|" + "---|" * len(columns) + "\n")
+        body = "\n".join(
+            "| " + " | ".join(str(row[column]).replace("|", "\\|") for column in columns) + " |"
+            for row in rows
+        )
+        st.markdown(header + body)
+
+        legend = []
+        if shows_night_prior:
+            legend.append("🌙 = night shift prior OK")
+        if 'track' in flag_reasons:
+            legend.append("🟡 = conflicts with your track - see the date below for details")
+        if 'info' in flag_reasons:
+            legend.append("ℹ️ = AT shift only, which is no conflict for educators")
+        if legend:
+            st.caption(" • ".join(legend))
+
+    @staticmethod
+    def _display_date_signup(educator_manager, staff_name, class_name, entry,
+                             is_two_day, location):
+        """One date's roster and the button that puts you on it."""
+        date = entry['date']
+        conflict_info = entry.get('conflict_info') or ""
+
+        if is_two_day:
+            st.subheader(f"📅 {date} (one day of a two-day class)")
+        else:
+            st.subheader(f"📅 {date}")
+        if location:
+            st.write(f"**📍 Location:** {location}")
+
+        # Said once, here, rather than beside every control that depends on it.
+        if conflict_info.startswith('ℹ️'):
+            st.info(conflict_info)
+        elif conflict_info:
+            st.warning(f"⚠️ {conflict_info}")
+
+        roster = educator_manager.get_class_educator_roster(class_name, date)
+        signed_up = [e['staff_name'] for e in roster if e['status'] == 'active']
+
+        st.write(f"**👨‍🏫 Educators ({entry['current_signups']}/"
+                 f"{entry['max_signups']}):**")
+        if signed_up:
+            for educator_name in signed_up:
+                if educator_name == staff_name:
+                    st.write(f"• **{educator_name}** (You)")
+                else:
+                    st.write(f"• {educator_name}")
+        else:
+            st.write("*Nobody signed up yet*")
+
+        still_needed = max(0, entry['max_signups'] - entry['current_signups'])
+        if still_needed:
+            st.caption(f"Still need {still_needed} more "
+                       f"educator{'s' if still_needed != 1 else ''}")
+        else:
+            st.caption("Fully staffed")
+
+        button_key = (f"educator_{class_name}_{date}_{staff_name}"
+                      .replace(" ", "_").replace("/", "_"))
+
+        if entry['is_signed_up']:
+            if st.button("Cancel signup", key=f"cancel_{button_key}"):
+                existing_signup = educator_manager.db.check_existing_educator_signup(
+                    staff_name, class_name, date,
+                    training_year=educator_manager.training_year
+                )
+                if existing_signup and educator_manager.cancel_educator_signup(
+                        existing_signup['id']):
+                    st.success("Educator signup cancelled!")
+                    st.rerun()
+                else:
+                    st.error("Error cancelling signup")
+
+        elif entry['is_full']:
+            st.error("🔴 Every educator spot on this date is taken.")
+
+        elif conflict_info and not conflict_info.startswith('ℹ️'):
+            # Real conflict - show override option
+            EducatorUIComponents._handle_educator_signup_with_conflict(
+                educator_manager, staff_name, class_name, date,
+                conflict_info, button_key
+            )
+
+        else:
+            # No conflict, or AT info only - normal signup
+            if st.button("Sign Up", type="primary", key=f"signup_{button_key}"):
+                with st.spinner("Processing educator signup..."):
+                    try:
+                        success, message = educator_manager.signup_as_educator(
+                            staff_name, class_name, date
+                        )
+
+                        if success:
+                            # Store success in session state
+                            st.session_state['educator_signup_success'] = True
+                            st.session_state['educator_signup_message'] = \
+                                "Successfully signed up as educator!"
+                            st.rerun()
+                        else:
+                            st.error(f"Signup failed: {message}")
+                    except Exception as e:
+                        st.error(f"Error during signup: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
+
     @staticmethod
     def _get_class_times(class_details):
         """Format class times for display"""
@@ -204,21 +363,17 @@ class EducatorUIComponents:
                     times.append(f"{start_time} - {end_time}")
         
         return times if times else ["Time not specified"]
-    
+
     @staticmethod
     def _handle_educator_signup_with_conflict(educator_manager, staff_name, class_name, 
                                         class_date, conflict_info, button_key):
-        """Handle educator signup with conflict override"""
-        
-        # Show conflict warning and override option
-        col_warn, col_override = st.columns([3, 2])
-        
-        with col_warn:
-            st.warning(f"⚠️ {conflict_info}")
-        
-        with col_override:
-            if st.button("Override", key=f"override_{button_key}"):
-                st.session_state[f"show_educator_override_{button_key}"] = True
+        """Handle educator signup with conflict override.
+
+        The conflict itself has already been stated above the roster, so this only
+        offers the way through it.
+        """
+        if st.button("Override conflict and sign up", key=f"override_{button_key}"):
+            st.session_state[f"show_educator_override_{button_key}"] = True
         
         # Show override dialog if triggered
         if st.session_state.get(f"show_educator_override_{button_key}", False):
