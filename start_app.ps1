@@ -9,21 +9,65 @@ Write-Host ""
 # Change to the script directory
 Set-Location $PSScriptRoot
 
-# Check if Python is installed
-try {
-    $pythonVersion = python --version 2>&1
-    Write-Host "Found: $pythonVersion" -ForegroundColor Green
-} catch {
-    Write-Host "ERROR: Python is not installed or not in PATH" -ForegroundColor Red
-    Write-Host "Please install Python 3.8 or later from https://www.python.org/" -ForegroundColor Yellow
+# ---------------------------------------------------------------------------
+# Pick an interpreter this app can actually run on.
+#
+# "python" on PATH is whatever was installed last, which is how a machine with
+# Python 3.14 ends up building a venv that cannot import altair. Ask the py
+# launcher for a supported version first and only fall back to PATH.
+# scripts\check_python.py is the single source of truth for what counts as
+# supported, and prints the fix when nothing does.
+# ---------------------------------------------------------------------------
+
+$pyExe = $null
+$pyArgs = @()
+foreach ($v in @("3.13", "3.12", "3.11")) {
+    & py "-$v" -c "import sys" 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        $pyExe = "py"
+        $pyArgs = @("-$v")
+        break
+    }
+}
+
+if (-not $pyExe) {
+    & python --version 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Python is not installed or not in PATH" -ForegroundColor Red
+        Write-Host "Please install Python 3.13 from https://www.python.org/" -ForegroundColor Yellow
+        Read-Host "Press Enter to exit"
+        exit 1
+    }
+    $pyExe = "python"
+}
+
+Write-Host "Using interpreter: $pyExe $pyArgs" -ForegroundColor Green
+& $pyExe @pyArgs "scripts\check_python.py"
+if ($LASTEXITCODE -ne 0) {
     Read-Host "Press Enter to exit"
     exit 1
+}
+Write-Host ""
+
+# An existing venv is checked too. Upgrading Python on the machine does not
+# change a venv that was already built, so a stale one has to be caught here
+# rather than 40 lines into an import traceback.
+if (Test-Path "venv\Scripts\python.exe") {
+    & ".\venv\Scripts\python.exe" "scripts\check_python.py" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "The existing 'venv' folder was built with an unsupported Python." -ForegroundColor Red
+        & ".\venv\Scripts\python.exe" "scripts\check_python.py"
+        Write-Host ""
+        Write-Host "Delete the 'venv' folder and run this script again to rebuild it." -ForegroundColor Yellow
+        Read-Host "Press Enter to exit"
+        exit 1
+    }
 }
 
 # Check if virtual environment exists
 if (-not (Test-Path "venv")) {
     Write-Host "Creating virtual environment..." -ForegroundColor Yellow
-    python -m venv venv
+    & $pyExe @pyArgs -m venv venv
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: Failed to create virtual environment" -ForegroundColor Red
         Read-Host "Press Enter to exit"

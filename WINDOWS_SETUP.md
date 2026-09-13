@@ -1,5 +1,50 @@
 # Windows 11 Setup Instructions for CrewOps360
 
+## Python version — read this first
+
+**CrewOps360 needs Python 3.11, 3.12 or 3.13. It does not run on 3.14 or newer.**
+
+Install **Python 3.13**:
+
+```powershell
+winget install Python.Python.3.13
+```
+
+Then open a *new* terminal and check what the launcher can see:
+
+```powershell
+py -0
+```
+
+You want a `3.13` (or `3.12`/`3.11`) in that list. Having 3.14 as well is fine —
+`start_app.bat` picks a supported one on purpose rather than taking whatever
+`python` on PATH happens to be.
+
+To check any particular interpreter:
+
+```powershell
+py -3.13 scripts\check_python.py
+venv\Scripts\python scripts\check_python.py   # an existing venv
+```
+
+**Why the ceiling:** the app pins `altair<6` so local charts render the way
+production's do. altair 5.5.0 is the last 5.x release ever made, and it cannot
+be imported on Python 3.14+ — it fails with a `TypedDict ... 'closed'`
+`TypeError` before any app code runs. No package upgrade works around it. See
+the header of `requirements.txt` for the full story.
+
+**If you already have a `venv` built on 3.14:** upgrading Python on the machine
+does not repair it — a virtual environment keeps the interpreter it was created
+with. Delete the folder and let the launcher rebuild it:
+
+```powershell
+deactivate
+rmdir /s /q venv
+start_app.bat
+```
+
+---
+
 ## Quick Start (Recommended Method)
 
 The easiest way to start the app on Windows is using the batch file:
@@ -57,9 +102,10 @@ If automated scripts continue to have issues, you can set up manually:
 1. **Open Command Prompt or PowerShell** in the project folder:
    - Hold `Shift` + Right-click in the folder → "Open PowerShell window here"
 
-2. **Create virtual environment**:
+2. **Create virtual environment** (name the version — do not use bare `python`,
+   which may be 3.14):
    ```cmd
-   python -m venv venv
+   py -3.13 -m venv venv
    ```
 
 3. **Activate virtual environment**:
@@ -81,9 +127,15 @@ If automated scripts continue to have issues, you can set up manually:
 ## Troubleshooting
 
 ### "Python is not recognized"
-- Install Python from https://www.python.org/
+- Install Python 3.13 from https://www.python.org/ (or `winget install Python.Python.3.13`)
 - During installation, **check "Add Python to PATH"**
 - Restart your computer after installation
+
+### `TypeError: _TypedDictMeta.__new__() got an unexpected keyword argument 'closed'`
+Your virtual environment is on Python 3.14+, which altair 5.x cannot import.
+See **Python version** at the top of this file: install 3.13, delete `venv`,
+and run `start_app.bat` again. `python scripts\check_python.py` confirms which
+version a given interpreter is.
 
 ### "Access is denied" or "Permission error"
 - Run Command Prompt or PowerShell as Administrator
@@ -121,7 +173,8 @@ For Windows, we recommend using `start_app.bat` as it's the most reliable option
 ## Need Help?
 
 If you continue to experience issues:
-1. Check which Python version you have: `python --version` (should be 3.8+)
+1. Check which Python version you have: `python scripts\check_python.py`
+   (must be 3.11, 3.12 or 3.13 — **not** 3.14)
 2. Make sure you're in the correct project directory
 3. Try running as Administrator
 4. Check Windows Event Viewer for detailed error messages
