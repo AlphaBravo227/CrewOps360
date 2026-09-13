@@ -2,8 +2,6 @@
 REM CrewOps360 Streamlit App Launcher for Windows
 REM This script creates a virtual environment and starts the Streamlit app
 
-setlocal enabledelayedexpansion
-
 echo ========================================
 echo CrewOps360 Streamlit App Launcher
 echo ========================================
@@ -15,34 +13,33 @@ cd /d "%~dp0"
 REM ---------------------------------------------------------------------------
 REM Pick an interpreter this app can actually run on.
 REM
-REM "python" on PATH is whatever was installed last, which is how a machine with
-REM Python 3.14 ends up building a venv that cannot import altair. Ask the py
-REM launcher for a supported version first and only fall back to PATH.
-REM scripts\check_python.py is the single source of truth for what counts as
-REM supported, and prints the fix when nothing does.
+REM "python" on PATH is whatever was installed last, which is how a machine that
+REM has moved on to Python 3.14 ends up building a venv that cannot import
+REM altair. Ask the py launcher for a supported version first, newest supported
+REM before oldest, and only fall back to PATH. scripts\check_python.py is the
+REM single source of truth for what counts as supported, and prints the fix when
+REM nothing does.
 REM ---------------------------------------------------------------------------
 
-set PY_CMD=
-for %%V in (3.13 3.12 3.11) do (
-    if "!PY_CMD!"=="" (
-        py -%%V -c "import sys" >nul 2>&1
-        if not errorlevel 1 set PY_CMD=py -%%V
-    )
-)
+set "PY_CMD="
+call :try_py 3.13
+if not defined PY_CMD call :try_py 3.12
+if not defined PY_CMD call :try_py 3.11
 
-if "!PY_CMD!"=="" (
+if not defined PY_CMD (
     python --version >nul 2>&1
     if errorlevel 1 (
         echo ERROR: Python is not installed or not in PATH
         echo Please install Python 3.13 from https://www.python.org/
+        echo    or run: winget install Python.Python.3.13
         pause
         exit /b 1
     )
-    set PY_CMD=python
+    set "PY_CMD=python"
 )
 
-echo Using interpreter: !PY_CMD!
-!PY_CMD! scripts\check_python.py
+echo Using interpreter: %PY_CMD%
+%PY_CMD% scripts\check_python.py
 if errorlevel 1 (
     pause
     exit /b 1
@@ -50,9 +47,9 @@ if errorlevel 1 (
 echo.
 
 REM ---------------------------------------------------------------------------
-REM An existing venv is checked too. Upgrading Python on the machine does not
-REM change a venv that was already built, so a stale one has to be caught here
-REM rather than 40 lines into an import traceback.
+REM An existing venv keeps the Python it was built with, so upgrading the
+REM machine's Python does not repair it. Catch a stale one here rather than
+REM forty lines into an import traceback at first launch.
 REM ---------------------------------------------------------------------------
 
 if exist "venv\Scripts\python.exe" (
@@ -61,7 +58,8 @@ if exist "venv\Scripts\python.exe" (
         echo The existing 'venv' folder was built with an unsupported Python.
         venv\Scripts\python.exe scripts\check_python.py
         echo.
-        echo Delete the 'venv' folder and run this script again to rebuild it.
+        echo Delete the 'venv' folder and run this script again to rebuild it:
+        echo     rmdir /s /q venv
         pause
         exit /b 1
     )
@@ -70,7 +68,7 @@ if exist "venv\Scripts\python.exe" (
 REM Check if virtual environment exists
 if not exist "venv\" (
     echo Creating virtual environment...
-    !PY_CMD! -m venv venv
+    %PY_CMD% -m venv venv
     if errorlevel 1 (
         echo ERROR: Failed to create virtual environment
         pause
@@ -123,3 +121,15 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+
+exit /b 0
+
+REM ---------------------------------------------------------------------------
+REM Sets PY_CMD to "py -<version>" if the py launcher has that version.
+REM Called rather than inlined in a for loop: "if errorlevel" inside a
+REM parenthesised block is a well-known batch footgun.
+REM ---------------------------------------------------------------------------
+:try_py
+py -%1 -c "import sys" >nul 2>&1
+if not errorlevel 1 set "PY_CMD=py -%1"
+goto :eof
