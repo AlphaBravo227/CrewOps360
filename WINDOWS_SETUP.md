@@ -39,8 +39,19 @@ with. Delete the folder and let the launcher rebuild it:
 
 ```powershell
 deactivate
-rmdir /s /q venv
-start_app.bat
+.\start_app.bat
+```
+
+`start_app.bat` notices the stale venv and offers to delete and rebuild it for
+you. To remove it by hand, note that the command differs by shell — `rmdir /s /q`
+is `cmd.exe` only and fails in PowerShell, where `rmdir` is an alias for
+`Remove-Item`:
+
+```powershell
+Remove-Item -Recurse -Force venv    # PowerShell
+```
+```cmd
+rmdir /s /q venv                    :: cmd.exe
 ```
 
 ---
@@ -133,9 +144,13 @@ If automated scripts continue to have issues, you can set up manually:
 
 ### `TypeError: _TypedDictMeta.__new__() got an unexpected keyword argument 'closed'`
 Your virtual environment is on Python 3.14+, which altair 5.x cannot import.
-See **Python version** at the top of this file: install 3.13, delete `venv`,
-and run `start_app.bat` again. `python scripts\check_python.py` confirms which
-version a given interpreter is.
+See **Python version** at the top of this file: install 3.13, then run
+`start_app.bat`, which offers to rebuild the venv for you.
+`python scripts\check_python.py` confirms which version a given interpreter is.
+
+### `Remove-Item : A positional parameter cannot be found that accepts argument '/q'`
+You ran a `cmd.exe` command in PowerShell. `rmdir /s /q venv` only works in
+`cmd.exe`; in PowerShell use `Remove-Item -Recurse -Force venv`.
 
 ### "Access is denied" or "Permission error"
 - Run Command Prompt or PowerShell as Administrator

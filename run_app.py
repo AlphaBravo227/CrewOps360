@@ -9,12 +9,13 @@ scripts/check_python.py owns the version rule and explains the fix.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import venv
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts'))
-from check_python import PREFERRED, is_supported  # noqa: E402
+from check_python import is_supported  # noqa: E402
 
 
 def _venv_python(venv_path):
@@ -61,9 +62,17 @@ def main():
         if existing is not None and not is_supported(existing):
             print("The existing 'venv' folder was built with an unsupported Python.")
             subprocess.run([python_path, checker])
-            print("Delete the 'venv' folder and run this script again to rebuild "
-                  "it with Python %s." % PREFERRED)
-            return 1
+            print("Removing it and rebuilding with Python %d.%d..."
+                  % sys.version_info[:2])
+            try:
+                shutil.rmtree(venv_path)
+            except OSError as e:
+                # Usually a file still open inside it: an active venv in this
+                # shell, another terminal, or OneDrive mid-sync.
+                print("ERROR: could not remove %s\n  %s" % (venv_path, e))
+                print("Close anything using this project (run 'deactivate' if the "
+                      "venv is active here), then run this script again.")
+                return 1
 
     if not os.path.exists(venv_path):
         print("Creating virtual environment with Python %d.%d..." % sys.version_info[:2])

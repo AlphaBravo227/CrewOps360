@@ -52,18 +52,10 @@ REM machine's Python does not repair it. Catch a stale one here rather than
 REM forty lines into an import traceback at first launch.
 REM ---------------------------------------------------------------------------
 
-if exist "venv\Scripts\python.exe" (
-    venv\Scripts\python.exe scripts\check_python.py >nul 2>&1
-    if errorlevel 1 (
-        echo The existing 'venv' folder was built with an unsupported Python.
-        venv\Scripts\python.exe scripts\check_python.py
-        echo.
-        echo Delete the 'venv' folder and run this script again to rebuild it:
-        echo     rmdir /s /q venv
-        pause
-        exit /b 1
-    )
-)
+set "VENV_STALE="
+if exist "venv\Scripts\python.exe" call :check_venv
+if defined VENV_STALE call :rebuild_prompt
+if errorlevel 1 exit /b 1
 
 REM Check if virtual environment exists
 if not exist "venv\" (
@@ -133,3 +125,52 @@ REM ---------------------------------------------------------------------------
 py -%1 -c "import sys" >nul 2>&1
 if not errorlevel 1 set "PY_CMD=py -%1"
 goto :eof
+
+REM ---------------------------------------------------------------------------
+REM Flags an existing venv built with a Python this app cannot use.
+REM ---------------------------------------------------------------------------
+:check_venv
+venv\Scripts\python.exe scripts\check_python.py >nul 2>&1
+if not errorlevel 1 exit /b 0
+set "VENV_STALE=1"
+REM Return 0 either way. The caller reads VENV_STALE to decide what to do; an
+REM errorlevel left over from the check itself would make a healthy venv look
+REM like a failure at the "if errorlevel 1" that follows the call.
+exit /b 0
+
+REM ---------------------------------------------------------------------------
+REM Offer to delete the stale venv. Doing it here rather than printing a command
+REM avoids handing the user shell-specific syntax: "rmdir /s /q" is cmd only and
+REM fails in PowerShell, which is where most people launch this from.
+REM ---------------------------------------------------------------------------
+:rebuild_prompt
+echo The existing 'venv' folder was built with an unsupported Python.
+echo.
+venv\Scripts\python.exe scripts\check_python.py
+echo.
+set "REBUILD="
+set /p "REBUILD=Delete the 'venv' folder and rebuild it with %PY_CMD%? [Y/N] "
+if /i not "%REBUILD%"=="Y" (
+    echo.
+    echo Nothing was changed. Delete the 'venv' folder yourself, then run this
+    echo script again:
+    echo     PowerShell:  Remove-Item -Recurse -Force venv
+    echo     cmd.exe:     rmdir /s /q venv
+    pause
+    exit /b 1
+)
+echo Removing 'venv'...
+rmdir /s /q venv
+if exist "venv\" (
+    echo.
+    echo ERROR: could not remove the 'venv' folder -- something is holding a
+    echo file open inside it.
+    echo  - Close any other terminal or editor using this project
+    echo  - If the venv is active in this window, run: deactivate
+    echo  - If the project is in OneDrive, pause syncing briefly
+    echo Then run this script again.
+    pause
+    exit /b 1
+)
+echo.
+exit /b 0

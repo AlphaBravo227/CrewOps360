@@ -56,11 +56,32 @@ if (Test-Path "venv\Scripts\python.exe") {
     & ".\venv\Scripts\python.exe" "scripts\check_python.py" | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "The existing 'venv' folder was built with an unsupported Python." -ForegroundColor Red
+        Write-Host ""
         & ".\venv\Scripts\python.exe" "scripts\check_python.py"
         Write-Host ""
-        Write-Host "Delete the 'venv' folder and run this script again to rebuild it." -ForegroundColor Yellow
-        Read-Host "Press Enter to exit"
-        exit 1
+        # Delete it here rather than printing a command: the syntax differs
+        # between PowerShell and cmd, and handing over the wrong one is exactly
+        # how this goes wrong.
+        $answer = Read-Host "Delete the 'venv' folder and rebuild it with $pyExe $pyArgs? [Y/N]"
+        if ($answer -ne "Y" -and $answer -ne "y") {
+            Write-Host ""
+            Write-Host "Nothing was changed. Delete the 'venv' folder yourself, then run" -ForegroundColor Yellow
+            Write-Host "this script again:  Remove-Item -Recurse -Force venv" -ForegroundColor Cyan
+            Read-Host "Press Enter to exit"
+            exit 1
+        }
+        Write-Host "Removing 'venv'..." -ForegroundColor Yellow
+        Remove-Item -Recurse -Force venv -ErrorAction SilentlyContinue
+        if (Test-Path "venv") {
+            Write-Host ""
+            Write-Host "ERROR: could not remove the 'venv' folder -- something is holding a file open inside it." -ForegroundColor Red
+            Write-Host "  - Close any other terminal or editor using this project" -ForegroundColor Yellow
+            Write-Host "  - If the venv is active in this window, run: deactivate" -ForegroundColor Yellow
+            Write-Host "  - If the project is in OneDrive, pause syncing briefly" -ForegroundColor Yellow
+            Read-Host "Press Enter to exit"
+            exit 1
+        }
+        Write-Host ""
     }
 }
 
