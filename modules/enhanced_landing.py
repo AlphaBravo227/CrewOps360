@@ -33,9 +33,22 @@ def inject_custom_css():
         border-radius: 6px;
     }
     
-    /* FIXED: Reduced column spacing to prevent button cutoff */
-    .block-container {
-        padding-top: 0.5rem !important;  /* Reduced from 1rem */
+    /* Top padding on the main block container has to clear Streamlit's app
+       header. That header is positioned over the top of the page (3.75rem
+       tall, painted in the theme background colour whenever the toolbar is
+       shown, at a z-index above page content), and the framework's default
+       6rem of top padding is what keeps content out from under it. Setting
+       this to 0.5rem tucked the first element of every page - the "Back to
+       ..." buttons, the Summer Leave heading, the CrewOps360 banner -
+       underneath that bar, where it read as cut off at the top.
+
+       So trim the default rather than remove it: header height plus a small
+       gap, which is still noticeably tighter than stock without hiding
+       anything. Both selectors are the same element - Streamlit renamed it
+       to stMainBlockContainer and kept .block-container as an alias. */
+    .block-container,
+    [data-testid="stMainBlockContainer"] {
+        padding-top: calc(3.75rem + 0.5rem) !important;
     }
     
     /* Info box styling */

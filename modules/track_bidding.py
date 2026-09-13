@@ -2614,9 +2614,6 @@ Happy bidding!
 
 def display_track_bidding():
     """Main entry point for the Track Bidding section."""
-    st.markdown("")
-    st.markdown("")
-
     if st.button("← Back to CrewOps360", key="back_from_bidding"):
         st.session_state.selected_module = None
         st.rerun()

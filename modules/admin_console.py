@@ -132,7 +132,6 @@ def render_admin_sidebar_entry(key_suffix=""):
 
 def display_admin_console():
     """Render the Admin Console. Gated; safe to call from anywhere in the app."""
-    st.markdown("")
     if st.button("← Back to CrewOps360", key="admin_console_exit"):
         st.session_state.selected_module = None
         st.session_state.pop(_SECTION_KEY, None)

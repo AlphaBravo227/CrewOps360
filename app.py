@@ -412,9 +412,6 @@ def display_shift_location_preferences_module():
 
     render_admin_sidebar_entry("_location_prefs")
 
-    st.markdown("")
-    st.markdown("")
-
     # Back button
     if st.button("← Back to CrewOps360", key="back_from_location_prefs"):
         st.session_state.selected_module = None
@@ -508,9 +505,6 @@ def display_training_events_app():
     admin_dashboard = (training_admin_is_authenticated()
                        and st.session_state.get('training_admin_show_function', False))
 
-    st.markdown("")
-    st.markdown("")
-    
     if not admin_dashboard:
         # Back button
         if st.button("← Back to CrewOps360", key="back_from_training"):
