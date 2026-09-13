@@ -23,30 +23,14 @@ import streamlit as st
 from . import ccemt_schedule as ccemt
 from . import preassignment_db as preassign
 from .day_pattern import PATTERN_DAYS, days_by_week
-from .security import check_admin_access
+from .security import require_admin
 
 _eastern_tz = pytz.timezone('America/New_York')
 
 
 def _require_admin(form_key):
-    """Gate a page behind the admin password. Returns True when authenticated."""
-    if st.session_state.get('admin_authenticated'):
-        return True
-
-    st.warning("🔒 Admin access required.")
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        with st.form(form_key):
-            password = st.text_input("Admin password", type="password",
-                                     key=f"{form_key}_password")
-            submitted = st.form_submit_button("Unlock", use_container_width=True,
-                                              type="primary")
-        if submitted:
-            if check_admin_access(password):
-                st.rerun()
-            else:
-                st.error("Incorrect password.")
-    return False
+    """Gate a page behind the one shared admin password. True when signed in."""
+    return require_admin(form_key)
 
 
 def _track_cycle_names():
@@ -505,25 +489,12 @@ def _ccemt_settings(start_date):
 
 def display_track_data_admin():
     """
-    Render the Track Data admin page: preassignments and CCEMT schedules.
+    Render the Track Data admin section: preassignments and CCEMT schedules.
 
-    Admin-gated; safe to call from anywhere in the app.
+    Reached through the Admin Console, which supplies the page's navigation,
+    title and sign-in. The gate below is kept all the same, so the section is
+    safe to call from anywhere.
     """
-    st.markdown("")
-    if st.button("← Back to CrewOps360", key="track_data_back"):
-        st.session_state.selected_module = None
-        st.rerun()
-
-    st.markdown("""
-    <div style="text-align: center; padding: 1rem;">
-        <h1 style="color: #4527A0;">📌 Track Data</h1>
-        <p style="color: #666; font-size: 1.1rem;">
-            Preassignments and CCEMT schedules, per cycle
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("---")
-
     if not _require_admin("track_data_admin_login"):
         return
 

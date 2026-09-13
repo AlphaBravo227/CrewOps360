@@ -207,8 +207,8 @@ Shewan.
 
 ## Maintaining the roster
 
-Clinical Track Hub → sidebar **Admin Area** → **Manage Staff Database**. The page is
-admin-password gated and has seven tabs:
+Admin Console → **Staff Database**. Administration is one sign-in for the whole app,
+and this section has seven tabs:
 
 - **Roster** — filter by name/role/active/management/grouping, and download as Excel.
 - **Groupings** — create a grouping, decide who is in it, archive or delete it, and

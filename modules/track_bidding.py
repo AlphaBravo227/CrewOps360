@@ -55,7 +55,7 @@ from modules.db_utils import (
     log_bid_progression_event,
     get_bid_progression_log,
 )
-from modules.security import check_admin_access
+from modules.security import admin_is_authenticated
 from modules.shift_definitions import day_shifts, night_shifts
 
 
@@ -1802,24 +1802,28 @@ def _render_base_analysis_tab(config_names, default_track_index):
 # ──────────────────────────────────────────────
 
 def _render_admin_mode_toggle():
-    """Render the sidebar password gate that flips the page into full admin mode."""
-    if 'track_bidding_admin_mode' not in st.session_state:
-        st.session_state.track_bidding_admin_mode = False
+    """Sidebar switch between the staff bidding page and the admin dashboard.
+
+    The password box that used to live here is gone: administrative access is one
+    sign-in for the whole app now, held by modules.security and offered from the
+    Admin Console. A staff member sees nothing here.
+    """
+    if not admin_is_authenticated():
+        st.session_state.pop('track_bidding_admin_mode', None)
+        return
 
     with st.sidebar:
         st.markdown("## Track Bidding Admin")
-        password = st.text_input("Enter admin password:", type="password", key="bid_admin_pw")
-
-        # text_input already commits (and reruns) on Enter, so once the password
-        # checks out there's nothing left to confirm — no separate button click needed.
-        if check_admin_access(password) and not st.session_state.track_bidding_admin_mode:
-            st.session_state.track_bidding_admin_mode = True
-            st.rerun()
-
-        if st.session_state.track_bidding_admin_mode:
+        if st.session_state.get('track_bidding_admin_mode'):
             st.success("✅ Admin Mode Active")
-            if st.button("👤 Switch to Staff View", key="bid_exit_admin_mode", use_container_width=True):
+            if st.button("👤 Switch to Staff View", key="bid_exit_admin_mode",
+                         use_container_width=True):
                 st.session_state.track_bidding_admin_mode = False
+                st.rerun()
+        else:
+            if st.button("🛠️ Switch to Admin Mode", key="bid_enter_admin_mode",
+                         use_container_width=True, type="primary"):
+                st.session_state.track_bidding_admin_mode = True
                 st.rerun()
 
 
@@ -2619,10 +2623,14 @@ def display_track_bidding():
 
     st.markdown("# Track Bidding")
 
-    # Render admin sidebar (password gate -> full-page admin mode)
+    # One door into administration, drawn on every module page.
+    from modules.admin_console import render_admin_sidebar_entry
+    render_admin_sidebar_entry("_bidding")
+
+    # Sidebar switch into the full-page admin dashboard (admins only)
     _render_admin_mode_toggle()
 
-    if st.session_state.get('track_bidding_admin_mode'):
+    if st.session_state.get('track_bidding_admin_mode') and admin_is_authenticated():
         display_bidding_admin_interface()
         return
 

@@ -1,13 +1,151 @@
 # modules/security.py
 """
-Security module for user authentication and access control
-Handles both user PIN authentication and admin password verification
+Security module for user authentication and access control.
+
+Two credentials, and only two: the four-digit access code every user needs to
+open the app at all, and a single administrator password.
+
+That admin password is the whole of administrative access. Every admin area —
+the Clinical Track Hub tools, Track Bidding, the Staff Database, Track Data,
+Training & Events and Summer Leave — reads the one session this module keeps, so
+an administrator signs in once and stays signed in across all of them. Training
+used to carry a second PIN of its own; it does not any more.
 """
 
+import os
 import streamlit as st
 import hashlib
 import time
 from datetime import datetime, timedelta
+
+# ──────────────────────────────────────────────
+# Admin session (shared by every admin area in the app)
+# ──────────────────────────────────────────────
+
+# How long an admin session lasts without activity. Every admin page extends it
+# on render, so this only bites on a console left open and walked away from.
+ADMIN_SESSION_TIMEOUT_MINUTES = 60
+
+# The credential to fall back on when nothing is configured. Deployments set a
+# real one in secrets or the environment; see get_admin_password().
+_DEFAULT_ADMIN_PASSWORD = "PW"
+
+# Everything that makes up an authenticated admin session, cleared together.
+_ADMIN_SESSION_KEYS = (
+    'admin_authenticated',
+    'admin_login_time',
+    'admin_console_section',
+    # Per-module admin view state. Left behind, these put a logged-out user back
+    # into an admin screen the moment they open the module again.
+    'track_bidding_admin_mode',
+    'summer_leave_admin_mode',
+    'training_admin_current_function',
+    'training_admin_show_function',
+)
+
+
+def get_admin_password():
+    """The configured admin password.
+
+    Looked up in order: `st.secrets["admin"]["password"]`, a top-level
+    `admin_password` secret, the `CREWOPS_ADMIN_PASSWORD` environment variable,
+    then the built-in default. Reading secrets raises when no secrets file
+    exists at all, which is the normal case running locally, so the whole lookup
+    is guarded.
+    """
+    try:
+        secrets = st.secrets
+        admin_section = secrets.get('admin') if hasattr(secrets, 'get') else None
+        if admin_section:
+            configured = admin_section.get('password')
+            if configured:
+                return str(configured)
+        configured = secrets.get('admin_password') if hasattr(secrets, 'get') else None
+        if configured:
+            return str(configured)
+    except Exception:
+        pass
+
+    return os.getenv('CREWOPS_ADMIN_PASSWORD') or _DEFAULT_ADMIN_PASSWORD
+
+
+def admin_is_authenticated():
+    """Whether an admin is signed in and their session has not expired.
+
+    Expiry logs the session out here rather than only reporting it, so an admin
+    whose session ran out stops seeing admin screens on the render that notices.
+    """
+    if not st.session_state.get('admin_authenticated'):
+        return False
+
+    login_time = st.session_state.get('admin_login_time')
+    if not login_time:
+        return False
+
+    elapsed_minutes = (datetime.now() - login_time).total_seconds() / 60
+    if elapsed_minutes > ADMIN_SESSION_TIMEOUT_MINUTES:
+        logout_admin()
+        return False
+
+    return True
+
+
+def admin_session_minutes_remaining():
+    """Minutes left on the current admin session (0 once it has expired)."""
+    login_time = st.session_state.get('admin_login_time')
+    if not login_time:
+        return 0
+    elapsed_minutes = (datetime.now() - login_time).total_seconds() / 60
+    return max(0, ADMIN_SESSION_TIMEOUT_MINUTES - elapsed_minutes)
+
+
+def touch_admin_session():
+    """Push the expiry out. Called by admin pages so activity keeps a session alive."""
+    if st.session_state.get('admin_authenticated'):
+        st.session_state.admin_login_time = datetime.now()
+
+
+def authenticate_admin(password):
+    """Sign an admin in if the password matches. Returns True on success."""
+    if password and password == get_admin_password():
+        st.session_state.admin_authenticated = True
+        st.session_state.admin_login_time = datetime.now()
+        return True
+    return False
+
+
+def logout_admin():
+    """End the admin session and drop every admin view it left behind."""
+    for key in _ADMIN_SESSION_KEYS:
+        st.session_state.pop(key, None)
+    st.session_state.admin_authenticated = False
+
+
+def require_admin(form_key="admin_login", message="🔒 Admin access required."):
+    """Gate a page behind the one admin password. Returns True when signed in.
+
+    Renders the sign-in form itself when nobody is, so a caller only has to
+    return early on False.
+    """
+    if admin_is_authenticated():
+        touch_admin_session()
+        return True
+
+    st.warning(message)
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        with st.form(form_key):
+            password = st.text_input("Admin password", type="password",
+                                     key=f"{form_key}_password")
+            submitted = st.form_submit_button("Unlock", use_container_width=True,
+                                              type="primary")
+        if submitted:
+            if authenticate_admin(password):
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
+    return False
+
 
 class SecurityManager:
     """Manage user authentication and security"""
@@ -15,7 +153,6 @@ class SecurityManager:
     def __init__(self):
         # Security configuration
         self.USER_PIN = "2711"  # Four-digit PIN for users
-        self.ADMIN_PASSWORD = "PW"  # Admin password remains the same
         
         # Session timeout (in minutes)
         self.SESSION_TIMEOUT = 180  # 3 hours
@@ -111,7 +248,7 @@ class SecurityManager:
     
     def authenticate_admin(self, entered_password):
         """
-        Authenticate admin with password
+        Authenticate admin with the single shared admin password
         
         Args:
             entered_password (str): Password entered by admin
@@ -119,10 +256,7 @@ class SecurityManager:
         Returns:
             bool: True if authentication successful
         """
-        if entered_password == self.ADMIN_PASSWORD:
-            st.session_state.admin_authenticated = True
-            return True
-        return False
+        return authenticate_admin(entered_password)
     
     def check_user_access(self):
         """
@@ -131,22 +265,30 @@ class SecurityManager:
         Returns:
             bool: True if user can access the application
         """
-        # Check if session expired
+        # Check if session expired. The admin session goes with it: an admin
+        # session outliving the login that carried it is a way back into admin
+        # screens for whoever enters the access code next on that browser.
         if self.is_session_expired():
             st.session_state.user_authenticated = False
             st.session_state.auth_timestamp = None
+            logout_admin()
             return False
         
         return st.session_state.user_authenticated
     
     def logout_user(self):
-        """Logout user and clear authentication"""
+        """Logout user, and with them any admin session they were holding.
+
+        Leaving the admin session standing meant the next person to enter the
+        access code on the same browser arrived already signed in as an admin.
+        """
         st.session_state.user_authenticated = False
         st.session_state.auth_timestamp = None
+        logout_admin()
     
     def logout_admin(self):
         """Logout admin"""
-        st.session_state.admin_authenticated = False
+        logout_admin()
     
     def get_remaining_lockout_time(self):
         """Get remaining lockout time in minutes"""
@@ -316,19 +458,6 @@ def require_user_authentication(func):
             return None
     
     return wrapper
-
-def check_admin_access(password):
-    """
-    Check admin access with password
-    
-    Args:
-        password (str): Entered admin password
-        
-    Returns:
-        bool: True if admin authenticated
-    """
-    security_manager = SecurityManager()
-    return security_manager.authenticate_admin(password)
 
 # Create global security manager instance
 security_manager = SecurityManager()

@@ -36,37 +36,49 @@ class EmailNotifier:
         self.load_email_config()
     
     def load_email_config(self):
-        """Load email configuration from Streamlit secrets or environment variables"""
+        """Load email configuration from Streamlit secrets or environment variables.
+
+        Always leaves every attribute set, even when nothing is configured. It used
+        to bail out of the try block before assigning any of them - which is what
+        happens with no secrets.toml on disk, since reading st.secrets raises rather
+        than coming back empty - and every later reader hit an AttributeError.
+        """
+        self.api_key = None
+        self.notification_recipients = []
+        self.admin_email = 'aaron.e.bell@gmail.com'
+        self.configured = False
+
+        email_secrets = None
         try:
-            # Try Streamlit secrets first (recommended for deployment)
+            # Try Streamlit secrets first (recommended for deployment). No secrets
+            # file at all is the normal case in local development, not an error, so
+            # it falls through to the environment rather than reporting a failure.
             if hasattr(st, 'secrets') and 'email' in st.secrets:
-                self.api_key = st.secrets.email.resend_api_key
-                # Fix: Handle both string and list formats for notification_recipients
-                recipients = st.secrets.email.get('notification_recipients', [])
+                email_secrets = st.secrets.email
+        except Exception:
+            email_secrets = None
+
+        try:
+            if email_secrets is not None:
+                self.api_key = email_secrets.get('resend_api_key')
+                # Handle both string and list formats for notification_recipients
+                recipients = email_secrets.get('notification_recipients', [])
                 if isinstance(recipients, str):
-                    # If it's a string, split by comma and strip whitespace
-                    self.notification_recipients = [email.strip() for email in recipients.split(',') if email.strip()]
-                else:
-                    # If it's already a list, use it directly
-                    self.notification_recipients = recipients
-                self.admin_email = st.secrets.email.get('admin_email', 'aaron.e.bell@gmail.com')
+                    recipients = [email.strip() for email in recipients.split(',')
+                                  if email.strip()]
+                self.notification_recipients = list(recipients)
+                self.admin_email = email_secrets.get('admin_email', self.admin_email)
             else:
                 # Fallback to environment variables
                 self.api_key = os.getenv('RESEND_API_KEY')
                 recipients_str = os.getenv('EMAIL_NOTIFICATION_RECIPIENTS', '')
                 self.notification_recipients = [email.strip() for email in recipients_str.split(',') if email.strip()]
-                self.admin_email = os.getenv('ADMIN_EMAIL', 'aaron.e.bell@gmail.com')
-
-            # Validate configuration
-            if not self.api_key:
-                st.warning("⚠️ Email notifications not configured. Please set up the Resend API key.")
-                self.configured = False
-            else:
-                self.configured = True
-                
+                self.admin_email = os.getenv('ADMIN_EMAIL', self.admin_email)
         except Exception as e:
             st.error(f"Error loading email configuration: {str(e)}")
-            self.configured = False
+            return
+
+        self.configured = bool(self.api_key)
     
     def send_track_submission_notification(self, staff_name, track_data, submission_type="update", track_id=None):
         """

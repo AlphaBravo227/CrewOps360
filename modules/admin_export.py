@@ -773,10 +773,11 @@ def display_admin_export_section(preferences_df: pd.DataFrame):
     Args:
         preferences_df: Original preferences DataFrame from Excel
     """
-    if not st.session_state.get('admin_authenticated', False):
+    from .security import admin_is_authenticated
+
+    if not admin_is_authenticated():
         return
-    
-    st.markdown("---")
+
     st.header("📤 Preferences Export Center")
     
     # Use the correct database path in the data folder

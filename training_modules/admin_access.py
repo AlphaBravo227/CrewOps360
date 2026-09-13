@@ -9,6 +9,18 @@ import re
 from . import class_catalog as catalog
 from . import two_day
 
+# Training used to keep its own admin PIN and its own session clock, so an
+# administrator signed in twice to do one job. Both are gone: administrative
+# access is a single app-wide sign-in held by modules.security, offered from the
+# Admin Console, and everything here reads that one session.
+from modules.security import (
+    ADMIN_SESSION_TIMEOUT_MINUTES,
+    admin_is_authenticated,
+    admin_session_minutes_remaining,
+    logout_admin,
+    touch_admin_session,
+)
+
 _eastern_tz = pytz.timezone('America/New_York')
 
 # Update the AdminAccess class to include availability analyzer initialization
@@ -43,41 +55,24 @@ def _year_last_class_date(year_label):
         return None
 
 
-# How long a training admin session stays authenticated. Module-level so the
-# training app can ask whether an admin is signed in before the AdminAccess
-# instance has been built - the year picker has to be widened for admins several
-# steps earlier than that.
-ADMIN_SESSION_TIMEOUT_MINUTES = 30
-
-
 def clear_admin_session():
-    """Drop every key that makes up an authenticated training admin session."""
-    for key in ('training_admin_authenticated', 'training_admin_login_time',
-                'training_admin_current_function', 'training_admin_show_function'):
-        st.session_state.pop(key, None)
+    """Leave the training admin dashboard and end the app-wide admin session."""
+    logout_admin()
 
 
 def training_admin_is_authenticated():
-    """Whether a training admin is signed in and their session hasn't expired.
+    """Whether an administrator is signed in.
 
-    Expiry logs the session out here rather than only reporting it, so an expired
-    admin stops seeing draft years on the very render that notices.
+    Module-level so the training app can ask before the AdminAccess instance has
+    been built - the year picker has to be widened for admins several steps
+    earlier than that. Kept as a name of its own because callers across the
+    training app read it; the answer now comes from the one admin session.
     """
-    if not st.session_state.get('training_admin_authenticated'):
-        return False
-    login_time = st.session_state.get('training_admin_login_time')
-    if not login_time:
-        return False
-    elapsed_minutes = (datetime.now(_eastern_tz) - login_time).total_seconds() / 60
-    if elapsed_minutes > ADMIN_SESSION_TIMEOUT_MINUTES:
-        clear_admin_session()
-        return False
-    return True
+    return admin_is_authenticated()
 
 
 class AdminAccess:
     def __init__(self):
-        self.admin_pin = "9999"
         self.session_timeout = ADMIN_SESSION_TIMEOUT_MINUTES  # minutes
         self.excel_admin_functions = None
         self.availability_analyzer = None  # NEW: Add availability analyzer
@@ -94,74 +89,31 @@ class AdminAccess:
         return training_admin_is_authenticated()
     
     def show_admin_access_button(self):
-        """Show the sidebar way in to the training admin.
+        """Show the sidebar way in to the training admin dashboard.
 
-        The dashboard itself is a full-width page of its own - the same shape as
-        the Staff Database and Track Data admins in Track Bidding - so the sidebar
-        carries only the door: a PIN form when nobody is signed in, and a button
-        back into the dashboard for an admin who has stepped out of it.
+        The dashboard itself is a full-width page of its own, so the sidebar
+        carries only the door. There is no PIN form here any more: signing in
+        happens once, in the Admin Console, and this is just the button through
+        to the training half of it.
         """
+        from modules.admin_console import render_admin_sidebar_entry
+
+        render_admin_sidebar_entry("_training")
+
+        if not self.is_admin_authenticated():
+            return
+
         with st.sidebar:
-            st.markdown("---")
-            
-            # Use an expander to keep it discrete
-            with st.expander("⚙️ Training Admin Access", expanded=False):
-                if not self.is_admin_authenticated():
-                    self._show_login_form()
-                else:
-                    self._show_admin_entry()
-    
-    def _show_login_form(self):
-        """Show the PIN entry form"""
-        st.write("**Training Administration**")
-        
-        # Use a form to handle the PIN entry
-        with st.form("training_admin_login_form"):
-            pin_input = st.text_input(
-                "Enter Admin PIN:",
-                type="password",
-                placeholder="Enter 4-digit PIN",
-                max_chars=4,
-                help="Contact training administrator for access"
-            )
-            
-            submitted = st.form_submit_button("Access Training Admin")
-            
-            if submitted:
-                if pin_input == self.admin_pin:
-                    st.session_state.training_admin_authenticated = True
-                    st.session_state.training_admin_login_time = datetime.now(_eastern_tz)
-                    # Signing in lands straight on the full-screen dashboard rather
-                    # than leaving the admin to find a second control in the sidebar.
-                    st.session_state.training_admin_current_function = None
-                    st.session_state.training_admin_show_function = True
-                    st.success("✅ Training admin access granted")
-                    st.rerun()
-                else:
-                    st.error("❌ Invalid PIN")
-    
-    def _show_admin_entry(self):
-        """Sidebar controls for an admin who is signed in but out on a staff page."""
-        st.success("🔓 **Training Admin signed in**")
-        st.info(f"⏱️ Session expires in {self.session_minutes_remaining():.0f} minutes")
-        
-        if st.button("🛠️ Open Training Admin", key="training_admin_open_dashboard",
-                     use_container_width=True, type="primary"):
-            st.session_state.training_admin_current_function = None
-            st.session_state.training_admin_show_function = True
-            st.rerun()
-        
-        if st.button("🔒 Logout", key="training_admin_logout", use_container_width=True):
-            self.logout_admin()
-            st.rerun()
-    
+            st.markdown("### Training Admin")
+            if st.button("🛠️ Open Training Admin", key="training_admin_open_dashboard",
+                         use_container_width=True, type="primary"):
+                st.session_state.training_admin_current_function = None
+                st.session_state.training_admin_show_function = True
+                st.rerun()
+
     def session_minutes_remaining(self):
         """Minutes left on the current admin session (0 once it has expired)."""
-        login_time = st.session_state.get('training_admin_login_time')
-        if not login_time:
-            return 0
-        elapsed_minutes = (datetime.now(_eastern_tz) - login_time).total_seconds() / 60
-        return max(0, self.session_timeout - elapsed_minutes)
+        return admin_session_minutes_remaining()
 
     def logout_admin(self):
         """Logout admin user"""
@@ -170,12 +122,12 @@ class AdminAccess:
     def require_admin(self):
         """Decorator-like function to require admin authentication"""
         if not self.is_admin_authenticated():
-            st.error("🔒 Training administrative access required")
-            st.info("Please use the training admin access panel in the sidebar")
+            st.error("🔒 Administrative access required")
+            st.info("Sign in through the Admin Console to reach this page.")
             st.stop()
         
         # Extend session on activity
-        st.session_state.training_admin_login_time = datetime.now(_eastern_tz)
+        touch_admin_session()
     
     # The functions the dashboard offers, in the order they appear on its home
     # page. Shared by the home grid and the header of each function page, so a
@@ -235,15 +187,23 @@ class AdminAccess:
         # Leaving the dashboard, and - once inside a function - stepping back to the
         # function menu. Both live here rather than in the sidebar, which is where
         # every other full-screen admin page in CrewOps360 keeps them.
-        nav_cols = st.columns([2, 2, 6])
+        nav_cols = st.columns([2, 2, 2, 4])
         with nav_cols[0]:
-            if st.button("← Back to Training & Events", key="training_admin_exit",
+            if st.button("🛠️ Admin Console", key="training_admin_console",
+                         use_container_width=True):
+                from modules.admin_console import open_console
+                st.session_state.training_admin_show_function = False
+                st.session_state.training_admin_current_function = None
+                open_console()
+                st.rerun()
+        with nav_cols[1]:
+            if st.button("← Training & Events", key="training_admin_exit",
                          use_container_width=True):
                 st.session_state.training_admin_show_function = False
                 st.session_state.training_admin_current_function = None
                 st.rerun()
         if section:
-            with nav_cols[1]:
+            with nav_cols[2]:
                 if st.button("⬅️ Admin Menu", key="training_admin_back",
                              use_container_width=True):
                     st.session_state.training_admin_current_function = None

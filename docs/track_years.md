@@ -60,8 +60,8 @@ should ask before offering to write to a year.
 
 ## The admin export
 
-Admin Area → **Fiscal Year Export** opens on the year the hub is showing and offers every
-cohort in a dropdown, labelled with its state and how many tracks it holds. That list is
+Admin Console → **Exports & Reports** → **Fiscal Year Tracks** offers every cohort in a
+dropdown, labelled with its state and how many tracks it holds. That list is
 deliberately wider than the staff picker: exporting a cohort still out to bid, or one
 archived years ago, is a normal admin thing to do. Each export is built over its own
 cohort's span — FY26's workbook runs September 2025 to September 2026, FY27's runs

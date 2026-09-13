@@ -1016,8 +1016,13 @@ def display_summer_leave_app(excel_handler, track_manager):
         st.error("Failed to initialize summer leave database tables. Please contact support.")
         return
 
-    # Back button
-    if st.button("← Back to Main Menu"):
+    # Back button. An admin who came in from the console goes back to it, not to
+    # the staff landing page they never chose.
+    from modules.admin_console import back_to_console_button
+    from modules.security import admin_is_authenticated as _admin_signed_in
+    if _admin_signed_in() and st.session_state.get('summer_leave_admin_mode'):
+        back_to_console_button(key="summer_leave_back_console")
+    elif st.button("← Back to Main Menu"):
         st.session_state.selected_module = None
         st.rerun()
 
@@ -1040,29 +1045,34 @@ def display_summer_leave_app(excel_handler, track_manager):
     role_mapping = {name: ('Unknown' if role == UNASSIGNED_ROLE else role)
                     for name, role in get_base_role_mapping().items()}
 
-    # Check for admin mode
-    if 'summer_leave_admin_mode' not in st.session_state:
-        st.session_state.summer_leave_admin_mode = False
+    # Admin mode. The password box that used to sit here compared against a
+    # literal "PW" of its own — a third copy of the admin credential. It reads the
+    # one app-wide admin session now, the same as every other admin area.
+    from modules.admin_console import render_admin_sidebar_entry
 
-    # Admin toggle
-    with st.sidebar:
-        st.markdown("### Administration")
-        admin_password = st.text_input("Admin Password:", type="password", key="summer_admin_pw")
+    is_admin = _admin_signed_in()
+    if not is_admin:
+        st.session_state.pop('summer_leave_admin_mode', None)
 
-        # text_input already commits (and reruns) on Enter, so once the password
-        # checks out there's nothing left to confirm — no separate button click needed.
-        if admin_password == "PW" and not st.session_state.summer_leave_admin_mode:
-            st.session_state.summer_leave_admin_mode = True
-            st.rerun()
+    render_admin_sidebar_entry("_summer_leave")
 
-        if st.session_state.summer_leave_admin_mode:
-            st.success("✅ Admin Mode Active")
-            if st.button("👤 Switch to User Mode"):
-                st.session_state.summer_leave_admin_mode = False
-                st.rerun()
+    if is_admin:
+        with st.sidebar:
+            st.markdown("### Summer Leave Admin")
+            if st.session_state.get('summer_leave_admin_mode'):
+                st.success("✅ Admin Mode Active")
+                if st.button("👤 Switch to User Mode", key="summer_exit_admin_mode",
+                             use_container_width=True):
+                    st.session_state.summer_leave_admin_mode = False
+                    st.rerun()
+            else:
+                if st.button("🛠️ Switch to Admin Mode", key="summer_enter_admin_mode",
+                             use_container_width=True, type="primary"):
+                    st.session_state.summer_leave_admin_mode = True
+                    st.rerun()
 
     # Display appropriate interface
-    if st.session_state.summer_leave_admin_mode:
+    if is_admin and st.session_state.get('summer_leave_admin_mode'):
         display_admin_interface(staff_list, role_mapping, track_manager)
     else:
         # User selects their name

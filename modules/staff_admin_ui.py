@@ -18,7 +18,7 @@ import streamlit as st
 
 from . import staff_database as staffdb
 from . import staff_groupings
-from .security import check_admin_access
+from .security import require_admin
 from .staff_import import (
     DEFAULT_PREFERENCES_PATH,
     DEFAULT_REQUIREMENTS_PATH,
@@ -117,25 +117,11 @@ def _parse_optional_number(text):
 
 def _require_admin():
     """
-    Gate the page behind the admin password. Returns True when authenticated.
+    Gate the page behind the one shared admin password. True when signed in.
     """
-    if st.session_state.get('admin_authenticated'):
-        return True
-
-    st.warning("🔒 Admin access required to manage the staff database.")
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        with st.form("staff_db_admin_login"):
-            password = st.text_input("Admin password", type="password",
-                                     key="staff_db_admin_password")
-            submitted = st.form_submit_button("Unlock", use_container_width=True,
-                                              type="primary")
-        if submitted:
-            if check_admin_access(password):
-                st.rerun()
-            else:
-                st.error("Incorrect password.")
-    return False
+    return require_admin(
+        "staff_db_admin_login",
+        "🔒 Admin access required to manage the staff database.")
 
 
 def _display_summary():
@@ -1263,25 +1249,13 @@ def _format_changes(changes):
 
 def display_staff_database_admin():
     """
-    Render the Staff Database admin page.
+    Render the Staff Database admin section.
 
-    Admin-gated; safe to call from anywhere in the app.
+    Reached through the Admin Console, which supplies the page's navigation,
+    title and sign-in. The gate below is kept all the same: this stays safe to
+    call from anywhere, and a section that gates itself cannot be exposed by a
+    mistake in whatever routes to it.
     """
-    st.markdown("")
-    if st.button("← Back to CrewOps360", key="staff_db_back"):
-        st.session_state.selected_module = None
-        st.rerun()
-
-    st.markdown("""
-    <div style="text-align: center; padding: 1rem;">
-        <h1 style="color: #00695C;">👥 Staff Database</h1>
-        <p style="color: #666; font-size: 1.1rem;">
-            The roster and staff attributes the whole system reads from
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("---")
-
     if not _require_admin():
         return
 

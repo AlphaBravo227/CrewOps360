@@ -42,7 +42,8 @@ Every active clinical staff member gets a row whether or not they have submitted
 — staff without one get a blank row, which is what the editors expect when creating a
 track from scratch. (Under the spreadsheet, a staff member missing from the file could
 not be selected at all.) Anyone holding an active track who is no longer active clinical
-staff is kept in the grid too, and flagged in the Clinical Track Hub admin sidebar.
+staff is kept in the grid too, and flagged in the Admin Console under
+**System & Backups → Health**.
 
 Track rows submitted before role metadata was recorded have their role resolved from the
 staff roster on read, so callers never see a missing role.
@@ -56,9 +57,8 @@ They are stored per bid cycle in `track_preassignments` (`track_name`, `staff_na
 `day`, `activity`), so each cycle is authored independently and last cycle's commitments
 can be copied forward.
 
-**Where:** Track Bidding → Administration → **Preassignments**, alongside where a bid
-cycle is created. The same editor is on the Track Data admin page (Clinical Track Hub →
-Admin Area → **Manage Track Data**).
+**Where:** Admin Console → **Track Bidding** → **Preassignments**, alongside where a bid
+cycle is created. The same editor is in Admin Console → **Track Data**.
 
 - **Edit a Staff Member** — a six-week grid of activity boxes; clearing a box removes
   that day.

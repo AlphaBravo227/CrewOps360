@@ -1,14 +1,10 @@
 # app.py - CrewOps360 Main Application - Complete Integrated System
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
-import os
-import glob
+from datetime import datetime
 import pytz
 
 _eastern_tz = pytz.timezone('America/New_York')
-import sqlite3
-import json
 import hashlib
 from io import BytesIO
 import base64
@@ -30,17 +26,16 @@ except ImportError as e:
 
 # Import modules with correct paths based on original working app
 try:
-    from modules.fiscal_year import add_fiscal_year_display_to_app, add_fiscal_year_export_to_admin
+    from modules.fiscal_year import add_fiscal_year_display_to_app
 except ImportError:
-    # Create stub functions if fiscal year module doesn't exist
+    # Create a stub function if the fiscal year module doesn't exist
     def add_fiscal_year_display_to_app(track_name=None):
-        pass
-    def add_fiscal_year_export_to_admin(admin_authenticated=False, track_name=None):
         pass
 
 from modules.db_utils import initialize_database
 # Import existing modules that actually work
-from modules.security import display_user_login, display_session_info, check_admin_access
+from modules.security import display_user_login, display_session_info, admin_is_authenticated
+from modules.admin_console import display_admin_console, render_admin_sidebar_entry
 from modules.summer_leave import display_summer_leave_app
 from modules.shift_definitions import day_shifts, night_shifts
 from modules.shift_utils import get_shift_end_time, calculate_rest_conflict
@@ -48,13 +43,10 @@ from modules.staff_utils import is_special_conflict
 from modules.ui_components import display_roster_results
 from modules.column_mapper import auto_detect_columns
 from modules.pdf_generator import generate_schedule_pdf
-from modules.export_utils import export_tracks_to_excel, export_track_history_to_excel
 from modules.enhanced_track_validator import validate_track_comprehensive
 from modules.enhanced_validation_display import display_comprehensive_validation
 from modules.preference_editor import initialize_preference_tables
-from modules.admin_export import integrate_admin_export_in_sidebar
 from modules.track_source_consistency import ensure_track_source_consistency
-from modules.app_helper import validate_uploaded_database, restore_database_from_backup, restore_database_from_upload, cleanup_old_backups
 from modules.track_display import display_track_viewer
 from modules.enhanced_landing import inject_custom_css
 from modules.track_bidding import display_track_bidding
@@ -72,13 +64,11 @@ from modules.staff_database import (
     initialize_staff_tables,
     staff_count,
 )
-from modules.staff_admin_ui import display_staff_database_admin
 from modules.day_pattern import PATTERN_DAYS
-from modules.track_roster import active_track_count, build_current_tracks_df, get_active_track_rows
-from modules.preassignment_db import get_preassignments, initialize_preassignment_tables
+from modules.track_roster import build_current_tracks_df
+from modules.preassignment_db import initialize_preassignment_tables
 from modules.ccemt_schedule import initialize_ccemt_tables
 from modules.track_management.preassignment import load_preassignments
-from modules.track_data_admin_ui import display_track_data_admin
 
 # Import training modules with new unified database approach
 try:
@@ -262,6 +252,8 @@ def display_module_selection():
     """Display the main module selection page"""
     display_crewops360_header()
 
+    render_admin_sidebar_entry("_landing")
+
     # Create centered layout
     col1, col2, col3 = st.columns([1, 3, 1])
 
@@ -401,12 +393,24 @@ def display_module_selection():
             st.session_state.selected_module = "summer_leave"
             st.rerun()
 
+        # Administration. One card, one sign-in, everything behind it — rather
+        # than a password box hidden in each module's sidebar.
+        st.markdown("---")
+        if admin_is_authenticated():
+            st.success("🔓 You are signed in as an administrator.")
+        if st.button("🛠️ Admin Console", use_container_width=True, key="admin_console_btn"):
+            st.session_state.selected_module = "admin"
+            st.rerun()
+        st.caption("Staff Database · Track Data · Track Bidding · Training & Events · "
+                   "Summer Leave · approvals, exports and system tools.")
+
 # Shift Location Preferences Module
 def display_shift_location_preferences_module():
     """Display the Shift Location Preferences module for staff to set their location preferences"""
     from modules.preference_editor import display_location_preference_editor
     from modules.db_utils import initialize_database
-    import glob
+
+    render_admin_sidebar_entry("_location_prefs")
 
     st.markdown("")
     st.markdown("")
@@ -521,11 +525,12 @@ def display_training_events_app():
     
     # Initialize unified database and training components
     try:
-        # Initialize unified database (uses main medflight_tracks.db)
+        # Initialize unified database (uses main medflight_tracks.db). Normally
+        # already built at startup; this covers a session that got here first.
         if 'unified_db' not in st.session_state:
-                    st.session_state.unified_db = UnifiedDatabase('data/medflight_tracks.db')
-                    st.session_state.unified_db.initialize_training_tables()
-                
+            st.session_state.unified_db = UnifiedDatabase('data/medflight_tracks.db')
+            st.session_state.unified_db.initialize_training_tables()
+
         # Update unified_db with excel_handler reference after it's initialized
         if 'training_excel_handler' in st.session_state and st.session_state.training_excel_handler:
             st.session_state.unified_db.excel_handler = st.session_state.training_excel_handler
@@ -663,8 +668,7 @@ def display_training_events_app():
         # means conflict checking silently runs against another year's schedules. Say
         # so where an admin can act on it rather than only on the console.
         _tm = st.session_state.get('training_track_manager')
-        if (getattr(_tm, 'tracks_fell_back', False)
-                and st.session_state.get('training_admin_authenticated')):
+        if getattr(_tm, 'tracks_fell_back', False) and admin_is_authenticated():
             st.warning(
                 f"⚠️ {selected_year_label} is linked to track cohort "
                 f"**{_tm.track_cohort}**, but no tracks are stored under that cohort "
@@ -1254,58 +1258,6 @@ def run_clinical_track_hub(selected_year=None, year_is_writable=True):
             st.error(f"Validation error: {str(e)}")
             return False
 
-    # Add verify_database_integrity function if it doesn't exist
-    try:
-        from modules.db_utils import verify_database_integrity
-    except ImportError:
-        def verify_database_integrity():
-            """
-            Verify the integrity of the database structure and data
-            """
-            try:
-                conn = sqlite3.connect('data/medflight_tracks.db')
-                cursor = conn.cursor()
-                
-                # Test basic connectivity
-                cursor.execute("SELECT 1")
-                result = cursor.fetchone()
-                if result[0] != 1:
-                    return False
-                
-                # Check if required tables exist
-                required_tables = ['tracks', 'track_history']
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                existing_tables = [table[0] for table in cursor.fetchall()]
-                
-                missing_tables = [table for table in required_tables if table not in existing_tables]
-                if missing_tables:
-                    return False
-                
-                # Check tracks table structure
-                cursor.execute("PRAGMA table_info(tracks)")
-                tracks_columns = [column[1] for column in cursor.fetchall()]
-                required_columns = ['id', 'staff_name', 'track_data', 'submission_date']
-                missing_columns = [col for col in required_columns if col not in tracks_columns]
-                if missing_columns:
-                    return False
-                
-                # Test data integrity - check for corrupted JSON
-                cursor.execute("SELECT id, staff_name, track_data FROM tracks WHERE is_active = 1")
-                tracks = cursor.fetchall()
-                
-                for track_id, staff_name, track_data in tracks:
-                    try:
-                        json.loads(track_data)
-                    except json.JSONDecodeError:
-                        return False
-                
-                conn.close()
-                return True
-                
-            except Exception as e:
-                print(f"Database integrity check failed: {str(e)}")
-                return False
-
     def display_calendar_export_section():
         """
         Display the calendar export functionality in the main app.
@@ -1508,541 +1460,13 @@ def run_clinical_track_hub(selected_year=None, year_is_writable=True):
         preassignment_df = None
     st.session_state.preassignment_df = preassignment_df
 
-    # Sidebar with enhanced validation info and admin authentication
-    with st.sidebar:
-        st.markdown("## Admin Area")
-        
-        # Use the security module for admin authentication
-        password = st.text_input("Enter admin password:", type="password")
-        
-        admin_authenticated = check_admin_access(password)
-        
-        if admin_authenticated:
-            st.success("Admin access granted!")
-            
-            st.header("Staff Database")
-
-            _roster_total = staff_count()
-            _roster_active = staff_count(include_inactive=False)
-            if _roster_total:
-                st.success(f"✅ {_roster_active} active staff on the roster "
-                           f"({_roster_total} total)")
-            else:
-                st.error("❌ Staff database is empty — import the roster")
-            st.caption("Role, management, dual, educator, no matrix and seniority all "
-                       "come from here, not from a spreadsheet.")
-            if st.button("👥 Manage Staff Database", use_container_width=True,
-                         key="open_staff_db_admin"):
-                st.session_state.selected_module = "staff_database"
-                st.rerun()
-
-            st.header("Data Sources")
-            st.caption("All track data comes from the database — there are no "
-                       "spreadsheet uploads left in this module.")
-
-            _active_tracks = active_track_count()
-            if _active_tracks:
-                st.success(f"✅ {_active_tracks} active track(s) in the database")
-            else:
-                st.warning("⚠️ No active tracks in the database yet")
-
-            _preassigned_staff = len(get_preassignments())
-            if _preassigned_staff:
-                st.success(f"✅ Preassignments on file for {_preassigned_staff} staff member(s)")
-            else:
-                st.info("ℹ️ No preassignments configured for this cycle")
-
-            if st.button("📌 Manage Track Data", use_container_width=True,
-                         key="open_track_data_admin"):
-                st.session_state.selected_module = "track_data"
-                st.rerun()
-
-            # Add export functionality
-            if st.session_state.get('preferences_df') is not None:
-                integrate_admin_export_in_sidebar(st.session_state.preferences_df)
-            else:
-                st.markdown("---")
-                st.header("📤 Staff Preferences Export Center")
-                st.info("📊 Export functionality will appear here once preferences file is processed.")
-            
-            # ADD THIS NEW SECTION HERE:
-            st.markdown("---")
-            add_fiscal_year_export_to_admin(admin_authenticated, read_year)
-
-            st.header("Enhanced Validation Rules")
-            st.markdown("""
-            ### New Validation Features:
-            - **Exact Pay Period Matching**: Each 14-day period must have exactly the required shifts
-            - **Weekly Limits**: No week can have 4+ shifts (max 3 per week)
-            - **Enhanced Rest Rules**:
-              - AT preassignments cannot follow night shifts
-              - 2 unscheduled days required between night and day shifts
-            - **Consecutive Shift Limits**: Max 4 in a row (5 if nights included)
-            - **Weekend Requirements**: Friday nights + Saturday/Sunday shifts
-            """)
-            
-            # Staff holding an active track who are no longer active clinical staff on the
-            # roster, and active clinical staff with no track. Both are worth knowing
-            # about: the first is usually someone who left without their track being
-            # retired, the second someone who hasn't submitted yet.
-            try:
-                track_staff = set(get_active_track_rows())
-                db_staff = set(get_staff_names(clinical_only=True))
-
-                without_roster = track_staff - db_staff
-                without_track = db_staff - track_staff
-
-                if without_roster or without_track:
-                    st.warning("⚠️ Staff / track mismatches")
-
-                    if without_roster:
-                        with st.expander("Have an active track but are not active clinical staff:"):
-                            st.write(", ".join(sorted(without_roster)))
-
-                    if without_track:
-                        with st.expander("Active clinical staff with no track in the database:"):
-                            st.write(", ".join(sorted(without_track)))
-            except Exception as e:
-                st.error(f"Error checking staff/track mismatches: {str(e)}")
-
-            # Always use database-driven track mode
-            st.session_state.track_source = "Annual Rebid"
-            st.session_state['TRACK_SOURCE_MODE'] = "Annual Rebid"
-
-            st.header("Active Track & Capacity")
-            active_track_cfg = get_active_track_config()
-            if active_track_cfg:
-                st.success(f"**Active Track: {active_track_cfg['track_name']}**")
-                cap = get_track_capacity(active_track_cfg['track_name'])
-                # Without a span of its own a cohort is displayed and exported over
-                # FY26's calendar, which is silently wrong for any year but FY26.
-                if not (active_track_cfg.get('start_date')
-                        and active_track_cfg.get('end_date')):
-                    st.warning(
-                        f"⚠️ {active_track_cfg['track_name']} has no fiscal-year dates "
-                        f"set, so the fiscal-year display and the calendar export are "
-                        f"falling back to FY26's span. Set them in Track Bidding → "
-                        f"Track Configs.")
-            else:
-                st.warning("No active track configured. Defaulting to FY26 values.")
-                cap = get_track_capacity('FY26')
-
-            with st.expander("Shift Capacity Configuration", expanded=True):
-                st.markdown(f"**Operational:** {cap.get('day_vehicles', 9)} day vehicles + {cap.get('day_leave_slots', 2)} leave | {cap.get('night_vehicles', 4)} night vehicles + {cap.get('night_leave_slots', 1)} leave")
-                st.markdown(f"**Min Staffing:** Day: **{cap.get('min_day_staff', 7)}** | Night: **{cap.get('min_night_staff', 4)}**")
-                st.markdown(f"- Max Day Shift Nurses: **{cap['max_day_nurses']}**")
-                st.markdown(f"- Max Day Shift Medics: **{cap['max_day_medics']}**")
-                st.markdown(f"- Max Night Shift Nurses: **{cap['max_night_nurses']}**")
-                st.markdown(f"- Max Night Shift Medics: **{cap['max_night_medics']}**")
-
-            # Approval queue for active track modifications
-            st.header("Pending Track Approvals")
-            from modules.db_utils import get_db_connection
-            try:
-                _conn = get_db_connection()
-                _cur = _conn.cursor()
-                active_tn = active_track_cfg['track_name'] if active_track_cfg else 'FY26'
-                _cur.execute("""SELECT id, staff_name, submission_date, version
-                    FROM tracks WHERE track_name = ? AND is_active = 1 AND is_approved = 0
-                    ORDER BY submission_date DESC""", (active_tn,))
-                pending = _cur.fetchall()
-                if pending:
-                    st.markdown(f"**{len(pending)} pending modification(s):**")
-                    for pid, pname, pdate, pver in pending:
-                        with st.expander(f"{pname} (v{pver}, submitted {pdate})"):
-                            ac, rc = st.columns(2)
-                            with ac:
-                                if st.button(f"Approve", key=f"approve_{pid}", use_container_width=True):
-                                    now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
-                                    _cur.execute("UPDATE tracks SET is_approved = 1, approved_by = 'admin', approval_date = ? WHERE id = ?", (now, pid))
-                                    _conn.commit()
-                                    st.success(f"Approved {pname}")
-                                    st.rerun()
-                            with rc:
-                                reject_notes = st.text_input("Rejection notes", key=f"reject_notes_{pid}")
-                                if st.button(f"Reject", key=f"reject_{pid}", use_container_width=True):
-                                    now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
-                                    _cur.execute("UPDATE tracks SET is_approved = -1, approved_by = 'admin', approval_date = ? WHERE id = ?", (now, pid))
-                                    _cur.execute("""INSERT INTO track_history
-                                        (track_id, staff_name, track_data, submission_date, status)
-                                        VALUES (?, ?, 'rejected', ?, ?)""",
-                                        (pid, pname, now, f"rejected: {reject_notes}"))
-                                    _conn.commit()
-                                    st.warning(f"Rejected {pname}")
-                                    st.rerun()
-                else:
-                    st.info("No pending modifications to review.")
-            except Exception as e:
-                st.error(f"Error loading pending approvals: {e}")
-
-            st.header("Configuration")
-            
-            with st.expander("Role Delta Filter", expanded=False):
-                st.markdown("#### Role Balance Filter")
-                
-                enable_role_delta_filter = st.checkbox("Enable Role Delta Filter", value=False,
-                                          help="Filter out needs when the difference between roles exceeds the threshold")
-                
-                day_delta_threshold = st.number_input("Day Shift Delta Threshold", min_value=1, max_value=10, value=2,
-                                      help="Filter out role needs when absolute difference exceeds this threshold (days)")
-                
-                night_delta_threshold = st.number_input("Night Shift Delta Threshold", min_value=1, max_value=10, value=2,
-                                        help="Filter out role needs when absolute difference exceeds this threshold (nights)")
-
-            # Database Management Section
-            st.header("🔧 Database Management")
-            
-            db_cols = st.columns(3)
-            
-            with db_cols[0]:
-                if st.button("🔄 Verify Database Integrity"):
-                    try:
-                        result = verify_database_integrity()
-                        if result:
-                            st.success("✅ Database integrity verified")
-                        else:
-                            st.error("❌ Database integrity check failed")
-                    except Exception as e:
-                        st.error(f"❌ Error during integrity check: {str(e)}")
-            
-            with db_cols[1]:
-                if st.button("📥 Backup Database"):
-                    try:
-                        backup_dir = "backups"
-                        os.makedirs(backup_dir, exist_ok=True)
-                        
-                        timestamp = datetime.now(_eastern_tz).strftime("%Y%m%d_%H%M%S")
-                        backup_file = f"{backup_dir}/medflight_tracks_backup_{timestamp}.db"
-                        
-                        import shutil
-                        if os.path.exists('data/medflight_tracks.db'):
-                            shutil.copy2('data/medflight_tracks.db', backup_file)
-                            st.success(f"✅ Database backed up to {backup_file}")
-                        else:
-                            st.error("❌ Database file not found")
-                    except Exception as e:
-                        st.error(f"❌ Backup failed: {str(e)}")
-            
-            with db_cols[2]:
-                if st.button("🧹 Cleanup Old Backups"):
-                    try:
-                        backup_dir = "backups"
-                        if os.path.exists(backup_dir):
-                            backup_files = glob.glob(os.path.join(backup_dir, "*.db"))
-                            old_files = [f for f in backup_files if os.path.getctime(f) < (datetime.now(_eastern_tz) - timedelta(days=30)).timestamp()]
-                            
-                            deleted_count = 0
-                            for old_file in old_files:
-                                try:
-                                    os.remove(old_file)
-                                    deleted_count += 1
-                                except:
-                                    continue
-                            
-                            st.success(f"✅ Cleaned up {deleted_count} old backup files")
-                        else:
-                            st.info("No backup directory found")
-                    except Exception as e:
-                        st.error(f"❌ Cleanup failed: {str(e)}")
-                            
-            # Export Database Contents Section
-            st.header("📊 Database Export")
-            
-            with st.expander("Export Database Contents", expanded=False):
-                st.markdown("""
-                ### Export Options
-                
-                Choose what data you want to export from the database:
-                - **Current Tracks**: All active tracks in the database (Excel format)
-                - **Track History**: Complete history of all track changes (Excel format)
-                - **Raw Database**: Download the complete SQLite database file (.db)
-                - **Both Excel Files**: Export both current tracks and history as Excel files
-                """)
-                
-                export_option = st.radio(
-                    "Select Export Type",
-                    options=["Current Tracks", "Track History", "Raw Database", "Both Excel Files"],
-                    index=0,
-                    help="Choose what data to export"
-                )
-                
-                if st.button("Generate Export", use_container_width=True):
-                    try:
-                        timestamp = datetime.now(_eastern_tz).strftime("%Y%m%d_%H%M%S")
-                        
-                        if export_option == "Raw Database":
-                            with st.spinner("Preparing database download..."):
-                                db_path = 'data/medflight_tracks.db'
-                                
-                                if os.path.exists(db_path):
-                                    try:
-                                        with open(db_path, 'rb') as db_file:
-                                            db_data = db_file.read()
-                                        
-                                        filename = f"medflight_tracks_backup_{timestamp}.db"
-                                        
-                                        st.download_button(
-                                            label="📥 Download Database File",
-                                            data=db_data,
-                                            file_name=filename,
-                                            mime="application/octet-stream",
-                                            use_container_width=True,
-                                            help="Download the complete SQLite database file"
-                                        )
-                                        
-                                        file_size_mb = len(db_data) / (1024 * 1024)
-                                        st.success(f"✅ Database ready for download ({file_size_mb:.2f} MB)")
-                                        st.info(f"📄 **File:** {filename}")
-                                        st.info(f"💾 **Size:** {file_size_mb:.2f} MB")
-                                        st.info(f"🗓️ **Generated:** {datetime.now(_eastern_tz).strftime('%Y-%m-%d %H:%M:%S')}")
-                                        
-                                    except Exception as e:
-                                        st.error(f"❌ Error reading database file: {str(e)}")
-                                else:
-                                    st.error("❌ Database file not found. Please ensure tracks have been submitted.")
-                        
-                        elif export_option in ["Current Tracks", "Both Excel Files"]:
-                            with st.spinner("Generating current tracks export..."):
-                                excel_data = export_tracks_to_excel()
-                                if excel_data:
-                                    filename = f"current_tracks_export_{timestamp}.xlsx"
-                                    st.download_button(
-                                        label="📥 Download Current Tracks",
-                                        data=excel_data,
-                                        file_name=filename,
-                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                        use_container_width=True
-                                    )
-                                else:
-                                    st.error("❌ Error generating current tracks export")
-                        
-                        if export_option in ["Track History", "Both Excel Files"]:
-                            with st.spinner("Generating track history export..."):
-                                excel_data = export_track_history_to_excel()
-                                if excel_data:
-                                    filename = f"track_history_export_{timestamp}.xlsx"
-                                    st.download_button(
-                                        label="📥 Download Track History",
-                                        data=excel_data,
-                                        file_name=filename,
-                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                        use_container_width=True
-                                    )
-                                else:
-                                    st.error("❌ Error generating track history export")
-                                    
-                    except Exception as e:
-                        st.error(f"Error during export: {str(e)}")
-
-            # Database Restore Section
-            st.header("🔄 Database Restore")
-
-            with st.expander("Restore Database from Backup", expanded=False):
-                st.markdown("""
-                ### Database Restore Options
-                
-                **⚠️ WARNING: This will replace your current active database!**
-                
-                You can restore the database from:
-                - **Recent Backups**: Automatic backups created during submissions
-                - **Manual Backups**: Database files you've previously downloaded
-                - **Upload Backup**: Upload a backup file from your computer
-                """)
-                
-                restore_tab1, restore_tab2, restore_tab3 = st.tabs(["Recent Backups", "Manual Upload", "Backup History"])
-                
-                with restore_tab1:
-                    st.markdown("#### 🔍 Select from Recent Backups")
-                    
-                    backup_directories = ['backups', 'data']
-                    backup_files = []
-                    
-                    for backup_dir in backup_directories:
-                        if os.path.exists(backup_dir):
-                            for file in os.listdir(backup_dir):
-                                if file.endswith('.db') and ('backup' in file.lower() or 'medflight' in file.lower()):
-                                    file_path = os.path.join(backup_dir, file)
-                                    file_stat = os.stat(file_path)
-                                    backup_files.append({
-                                        'name': file,
-                                        'path': file_path,
-                                        'size': file_stat.st_size,
-                                        'modified': datetime.fromtimestamp(file_stat.st_mtime),
-                                        'directory': backup_dir
-                                    })
-                    
-                    backup_files.sort(key=lambda x: x['modified'], reverse=True)
-                    
-                    if backup_files:
-                        st.markdown(f"Found {len(backup_files)} backup files:")
-                        
-                        selected_backup = None
-                        
-                        for i, backup in enumerate(backup_files[:10]):
-                            file_size_mb = backup['size'] / (1024 * 1024)
-                            modified_str = backup['modified'].strftime("%Y-%m-%d %H:%M:%S")
-                            
-                            with st.container():
-                                backup_col1, backup_col2, backup_col3, backup_col4 = st.columns([3, 2, 2, 1])
-                                
-                                with backup_col1:
-                                    if st.radio(
-                                        "Select backup:",
-                                        options=[backup['name']],
-                                        key=f"backup_radio_{i}",
-                                        label_visibility="collapsed"
-                                    ):
-                                        selected_backup = backup
-                                
-                                with backup_col2:
-                                    st.write(f"📅 {modified_str}")
-                                
-                                with backup_col3:
-                                    st.write(f"💾 {file_size_mb:.2f} MB")
-                                
-                                with backup_col4:
-                                    st.write(f"📁 {backup['directory']}")
-                            
-                            if i < min(len(backup_files), 10) - 1:
-                                st.divider()
-                        
-                        if len(backup_files) > 10:
-                            st.info(f"Showing 10 most recent backups. Total available: {len(backup_files)}")
-                        
-                        if selected_backup:
-                            st.markdown("---")
-                            st.markdown(f"**Selected backup:** {selected_backup['name']}")
-                            st.markdown(f"**Modified:** {selected_backup['modified'].strftime('%Y-%m-%d %H:%M:%S')}")
-                            st.markdown(f"**Size:** {selected_backup['size'] / (1024 * 1024):.2f} MB")
-                            
-                            st.error("⚠️ **DANGER ZONE**: This will replace your current database!")
-                            
-                            confirm_restore = st.checkbox(
-                                f"I understand this will replace the current database with {selected_backup['name']}",
-                                key="confirm_restore_backup"
-                            )
-                            
-                            if confirm_restore:
-                                if st.button("🔄 Restore Database", type="primary", use_container_width=True):
-                                    restore_success, restore_message = restore_database_from_backup(selected_backup['path'])
-                                    
-                                    if restore_success:
-                                        st.success(f"✅ {restore_message}")
-                                        st.balloons()
-                                        st.info("🔄 Please refresh the page to see the restored data.")
-                                    else:
-                                        st.error(f"❌ {restore_message}")
-                            else:
-                                st.info("Check the confirmation box above to enable the restore button.")
-                    else:
-                        st.info("No backup files found in the backup directories.")
-                
-                with restore_tab2:
-                    st.markdown("#### 📤 Upload Backup File")
-                    
-                    uploaded_backup = st.file_uploader(
-                        "Choose backup database file",
-                        type=['db'],
-                        help="Select a .db file to restore",
-                        key="upload_backup_file"
-                    )
-                    
-                    if uploaded_backup is not None:
-                        file_size_mb = len(uploaded_backup.getvalue()) / (1024 * 1024)
-                        st.success(f"✅ Uploaded: {uploaded_backup.name} ({file_size_mb:.2f} MB)")
-                        
-                        st.markdown("---")
-                        st.error("⚠️ **DANGER ZONE**: This will replace your current database!")
-                        st.warning("⚠️ **No validation performed**: Make sure this is a valid database file!")
-                        
-                        confirm_upload_restore = st.checkbox(
-                            f"I understand this will replace the current database with {uploaded_backup.name}",
-                            key="confirm_restore_upload"
-                        )
-                        
-                        if confirm_upload_restore:
-                            if st.button("🔄 Restore from Upload", type="primary", use_container_width=True):
-                                restore_success, restore_message = restore_database_from_upload(uploaded_backup)
-                                
-                                if restore_success:
-                                    st.success(f"✅ {restore_message}")
-                                    st.balloons()
-                                    st.info("🔄 Please refresh the page to see the restored data.")
-                                else:
-                                    st.error(f"❌ {restore_message}")
-                        else:
-                            st.info("Check the confirmation box above to enable the restore button.")
-                
-                with restore_tab3:
-                    st.markdown("#### 📊 Backup History & Management")
-                    
-                    if st.button("Show All Backups", use_container_width=True):
-                        all_backups = []
-                        
-                        for backup_dir in backup_directories:
-                            if os.path.exists(backup_dir):
-                                for file in os.listdir(backup_dir):
-                                    if file.endswith('.db'):
-                                        file_path = os.path.join(backup_dir, file)
-                                        file_stat = os.stat(file_path)
-                                        all_backups.append({
-                                            'File Name': file,
-                                            'Directory': backup_dir,
-                                            'Size (MB)': f"{file_stat.st_size / (1024 * 1024):.2f}",
-                                            'Modified': datetime.fromtimestamp(file_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-                                            'Full Path': file_path
-                                        })
-                        
-                        if all_backups:
-                            all_backups.sort(key=lambda x: x['Modified'], reverse=True)
-                            
-                            backup_df = pd.DataFrame(all_backups)
-                            st.dataframe(backup_df[['File Name', 'Directory', 'Size (MB)', 'Modified']], use_container_width=True)
-                            
-                            st.markdown("---")
-                            st.markdown("#### 🧹 Backup Cleanup")
-                            
-                            old_backups = [b for b in all_backups 
-                                         if datetime.strptime(b['Modified'], "%Y-%m-%d %H:%M:%S") < datetime.now(_eastern_tz) - timedelta(days=30)]
-                            
-                            if old_backups:
-                                st.info(f"Found {len(old_backups)} backups older than 30 days.")
-                                
-                                if st.button("🗑️ Clean Old Backups (30+ days)", use_container_width=True):
-                                    cleanup_result = cleanup_old_backups(old_backups)
-                                    st.success(f"✅ Cleaned up {cleanup_result['deleted']} old backup files.")
-                            else:
-                                st.info("No old backups found (30+ days).")
-                        else:
-                            st.info("No backup files found.")
-
-            # Email Configuration Section
-            st.header("📧 Email Configuration")
-            with st.expander("Email Settings", expanded=False):
-                st.markdown("""
-                ### Current Email Configuration
-                
-                The system is configured to send notifications to:
-                - Admin: aaron.e.bell@gmail.com
-                - Notification recipients: Configured in secrets
-                
-                SMTP Settings:
-                - Server: smtp.gmail.com
-                - Port: 587
-                - Sender: aaron.e.bell@gmail.com
-                """)
-                if st.button("Test Email Configuration", use_container_width=True):
-                    try:
-                        from modules.email_notifications import EmailNotifier
-                        notifier = EmailNotifier()
-                        with st.spinner("Sending test email..."):
-                            success = notifier.test_email_configuration()
-                            if success:
-                                st.success("✅ Test email sent successfully!")
-                            else:
-                                st.error("❌ Failed to send test email")
-                    except Exception as e:
-                        st.error(f"Error testing email configuration: {str(e)}")
+    # Administration used to be a wall of controls in this sidebar behind a
+    # password box of its own: exports, database maintenance, restore, the
+    # approvals queue, plus a dead Role Delta Filter whose widgets wrote to local
+    # variables nothing read, a static list of validation rules, and an email
+    # panel describing a Gmail setup the app stopped using. All of it now lives in
+    # the Admin Console — one sign-in, one page — and the sidebar carries the door.
+    render_admin_sidebar_entry("_hub")
 
     # MAIN PROCESSING
     #
@@ -2117,8 +1541,8 @@ def run_clinical_track_hub(selected_year=None, year_is_writable=True):
         except Exception as e:
             st.error("An error occurred while loading the data. Please contact an administrator.")
     else:
-        st.error("The staff database has no active staff yet. An administrator needs to "
-                 "import the staff roster (Admin Area → Manage Staff Database).")
+        st.error("The staff database has no active staff yet. An administrator needs "
+                 "to import the staff roster (Admin Console → Staff Database).")
 
     # ENHANCED STAFF SELECTION SECTION - Split Screen Layout with Fullscreen Option
     if st.session_state.master_df is not None:
@@ -2173,6 +1597,13 @@ initialize_staff_tables()
 initialize_preassignment_tables()
 initialize_ccemt_tables()
 
+# The unified training database, for the same reason. It used to be built only on
+# the way into Training & Events, so opening Summer Leave first — which asks it for
+# the active training year — crashed the page outright.
+if TRAINING_MODULES_AVAILABLE and 'unified_db' not in st.session_state:
+    st.session_state.unified_db = UnifiedDatabase('data/medflight_tracks.db')
+    st.session_state.unified_db.initialize_training_tables()
+
 # Main Navigation Logic
 if st.session_state.selected_module is None:
     # Show main CrewOps360 landing page
@@ -2183,12 +1614,9 @@ elif st.session_state.selected_module == "clinical_track_hub":
 elif st.session_state.selected_module == "track_bidding":
     # Show Track Bidding
     display_track_bidding()
-elif st.session_state.selected_module == "staff_database":
-    # Show the Staff Database admin (admin-gated inside)
-    display_staff_database_admin()
-elif st.session_state.selected_module == "track_data":
-    # Show the Track Data admin — preassignments and CCEMT schedules (admin-gated inside)
-    display_track_data_admin()
+elif st.session_state.selected_module == "admin":
+    # Show the Admin Console — the single entry point to every admin area
+    display_admin_console()
 elif st.session_state.selected_module == "training_events":
     # Show Training & Events application (FULL VERSION)
     display_training_events_app()
@@ -2207,7 +1635,8 @@ elif st.session_state.selected_module == "summer_leave":
         # database. It used to insist the roster workbook was on disk to get them,
         # and stopped the page dead when it wasn't; the catalog needs no file.
         from training_modules.class_catalog import ClassCatalog
-        active_year = st.session_state.unified_db.get_active_training_year()
+        unified_db = st.session_state.get('unified_db')
+        active_year = unified_db.get_active_training_year() if unified_db else None
         st.session_state.summer_leave_excel_handler = ClassCatalog(
             (active_year or {}).get('year_label'))
 
