@@ -1,14 +1,20 @@
 # Calendars
 
-Two screens in **Training & Events**, and the shared machinery under them.
+Two screens, and the shared machinery under them.
 
-| Screen | What it shows | Who sees it |
+| Screen | Where | What it shows |
 | --- | --- | --- |
-| **My Calendar** | One person's track shifts, the classes they are enrolled on, and the days they have signed up to teach | Every signed-in staff member, for themselves |
-| **Training Calendar** | Every live class in the training year, one entry per class, per date, per location | Everyone |
+| **My Calendar** | Training & Events, first tab | One person's track shifts, the classes they are enrolled on, and the days they have signed up to teach |
+| **Training Calendar** | Admin Console > Training & Events > Training Calendar | Every live class in the training year, one entry per class, per date, per location |
 
 Both offer the same four take-aways: a printable PDF, an `.ics` file, a Google Calendar
 CSV and an Outlook CSV.
+
+My Calendar leads the staff screen because what somebody opens it to check is usually
+what they already have booked, not what they could book. The Training Calendar sits with
+Enrollment Reports at the top of the training admin dashboard, and reports on the year
+named in that page's header like every other section there — so during a cutover it shows
+the year the rest of the dashboard is showing, not whichever one happens to be current.
 
 ## Why they are one thing
 
@@ -22,10 +28,14 @@ So the file writers know nothing about shifts or classes. An event is one calend
 with an optional pair of times, and both screens build that same shape:
 
 ```
-modules/calendar_formats.py        events -> .ics, Google CSV, Outlook CSV, PDF
+modules/calendar_formats.py             events -> .ics, Google CSV, Outlook CSV, PDF
 training_modules/schedule_calendar.py   database -> events
 training_modules/calendar_ui.py         the two screens
 ```
+
+`render_my_calendar_tab()` draws the staff tab; `render_training_calendar()` draws the
+admin section and no heading of its own, since the dashboard's header block already
+names it.
 
 `modules/calendar_export.py` is unchanged and still does what it always did: a
 tracks-only export from the Clinical Track Hub, all-day events, no training in it.

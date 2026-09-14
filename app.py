@@ -83,8 +83,7 @@ try:
     from training_modules.class_catalog import ClassCatalog
     from training_modules.admin_access import AdminAccess, training_admin_is_authenticated
     from training_modules.admin_excel_functions import ExcelAdminFunctions, enhance_admin_reports
-    from training_modules.calendar_ui import (
-        render_company_calendar_tab, render_my_calendar_tab)
+    from training_modules.calendar_ui import render_my_calendar_tab
     TRAINING_MODULES_AVAILABLE = True
 except ImportError as e:
     TRAINING_MODULES_AVAILABLE = False
@@ -839,23 +838,25 @@ def display_training_events_app():
         # Check if user is authorized for educator signup
         is_educator_authorized = st.session_state.training_excel_handler.is_educator_authorized(selected_staff)
         
+        # My Calendar leads, because what somebody opens this screen to check is
+        # usually what they already have booked rather than what they could book.
         # Educator Signup only appears for the people authorised to teach, so the
         # tabs are built as a list rather than unpacked into fixed names - which is
         # what used to leave "tab4" meaning the educator tab in one branch and the
         # schedule tab in the other.
         tab_labels = [
+            "📅 My Calendar",
             "📝 Enroll in Classes",
             "📋 My Enrollments",
             "📊 Class Details",
         ]
         if is_educator_authorized:
             tab_labels.append("📚 Educator Signup")
-        tab_labels += ["📅 My Calendar", "🏢 Training Calendar"]
 
         tabs = st.tabs(tab_labels)
-        tab1, tab2, tab3 = tabs[0], tabs[1], tabs[2]
-        educator_tab = tabs[3] if is_educator_authorized else None
-        my_calendar_tab, company_calendar_tab = tabs[-2], tabs[-1]
+        my_calendar_tab = tabs[0]
+        tab1, tab2, tab3 = tabs[1], tabs[2], tabs[3]
+        educator_tab = tabs[4] if is_educator_authorized else None
         
         with tab1:
                     # Enroll in Classes Tab - UPDATED to keep classes expanded after enrollment
@@ -1010,14 +1011,6 @@ def display_training_events_app():
                 year_row=selected_year,
                 year_label=selected_year_label,
                 is_educator_authorized=is_educator_authorized,
-            )
-
-        with company_calendar_tab:
-            render_company_calendar_tab(
-                catalog=st.session_state.training_excel_handler,
-                year_row=selected_year,
-                year_label=selected_year_label,
-                enrollment_manager=st.session_state.training_enrollment_manager,
             )
 
 def display_clinical_track_hub():

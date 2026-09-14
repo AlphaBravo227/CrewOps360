@@ -8,6 +8,7 @@ import os
 import re
 from . import class_catalog as catalog
 from . import two_day
+from .calendar_ui import render_training_calendar
 
 # Training used to keep its own admin PIN and its own session clock, so an
 # administrator signed in twice to do one job. Both are gone: administrative
@@ -134,6 +135,8 @@ class AdminAccess:
     # function's title and description are written once.
     ADMIN_SECTIONS = [
         ("📈 Enrollment Reports", "enrollment_reports", "View and export enrollment data"),
+        ("🗓️ Training Calendar", "training_calendar",
+         "Every scheduled class over a chosen period, to print or export to a calendar"),
         ("👥 Manage Staff", "manage_staff", "View staff enrollment status"),
         ("📚 Manage Classes", "manage_classes", "Configure class settings and schedules"),
         ("👨‍🏫 Educator Coverage", "educator_coverage",
@@ -399,6 +402,8 @@ class AdminAccess:
         """Render the selected admin function"""
         if function_key == "enrollment_reports":
             self._show_enrollment_reports()
+        elif function_key == "training_calendar":
+            self._show_training_calendar()
         elif function_key == "manage_staff":
             self._show_manage_staff()
         elif function_key == "manage_classes":
@@ -432,6 +437,28 @@ class AdminAccess:
         else:
             st.error("Admin functions not initialized properly")
     
+    def _show_training_calendar(self):
+        """The whole training year's schedule, as a calendar to read or take away.
+
+        The same view staff see of their own commitments, without a person attached:
+        every class, every date, every location. It reports on the year named in the
+        page header like every other section here, so a cutover shows the year the
+        rest of the dashboard is showing rather than whichever one is current.
+        """
+        st.subheader("🗓️ Training Calendar")
+
+        handler = st.session_state.get('training_excel_handler')
+        if handler is None and self.excel_admin_functions:
+            handler = self.excel_admin_functions.excel
+
+        year_label = self.current_training_year()
+        render_training_calendar(
+            catalog=handler,
+            year_row=self._training_year_row(year_label),
+            year_label=year_label,
+            enrollment_manager=st.session_state.get('training_enrollment_manager'),
+        )
+
     # REPLACE the existing _show_manage_staff method with this updated version:
     def _show_manage_staff(self):
         """Show staff management functionality - UPDATED with Tab 4"""
