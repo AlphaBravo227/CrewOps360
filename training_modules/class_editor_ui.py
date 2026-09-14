@@ -463,11 +463,17 @@ def _render_staff_assignment(draft):
     # on the list — dropping them from the options would silently unassign them on the
     # next save.
     options = sorted(dict.fromkeys(list(everyone) + list(draft['assigned_staff'])))
+    # The label is deliberately fixed. Streamlit identifies a widget by its parameters
+    # as well as its key, the label among them, so a count in the label re-identified
+    # this list on the render after every pick - and a re-identified list falls back to
+    # its default, losing the pick that caused it. That is why adding somebody took two
+    # goes. The count goes underneath instead, where it can change freely.
     draft['assigned_staff'] = st.multiselect(
-        f"Assigned staff ({len(draft['assigned_staff'])})",
+        "Assigned staff",
         options=options,
         default=[name for name in draft['assigned_staff'] if name in options],
         key=wkey("assigned_staff"))
+    st.caption(f"**{len(draft['assigned_staff'])}** assigned.")
 
 
 # ---------------------------------------------------------------------------
