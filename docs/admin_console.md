@@ -55,7 +55,6 @@ stale admin screen.
 | 🗳️ Track Bidding | Track configs, bid access, add/remove selections, bid analysis and roster, base analysis, staffing rebalance, needs-swap requests. |
 | 📚 Training & Events | Enrollment reports, staff and class management, educator coverage, class building, training years, exports, statistics, database maintenance, track manager. |
 | ☀️ Summer Leave | Week allocations, staff selections, and the LT schedule report. |
-| ✅ Track Approvals | Modifications to the active track waiting on an approve or reject. |
 | 📤 Exports & Reports | Staff preferences, fiscal-year tracks, filtered active tracks, and database extracts. |
 | 🗂️ System & Backups | Roster and track health, active track and capacity, staff/track mismatches, integrity check, backups, restore, email configuration. |
 
@@ -73,6 +72,12 @@ moved into the console. These did not, because they were not working:
   the app.
 - **Enhanced Validation Rules** — a static block of markdown with no controls. The
   rules it described are still enforced in `modules/enhanced_track_validator.py`.
+- **Track Approvals** — a queue of track modifications waiting on an approve or
+  reject. The Clinical Track Hub surface that let a staff member submit one was
+  taken out when Track Swap and Track Management were pulled for a rebuild, so
+  nothing has filled the queue since. The `tracks` table still carries
+  `is_approved`, `approved_by` and `approval_date`, so the section can come back
+  with the submission flow if that is rebuilt.
 - **Email Configuration** — described a Gmail SMTP setup the app stopped using when
   it moved to Resend. The console reads the live configuration off the notifier
   instead. Its *Test email* button also treated a `(success, message)` tuple as a
