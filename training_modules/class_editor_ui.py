@@ -53,7 +53,8 @@ DUPLICATE_OF_KEY = 'training_class_duplicate_of'
 #
 # So the widgets are keyed with a token that changes whenever the draft changes
 # underneath them. New key, new widget, initialized from the draft - which stays the one
-# source of truth.
+# source of truth. The initializing goes through wstate() rather than a `value=` handed
+# to the widget, for the reason its docstring gives.
 WIDGET_PREFIX = 'class_editor_'
 TOKEN_KEY = 'training_class_widget_token'
 
@@ -66,6 +67,26 @@ CALENDAR_DISPLAY_MAX = 20
 def wkey(name):
     """The session key for one of this form's widgets, under the current token."""
     return f"{WIDGET_PREFIX}{name}_{st.session_state.get(TOKEN_KEY, 0)}"
+
+
+def wstate(name, value):
+    """Seed a field's state from the draft, and hand back its key.
+
+    Streamlit folds a widget's label, its options and the `value`/`default` it was
+    handed into the widget's identity, alongside the key. So a field fed from the draft
+    it also writes back to is a *different* widget on the render after every edit - and
+    a widget that has just been re-identified starts from what it was handed, throwing
+    away the edit that changed it. Hence fields that only took the second time: the odd
+    edits landed on the widget the previous render had already replaced.
+
+    Seeding the value into session state once and then passing nothing but the key
+    keeps the identity still. The token below still does the job it was written for -
+    a new token is a new key, which re-seeds from the draft.
+    """
+    key = wkey(name)
+    if key not in st.session_state:
+        st.session_state[key] = value
+    return key
 
 
 def reset_widget_state():
@@ -406,18 +427,17 @@ def _render_staff_assignment(draft):
                 continue
         groupings = st.multiselect(
             "Groupings", options=list(grouping_names),
-            default=[g for g in stored_ids if g in grouping_names],
             format_func=lambda g: f"{grouping_names[g]} ({grouping_counts.get(g, 0)})",
-            key=wkey("groupings"),
+            key=wstate("groupings",
+                       [g for g in stored_ids if g in grouping_names]),
             help="A named list of staff, maintained on the Staff Database admin page. "
                  "Picking more than one means everyone in any of them.")
     with picker_columns[1]:
         role_options = selectable_roles()
         roles = st.multiselect(
-            "Roles", options=role_options,
-            default=[r for r in source.get('roles', []) if r in role_options],
-            format_func=role_label,
-            key=wkey("roles"),
+            "Roles", options=role_options, format_func=role_label,
+            key=wstate("roles",
+                       [r for r in source.get('roles', []) if r in role_options]),
             help="A role on its own picks everyone who holds it. Combined with a "
                  "grouping it narrows to that grouping's holders of the role — "
                  "'Group 2' and 'Nurse' together means group 2's nurses.")
@@ -462,17 +482,22 @@ def _render_staff_assignment(draft):
     # Somebody assigned to the class who has since been marked inactive still belongs
     # on the list — dropping them from the options would silently unassign them on the
     # next save.
-    options = sorted(dict.fromkeys(list(everyone) + list(draft['assigned_staff'])))
-    # The label is deliberately fixed. Streamlit identifies a widget by its parameters
-    # as well as its key, the label among them, so a count in the label re-identified
-    # this list on the render after every pick - and a re-identified list falls back to
-    # its default, losing the pick that caused it. That is why adding somebody took two
-    # goes. The count goes underneath instead, where it can change freely.
+    # Held rather than recomputed, because the options are part of the widget's
+    # identity too: taking an inactive member off the list would shorten them, and
+    # re-identify the list mid-edit. They are rebuilt whenever the token moves on.
+    options_key = wkey("assigned_staff_options")
+    if options_key not in st.session_state:
+        st.session_state[options_key] = sorted(
+            dict.fromkeys(list(everyone) + list(draft['assigned_staff'])))
+    options = st.session_state[options_key]
+
+    # The label is fixed, and the count sits underneath where it can change freely: a
+    # count in the label re-identified this list on the render after every pick, which
+    # is the same thing wstate() exists to stop.
     draft['assigned_staff'] = st.multiselect(
-        "Assigned staff",
-        options=options,
-        default=[name for name in draft['assigned_staff'] if name in options],
-        key=wkey("assigned_staff"))
+        "Assigned staff", options=options,
+        key=wstate("assigned_staff",
+                   [name for name in draft['assigned_staff'] if name in options]))
     st.caption(f"**{len(draft['assigned_staff'])}** assigned.")
 
 
@@ -517,21 +542,21 @@ def _render_dates(draft):
                         removing = index
 
             entry['class_date'] = st.date_input(
-                "Date", value=entry['class_date'], key=wkey(f"date_{index}"),
+                "Date", key=wstate(f"date_{index}", entry['class_date']),
                 format="MM/DD/YYYY")
 
             flag_columns = st.columns(2)
             with flag_columns[0]:
                 entry['can_work_n_prior'] = st.checkbox(
-                    "Staff can work the night before", value=entry['can_work_n_prior'],
-                    key=wkey(f"nprior_{index}"),
+                    "Staff can work the night before",
+                    key=wstate(f"nprior_{index}", entry['can_work_n_prior']),
                     help="Leave unchecked and a night shift the evening before counts "
                          "as a conflict for this date.")
             with flag_columns[1]:
                 if is_meeting:
                     entry['has_live'] = st.checkbox(
-                        "LIVE option available", value=entry['has_live'],
-                        key=wkey(f"live_{index}"),
+                        "LIVE option available",
+                        key=wstate(f"live_{index}", entry['has_live']),
                         help="Staff meetings only: offers this date as LIVE as well "
                              "as Virtual.")
                 else:
@@ -549,34 +574,38 @@ def _render_dates(draft):
                 option_columns = st.columns(widths)
                 with option_columns[0]:
                     option['location'] = st.text_input(
-                        "Location", value=option['location'],
-                        key=wkey(f"loc_{index}_{option_index}"),
+                        "Location",
+                        key=wstate(f"loc_{index}_{option_index}",
+                                   option['location']),
                         placeholder="KBED")
                 with option_columns[1]:
                     option['start_time'] = st.text_input(
-                        "Start", value=option['start_time'] or '',
-                        key=wkey(f"start_{index}_{option_index}"),
+                        "Start",
+                        key=wstate(f"start_{index}_{option_index}",
+                                   option['start_time'] or ''),
                         placeholder=draft['settings'].get('time_1_start') or '08:00')
                 with option_columns[2]:
                     option['end_time'] = st.text_input(
-                        "End", value=option['end_time'] or '',
-                        key=wkey(f"end_{index}_{option_index}"),
+                        "End",
+                        key=wstate(f"end_{index}_{option_index}",
+                                   option['end_time'] or ''),
                         placeholder=draft['settings'].get('time_1_end') or '16:00')
                 with option_columns[3]:
                     capacity = st.text_input(
                         "Seats" + (" (Virtual)" if show_live_capacity else ""),
-                        value=('' if option['capacity'] is None
-                               else str(option['capacity'])),
-                        key=wkey(f"cap_{index}_{option_index}"),
+                        key=wstate(f"cap_{index}_{option_index}",
+                                   '' if option['capacity'] is None
+                                   else str(option['capacity'])),
                         placeholder=str(draft['settings'].get('students_per_class')
                                         or 21))
                     option['capacity'] = catalog.parse_int(capacity)
                 if show_live_capacity:
                     with option_columns[4]:
                         live_capacity = st.text_input(
-                            "Seats (LIVE)", value=('' if option.get('live_capacity') is None
-                                                   else str(option['live_capacity'])),
-                            key=wkey(f"livecap_{index}_{option_index}"),
+                            "Seats (LIVE)",
+                            key=wstate(f"livecap_{index}_{option_index}",
+                                       '' if option.get('live_capacity') is None
+                                       else str(option['live_capacity'])),
                             placeholder=str(option['capacity']
                                             or draft['settings'].get('students_per_class')
                                             or 21))
@@ -649,8 +678,8 @@ def _render_settings(draft):
     st.markdown("#### Class settings")
 
     settings['is_active'] = st.checkbox(
-        "Class is active", value=bool(settings.get('is_active', True)),
-        key=wkey("is_active"),
+        "Class is active",
+        key=wstate("is_active", bool(settings.get('is_active', True))),
         help="On, the class is live: the staff assigned to it see it on their "
              "registration screen, educators can sign up to teach it, and it appears "
              "in the reports and the roster export. Off, the class is yours to build "
@@ -666,8 +695,8 @@ def _render_settings(draft):
             "class.")
 
     settings['is_educator_only'] = st.checkbox(
-        "Educator-only class", value=bool(settings.get('is_educator_only')),
-        key=wkey("educator_only"),
+        "Educator-only class",
+        key=wstate("educator_only", bool(settings.get('is_educator_only'))),
         help="An outside course we staff with educators but our own people do not "
              "attend. Nobody is assigned to it, so it never reaches the registration "
              "screen and counts towards nobody's requirement — it exists so educators "
@@ -680,21 +709,18 @@ def _render_settings(draft):
     with columns[0]:
         settings['students_per_class'] = st.number_input(
             "Students per class", min_value=1, max_value=500,
-            value=int(settings.get('students_per_class') or 21),
-            key=wkey("students"),
+            key=wstate("students", int(settings.get('students_per_class') or 21)),
             help="The seat count a date uses when its locations don't set their own.")
     with columns[1]:
         settings['classes_per_day'] = st.number_input(
             "Classes per day", min_value=1, max_value=4,
-            value=int(settings.get('classes_per_day') or 1),
-            key=wkey("per_day"),
+            key=wstate("per_day", int(settings.get('classes_per_day') or 1)),
             help="More than one runs the class several times a day, using the time "
                  "slots below.")
     with columns[2]:
         settings['instructors_per_day'] = st.number_input(
             "Instructors needed per day", min_value=0, max_value=20,
-            value=int(settings.get('instructors_per_day') or 0),
-            key=wkey("instructors"),
+            key=wstate("instructors", int(settings.get('instructors_per_day') or 0)),
             help="Zero means the class takes no educator signups. This one number "
                  "can also be changed for every class at once, without coming back "
                  "into this form, under Training Admin → Educator Coverage → "
@@ -703,8 +729,8 @@ def _render_settings(draft):
     flag_columns = st.columns(3)
     with flag_columns[0]:
         settings['is_staff_meeting'] = st.checkbox(
-            "Staff meeting", value=bool(settings.get('is_staff_meeting')),
-            key=wkey("is_meeting"),
+            "Staff meeting",
+            key=wstate("is_meeting", bool(settings.get('is_staff_meeting'))),
             help="Staff meetings are booked as LIVE or Virtual and count towards the "
                  "meeting requirement, and their cell on the Comprehensive Education "
                  "Schedule Report always abbreviates to SM / SM (LIVE) / SM (Virtual), "
@@ -712,35 +738,33 @@ def _render_settings(draft):
                  "appearing in the class name.")
         settings['nurses_medic_separate'] = st.checkbox(
             "Nurses and medics enrolled separately",
-            value=bool(settings.get('nurses_medic_separate')),
-            key=wkey("nm_separate"),
+            key=wstate("nm_separate", bool(settings.get('nurses_medic_separate'))),
             help="Splits each session's seats between the two roles.")
     with flag_columns[1]:
         settings['has_ccemt'] = st.checkbox(
-            "CCEMT role split", value=bool(settings.get('has_ccemt')),
-            key=wkey("ccemt"),
+            "CCEMT role split",
+            key=wstate("ccemt", bool(settings.get('has_ccemt'))),
             help="With nurse/medic separation on, gives each session one nurse, one "
                  "medic and one CCEMT seat.")
         settings['is_two_day_class'] = st.checkbox(
-            "Two-day class", value=bool(settings.get('is_two_day_class')),
-            key=wkey("two_day"),
+            "Two-day class",
+            key=wstate("two_day", bool(settings.get('is_two_day_class'))),
             help="Each date covers that day and the next. Staff enroll once for both.")
     with flag_columns[2]:
         settings['is_count_exempt'] = st.checkbox(
-            "Count-exempt", value=bool(settings.get('is_count_exempt')),
-            key=wkey("count_exempt"),
+            "Count-exempt",
+            key=wstate("count_exempt", bool(settings.get('is_count_exempt'))),
             help="Lets a non-management medic take a second class in the same week.")
         settings['is_multi_session'] = st.checkbox(
-            "Multi-session", value=bool(settings.get('is_multi_session')),
-            key=wkey("multi_session"),
+            "Multi-session",
+            key=wstate("multi_session", bool(settings.get('is_multi_session'))),
             help="Splits the day into back-to-back sessions of the length below, "
                  "between the Time 1 start and end.")
 
     if settings['is_multi_session']:
         settings['session_length'] = st.number_input(
             "Session length (minutes)", min_value=5, max_value=600,
-            value=int(settings.get('session_length') or 60),
-            key=wkey("session_length"))
+            key=wstate("session_length", int(settings.get('session_length') or 60)))
     else:
         settings['session_length'] = None
 
@@ -757,16 +781,18 @@ def _render_settings(draft):
         time_columns = st.columns(2)
         with time_columns[0]:
             settings[f'time_{slot}_start'] = st.text_input(
-                f"Time {slot} start", value=settings.get(f'time_{slot}_start') or '',
-                key=wkey(f"t{slot}s"), placeholder="08:00")
+                f"Time {slot} start",
+                key=wstate(f"t{slot}s", settings.get(f'time_{slot}_start') or ''),
+                placeholder="08:00")
         with time_columns[1]:
             settings[f'time_{slot}_end'] = st.text_input(
-                f"Time {slot} end", value=settings.get(f'time_{slot}_end') or '',
-                key=wkey(f"t{slot}e"), placeholder="16:00")
+                f"Time {slot} end",
+                key=wstate(f"t{slot}e", settings.get(f'time_{slot}_end') or ''),
+                placeholder="16:00")
 
     settings['notes'] = st.text_area(
-        "Notes (admin only)", value=settings.get('notes') or '',
-        key=wkey("notes"),
+        "Notes (admin only)",
+        key=wstate("notes", settings.get('notes') or ''),
         help="Not shown to staff. Somewhere to record why the class is set up as it is.")
 
 
@@ -916,7 +942,7 @@ def render_class_form(training_year, class_name=None, db_path=catalog.DEFAULT_DB
             f"name of its own and change what differs.")
 
     draft['class_name'] = st.text_input(
-        "Class name", value=draft['class_name'], key=wkey("name"),
+        "Class name", key=wstate("name", draft['class_name']),
         help="What staff see, and what enrollments are recorded against. Renaming an "
              "existing class carries its enrollments and educator signups with it.")
 
@@ -925,8 +951,10 @@ def render_class_form(training_year, class_name=None, db_path=catalog.DEFAULT_DB
     # form printed there instead; the cell's comment still carries the full name, the
     # time and the location, so nothing is lost by shortening it.
     draft['settings']['calendar_display'] = st.text_input(
-        "Calendar display", value=draft['settings'].get('calendar_display') or '',
-        key=wkey("calendar_display"), max_chars=CALENDAR_DISPLAY_MAX,
+        "Calendar display",
+        key=wstate("calendar_display",
+                   draft['settings'].get('calendar_display') or ''),
+        max_chars=CALENDAR_DISPLAY_MAX,
         placeholder="e.g. Clinical, Onboarding",
         help="A short, generic label for this class on the Comprehensive Education "
              "Schedule Report — that report's day cells are narrow, so a full class "
