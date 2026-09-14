@@ -4,14 +4,15 @@ Two screens, and the shared machinery under them.
 
 | Screen | Where | What it shows |
 | --- | --- | --- |
-| **My Calendar** | Training & Events, first tab | One person's track shifts, the classes they are enrolled on, and the days they have signed up to teach |
+| **My Calendar** | Training & Events, second tab | One person's track shifts, the classes they are enrolled on, and the days they have signed up to teach |
 | **Training Calendar** | Admin Console > Training & Events > Training Calendar | Every live class in the training year, one entry per class, per date, per location |
 
 Both offer the same four take-aways: a printable PDF, an `.ics` file, a Google Calendar
 CSV and an Outlook CSV.
 
-My Calendar leads the staff screen because what somebody opens it to check is usually
-what they already have booked, not what they could book. The Training Calendar sits with
+My Calendar sits next to Enroll in Classes on the staff screen: what you have booked and
+what you could book are the same errand, and the calendar is where you check the first
+before doing the second. The Training Calendar sits with
 Enrollment Reports at the top of the training admin dashboard, and reports on the year
 named in that page's header like every other section there — so during a cutover it shows
 the year the rest of the dashboard is showing, not whichever one happens to be current.
