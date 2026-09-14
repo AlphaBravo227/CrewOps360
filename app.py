@@ -838,15 +838,16 @@ def display_training_events_app():
         # Check if user is authorized for educator signup
         is_educator_authorized = st.session_state.training_excel_handler.is_educator_authorized(selected_staff)
         
-        # My Calendar leads, because what somebody opens this screen to check is
-        # usually what they already have booked rather than what they could book.
+        # My Calendar sits second, next to the enrolling: what you have booked and
+        # what you could book are the same errand, and the calendar is where you
+        # check the first before doing the second.
         # Educator Signup only appears for the people authorised to teach, so the
         # tabs are built as a list rather than unpacked into fixed names - which is
         # what used to leave "tab4" meaning the educator tab in one branch and the
         # schedule tab in the other.
         tab_labels = [
-            "📅 My Calendar",
             "📝 Enroll in Classes",
+            "📅 My Calendar",
             "📋 My Enrollments",
             "📊 Class Details",
         ]
@@ -854,8 +855,8 @@ def display_training_events_app():
             tab_labels.append("📚 Educator Signup")
 
         tabs = st.tabs(tab_labels)
-        my_calendar_tab = tabs[0]
-        tab1, tab2, tab3 = tabs[1], tabs[2], tabs[3]
+        tab1, my_calendar_tab = tabs[0], tabs[1]
+        tab2, tab3 = tabs[2], tabs[3]
         educator_tab = tabs[4] if is_educator_authorized else None
         
         with tab1:
