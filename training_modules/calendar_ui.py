@@ -464,12 +464,16 @@ def render_my_calendar_tab(staff_name, track_manager=None, enrollment_manager=No
         note="Snapshot from CrewOps360 - re-export if your track or enrollments change.")
 
 
-def render_company_calendar_tab(catalog=None, year_row=None, year_label='',
-                                enrollment_manager=None, key_prefix='company_cal'):
-    """Every class the training year runs, over whatever span is asked for."""
+def render_training_calendar(catalog=None, year_row=None, year_label='',
+                             enrollment_manager=None,
+                             key_prefix='admin_training_calendar'):
+    """Every class the training year runs, over whatever span is asked for.
+
+    Draws no heading of its own: it lives on the training admin dashboard, which puts
+    the section's title in its own header block.
+    """
     from .schedule_calendar import company_training_calendar, training_year_span
 
-    st.header("🏢 Company Training Calendar")
     if not catalog:
         st.warning("No class catalog is loaded for this training year.")
         return
