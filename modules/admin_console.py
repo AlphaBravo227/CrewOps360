@@ -64,9 +64,6 @@ ADMIN_SECTIONS = [
     ("summer_leave", "☀️ Summer Leave",
      "Week allocations, staff selections and the LT schedule report",
      "#FF9800", True),
-    ("approvals", "✅ Track Approvals",
-     "Modifications to the active track waiting on a decision",
-     "#2E7D32", False),
     ("exports", "📤 Exports & Reports",
      "Staff preferences, fiscal-year tracks and database extracts",
      "#1E88E5", False),
@@ -244,72 +241,12 @@ def _render_section(section):
     elif key == "track_bidding":
         from .track_bidding import display_bidding_admin_interface
         display_bidding_admin_interface()
-    elif key == "approvals":
-        _render_track_approvals()
     elif key == "exports":
         _render_exports()
     elif key == "system":
         _render_system()
     else:
         st.error("Unknown admin section.")
-
-
-# ──────────────────────────────────────────────
-# ✅ Track Approvals
-# ──────────────────────────────────────────────
-
-def _render_track_approvals():
-    """The queue of track modifications waiting on an approve/reject."""
-    from .db_utils import get_active_track_config, get_db_connection
-
-    active_cfg = get_active_track_config()
-    active_track = active_cfg['track_name'] if active_cfg else 'FY26'
-    st.caption(f"Modifications submitted against the active track, **{active_track}**.")
-
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""SELECT id, staff_name, submission_date, version
-            FROM tracks WHERE track_name = ? AND is_active = 1 AND is_approved = 0
-            ORDER BY submission_date DESC""", (active_track,))
-        pending = cursor.fetchall()
-    except Exception as e:
-        st.error(f"Error loading pending approvals: {e}")
-        return
-
-    if not pending:
-        st.success("✅ Nothing waiting — there are no pending modifications to review.")
-        return
-
-    st.markdown(f"**{len(pending)} pending modification(s):**")
-    for track_id, staff_name, submitted, version in pending:
-        with st.expander(f"{staff_name} (v{version}, submitted {submitted})"):
-            approve_col, reject_col = st.columns(2)
-            with approve_col:
-                if st.button("Approve", key=f"admin_approve_{track_id}",
-                             use_container_width=True, type="primary"):
-                    now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
-                    cursor.execute(
-                        "UPDATE tracks SET is_approved = 1, approved_by = 'admin', "
-                        "approval_date = ? WHERE id = ?", (now, track_id))
-                    conn.commit()
-                    st.success(f"Approved {staff_name}")
-                    st.rerun()
-            with reject_col:
-                notes = st.text_input("Rejection notes", key=f"admin_reject_notes_{track_id}")
-                if st.button("Reject", key=f"admin_reject_{track_id}",
-                             use_container_width=True):
-                    now = datetime.now(_eastern_tz).strftime("%Y-%m-%d %H:%M:%S")
-                    cursor.execute(
-                        "UPDATE tracks SET is_approved = -1, approved_by = 'admin', "
-                        "approval_date = ? WHERE id = ?", (now, track_id))
-                    cursor.execute("""INSERT INTO track_history
-                        (track_id, staff_name, track_data, submission_date, status)
-                        VALUES (?, ?, 'rejected', ?, ?)""",
-                        (track_id, staff_name, now, f"rejected: {notes}"))
-                    conn.commit()
-                    st.warning(f"Rejected {staff_name}")
-                    st.rerun()
 
 
 # ──────────────────────────────────────────────

@@ -402,7 +402,7 @@ def display_module_selection():
             st.session_state.selected_module = "admin"
             st.rerun()
         st.caption("Staff Database · Track Data · Track Bidding · Training & Events · "
-                   "Summer Leave · approvals, exports and system tools.")
+                   "Summer Leave · exports and system tools.")
 
 # Shift Location Preferences Module
 def display_shift_location_preferences_module():
@@ -1455,8 +1455,8 @@ def run_clinical_track_hub(selected_year=None, year_is_writable=True):
     st.session_state.preassignment_df = preassignment_df
 
     # Administration used to be a wall of controls in this sidebar behind a
-    # password box of its own: exports, database maintenance, restore, the
-    # approvals queue, plus a dead Role Delta Filter whose widgets wrote to local
+    # password box of its own: exports, database maintenance, restore, plus a
+    # dead Role Delta Filter whose widgets wrote to local
     # variables nothing read, a static list of validation rules, and an email
     # panel describing a Gmail setup the app stopped using. All of it now lives in
     # the Admin Console — one sign-in, one page — and the sidebar carries the door.
