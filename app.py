@@ -83,6 +83,8 @@ try:
     from training_modules.class_catalog import ClassCatalog
     from training_modules.admin_access import AdminAccess, training_admin_is_authenticated
     from training_modules.admin_excel_functions import ExcelAdminFunctions, enhance_admin_reports
+    from training_modules.calendar_ui import (
+        render_company_calendar_tab, render_my_calendar_tab)
     TRAINING_MODULES_AVAILABLE = True
 except ImportError as e:
     TRAINING_MODULES_AVAILABLE = False
@@ -837,26 +839,23 @@ def display_training_events_app():
         # Check if user is authorized for educator signup
         is_educator_authorized = st.session_state.training_excel_handler.is_educator_authorized(selected_staff)
         
-        # Create tabs conditionally based on educator authorization
+        # Educator Signup only appears for the people authorised to teach, so the
+        # tabs are built as a list rather than unpacked into fixed names - which is
+        # what used to leave "tab4" meaning the educator tab in one branch and the
+        # schedule tab in the other.
+        tab_labels = [
+            "📝 Enroll in Classes",
+            "📋 My Enrollments",
+            "📊 Class Details",
+        ]
         if is_educator_authorized:
-            # Show all tabs including Educator Signup
-            tab1, tab2, tab3, tab4, tab5 = st.tabs([
-                "📝 Enroll in Classes", 
-                "📋 My Enrollments", 
-                "📊 Class Details", 
-                "📚 Educator Signup", 
-                "📅 Track Schedule"
-            ])
-        else:
-            # Hide Educator Signup tab for unauthorized users
-            tab1, tab2, tab3, tab4 = st.tabs([
-                "📝 Enroll in Classes", 
-                "📋 My Enrollments", 
-                "📊 Class Details", 
-                "📅 Track Schedule"
-            ])
-            # Set tab4 to None for educator tab since it doesn't exist
-            tab5 = None  # Track schedule tab
+            tab_labels.append("📚 Educator Signup")
+        tab_labels += ["📅 My Calendar", "🏢 Training Calendar"]
+
+        tabs = st.tabs(tab_labels)
+        tab1, tab2, tab3 = tabs[0], tabs[1], tabs[2]
+        educator_tab = tabs[3] if is_educator_authorized else None
+        my_calendar_tab, company_calendar_tab = tabs[-2], tabs[-1]
         
         with tab1:
                     # Enroll in Classes Tab - UPDATED to keep classes expanded after enrollment
@@ -974,8 +973,8 @@ def display_training_events_app():
                 st.info("You have no classes assigned.")
 
         # Only show Educator Signup tab if user is authorized
-        if is_educator_authorized and tab5 is not None:
-            with tab4:  # This is the Educator Signup tab when authorized
+        if educator_tab is not None:
+            with educator_tab:
                 st.header("📚 Educator Signup")
                 
                 # Import the EducatorUIComponents class
@@ -1001,19 +1000,25 @@ def display_training_events_app():
                         selected_staff
                     )
 
-        # Track Schedule tab (always the last tab) - keep original placeholder
-        schedule_tab = tab5 if is_educator_authorized else tab4
-        with schedule_tab:
-            # Track Schedule Tab (existing functionality)
-            st.header("📅 Track Schedule")
-            
-            if st.session_state.training_track_manager.tracks_db_path:
-                if st.session_state.training_track_manager.has_track_data(selected_staff):
-                    st.info("Track schedule integration coming soon - will show your work schedule alongside training commitments.")
-                else:
-                    st.warning("No track schedule found for your profile.")
-            else:
-                st.warning("Track database not available.")
+        with my_calendar_tab:
+            render_my_calendar_tab(
+                selected_staff,
+                track_manager=st.session_state.training_track_manager,
+                enrollment_manager=st.session_state.training_enrollment_manager,
+                educator_manager=st.session_state.training_educator_manager,
+                catalog=st.session_state.training_excel_handler,
+                year_row=selected_year,
+                year_label=selected_year_label,
+                is_educator_authorized=is_educator_authorized,
+            )
+
+        with company_calendar_tab:
+            render_company_calendar_tab(
+                catalog=st.session_state.training_excel_handler,
+                year_row=selected_year,
+                year_label=selected_year_label,
+                enrollment_manager=st.session_state.training_enrollment_manager,
+            )
 
 def display_clinical_track_hub():
     """Display the Clinical Track Hub with back navigation - FIXED spacing and button issues"""
@@ -1267,6 +1272,10 @@ def run_clinical_track_hub(selected_year=None, year_is_writable=True):
         st.markdown("### 📅 Calendar Export")
         st.caption(f"Generate complete {selected_year or 'fiscal year'} Google Calendar "
                    f"or iCal files from submitted tracks")
+        # This export is tracks only. The one that puts shifts and classes on the same
+        # calendar lives with the classes, because that is where the enrollments are.
+        st.caption("Want your shifts **and** your training on one calendar? "
+                   "Training & Events > My Calendar.")
         
         # Get available staff
         try:

@@ -738,11 +738,17 @@ class EnrollmentManager:
         """Get detailed enrollment information for a staff member"""
         return self.db.get_staff_enrollments(staff_name, training_year=self.training_year)
         
-    def get_date_enrollment_count(self, class_name, class_date, role=None, meeting_type=None, session_time=None):
-        """Get enrollment count for a specific date and role/meeting type/session"""
+    def get_date_enrollment_count(self, class_name, class_date, role=None, meeting_type=None,
+                                  session_time=None, location=None):
+        """Get enrollment count for a specific date and role/meeting type/session
+
+        Pass `location` on a date taught at more than one site, where each site is its
+        own room with its own seats; leave it off elsewhere, so the rows written
+        before locations were bookable still count.
+        """
         return self.db.get_enrollment_count(
             class_name, class_date, role, meeting_type, session_time,
-            training_year=self.training_year)
+            training_year=self.training_year, location=location)
         
     def get_live_staff_meeting_count(self, staff_name):
         """Get count of LIVE staff meetings for a staff member"""

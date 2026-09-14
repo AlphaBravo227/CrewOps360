@@ -29,6 +29,11 @@ class TrainingTrackManager:
         self.tracks_fell_back = False    # a cohort was asked for and wasn't there
         self.ccemt_schedule_cache = {}
         self.ccemt_raw_cache = {}  # Raw CCEMT shift codes (e.g., 'PG', 'NP') for display purposes
+        # Roles, remembered for the life of this manager. get_staff_role() reads the
+        # staff database, and every date a shift is asked for asks for a role first -
+        # so a screen that walks a year of dates for one person used to run two
+        # queries per day of it. Cleared by reload_tracks().
+        self._role_cache = {}
         self.tracks_excel_handler = None  # Fallback CCEMT source when the database has none
         self.enrollment_excel_handler = None  # For getting staff roles from enrollment sheet
         
@@ -114,6 +119,9 @@ class TrainingTrackManager:
         """
         self.tracks_excel_handler = tracks_excel_handler
         self.enrollment_excel_handler = enrollment_excel_handler or tracks_excel_handler
+        # Both of this manager's fallback sources for a role have just changed, so any
+        # role already worked out was worked out without them.
+        self._role_cache = {}
         self.load_ccemt_schedules()
 
     def load_ccemt_schedules(self):
@@ -125,6 +133,9 @@ class TrainingTrackManager:
         the Track Data admin. A Tracks workbook is only read if the database has no
         schedules at all, so an install that hasn't imported yet still works.
         """
+        # Being in this cache is what makes somebody CCEMT when the staff database
+        # cannot say, so a role cached before it was filled is not to be trusted.
+        self._role_cache = {}
         try:
             from modules.ccemt_schedule import classify_shift_code, get_schedules
 
@@ -235,7 +246,11 @@ class TrainingTrackManager:
         """
         if not self.tracks_db_path:
             return
-        
+
+        # A reload is the point at which everything read from the database is stale,
+        # roles included.
+        self._role_cache = {}
+
         try:
             conn = sqlite3.connect(self.tracks_db_path)
             cursor = conn.cursor()
@@ -304,7 +319,18 @@ class TrainingTrackManager:
         Get the role of a staff member from the staff database.
 
         Falls back to the CCEMT cache when the staff database has no roster yet.
+        Answers are remembered until reload_tracks() - a role does not change while
+        somebody is looking at a calendar, and asking per date made it the most
+        expensive lookup in the module.
         """
+        if staff_name in self._role_cache:
+            return self._role_cache[staff_name]
+        role = self._read_staff_role(staff_name)
+        self._role_cache[staff_name] = role
+        return role
+
+    def _read_staff_role(self, staff_name):
+        """The uncached role lookup behind get_staff_role()."""
         try:
             from modules.staff_database import get_role, staff_count
             if staff_count(include_inactive=False) > 0:
