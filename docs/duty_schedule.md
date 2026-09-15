@@ -63,6 +63,28 @@ where both providers are junior. All three have the bodies and still cannot fly,
 is why they read differently from `incomplete` — one needs an extra person, the other
 needs a different one.
 
+### Who is wanted, not just that somebody is
+
+The fill was only half of what the sheet said. Its **font** carried a second channel,
+and it is the more useful one:
+
+| Sheet | Meant |
+| --- | --- |
+| blue font | a **nurse** is still wanted |
+| red font | a **medic** is still wanted |
+| **bold** | the provider already aboard is junior, so the other has to be the senior |
+| bold on a green cell | every provider aboard is senior |
+
+Both survive as `needs` (`{'role', 'senior_required'}`) and `both_senior` on the
+`crew_status()` result, so the reason reads "needs a senior medic" rather than "needs a
+person". On the board a cell shows `RN`, `Sr RN`, `MED` or `Sr MED` in the sheet's own
+blue and red. Bold alone carried this fine in Excel and carries it poorly at 12px in a
+browser, so the weight is backed by the word — nobody should have to consult a key to
+read a board they are working from.
+
+A crewed cell shows `✓`, in bold when every provider aboard is senior. That is what
+tells a scheduler which crews have a senior to spare for somewhere that is short one.
+
 ### Seats, and the `p` suffix
 
 A crew is one RN seat and one medic seat. Who may sit where:

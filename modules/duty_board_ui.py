@@ -77,6 +77,50 @@ def _status_chip(result):
     return _chip(label, style['bg'], style['fg'], result.get('reason', ''))
 
 
+# The sheet coloured the font by the role still wanted — blue for a nurse, red for a
+# medic — and these are its own hues, darkened enough to stay readable on the amber
+# fill they sit on.
+NURSE_INK = '#0057A3'
+MEDIC_INK = '#B3001B'
+
+
+def _cell_mark(result):
+    """
+    What one vehicle-on-a-date cell shows.
+
+    The fill says the status. The mark says the thing the spreadsheet put in the
+    font, which is what a scheduler actually acts on: which role is still wanted,
+    and whether they have to be senior.
+
+    Returns:
+        tuple: (text, colour, bold) — colour '' means inherit the status fill's ink.
+    """
+    status = result['status']
+
+    if status == duty_crew.UNSTAFFED:
+        return '—', '', False
+
+    if status == duty_crew.INCOMPLETE:
+        need = result.get('needs')
+        if not need:
+            return '·', '', False          # only orientees aboard
+        role = 'RN' if need['role'] == 'nurse' else 'MED'
+        ink = NURSE_INK if need['role'] == 'nurse' else MEDIC_INK
+        # The sheet said "and they have to be the senior one" with bold alone. Bold
+        # carries it at 12px far less well than it did in Excel, so the weight is
+        # backed by the word — nobody should have to consult a key to read a board
+        # they are working from.
+        if need['senior_required']:
+            return f'Sr {role}', ink, True
+        return role, ink, False
+
+    if status == duty_crew.CREWED:
+        # Bold on a crewed vehicle meant every provider aboard is senior.
+        return '✓', '', result.get('both_senior', False)
+
+    return '✕', '', False
+
+
 # ──────────────────────────────────────────────
 # Block picker
 # ──────────────────────────────────────────────
@@ -135,13 +179,13 @@ def _block_picker():
 # Board tab
 # ──────────────────────────────────────────────
 
-def _need_display(board):
+def need_display_html(board):
     """
-    The sheet's top block: every vehicle against every date, coloured by crew status.
+    The sheet's top block as HTML: every vehicle against every date.
 
-    Rendered as HTML rather than a dataframe because the colour *is* the information
-    — and because each cell carries the reason it is that colour as a tooltip, which
-    is the thing the spreadsheet could never tell anyone.
+    Built as markup rather than a dataframe because the colour and weight *are* the
+    information — and because each cell can then carry, as a tooltip, the reason it
+    reads the way it does, which is the thing the spreadsheet could never say.
     """
     dates = board['schedule_dates']
 
@@ -161,12 +205,15 @@ def _need_display(board):
                 style = duty_crew.STATUS_STYLE[result['status']]
                 people = result['rn'] + result['medic']
                 who = ', '.join(p['staff_name'] for p in people)
-                tip = result['reason'] or who or 'unstaffed'
-                text = str(len(people)) if people else '·'
+                text, ink, bold = _cell_mark(result)
+                tip = ' — '.join(part for part in
+                                 (who, result['reason']) if part) or 'unstaffed'
                 cells.append(
                     f'<td title="{vehicle["code"]} {_fmt(iso)} — {tip}" '
-                    f'style="background:{style["bg"]};color:{style["fg"]};'
-                    f'text-align:center;font-size:12px;font-weight:600;'
+                    f'style="background:{style["bg"]};'
+                    f'color:{ink or style["fg"]};'
+                    f'text-align:center;font-size:12px;'
+                    f'font-weight:{"800" if bold else "500"};'
                     f'padding:5px 4px;border:1px solid #fff;">{text}</td>')
             rows.append(
                 f'<tr><td style="padding:4px 8px;font-size:11px;color:#888;'
@@ -175,23 +222,47 @@ def _need_display(board):
                 f'white-space:nowrap;">{vehicle["code"]}</td>'
                 + ''.join(cells) + '</tr>')
 
-    st.markdown(
-        '<div style="overflow-x:auto;">'
-        '<table style="border-collapse:collapse;font-family:system-ui,sans-serif;">'
-        f'<thead><tr><th></th><th></th>{head}</tr></thead>'
-        f'<tbody>{"".join(rows)}</tbody></table></div>',
-        unsafe_allow_html=True)
+    return ('<div style="overflow-x:auto;">'
+            '<table style="border-collapse:collapse;font-family:system-ui,sans-serif;">'
+            f'<thead><tr><th></th><th></th>{head}</tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>')
+
+
+def _need_display(board):
+    """Draw the need display and the key that explains its marks."""
+    st.markdown(need_display_html(board), unsafe_allow_html=True)
+
+    incomplete = duty_crew.STATUS_STYLE[duty_crew.INCOMPLETE]
+    crewed = duty_crew.STATUS_STYLE[duty_crew.CREWED]
+
+    def _key(text, ink, bold, bg, note):
+        mark = (f'<span style="background:{bg};color:{ink};padding:2px 7px;'
+                f'border-radius:4px;font-size:12px;'
+                f'font-weight:{"800" if bold else "500"};">{text}</span>')
+        return f'{mark} <span style="font-size:12px;color:#555;">{note}</span>'
 
     legend = ' '.join(
         _chip(duty_crew.STATUS_STYLE[s]['label'],
               duty_crew.STATUS_STYLE[s]['bg'], duty_crew.STATUS_STYLE[s]['fg'])
         for s in (duty_crew.CREWED, duty_crew.INCOMPLETE,
                   duty_crew.NO_CREW, duty_crew.UNSTAFFED))
-    st.markdown(f'<div style="margin-top:8px;">{legend}</div>', unsafe_allow_html=True)
+    marks = ' &nbsp; '.join([
+        _key('RN', NURSE_INK, False, incomplete['bg'], 'wants a nurse'),
+        _key('Sr RN', NURSE_INK, True, incomplete['bg'], 'wants a <b>senior</b> nurse'),
+        _key('MED', MEDIC_INK, False, incomplete['bg'], 'wants a medic'),
+        _key('Sr MED', MEDIC_INK, True, incomplete['bg'], 'wants a <b>senior</b> medic'),
+        _key('✓', crewed['fg'], False, crewed['bg'], 'crewed'),
+        _key('✓', crewed['fg'], True, crewed['bg'], 'crewed, <b>both senior</b>'),
+    ])
+    st.markdown(f'<div style="margin-top:8px;">{legend}</div>'
+                f'<div style="margin-top:8px;line-height:2;">{marks}</div>',
+                unsafe_allow_html=True)
     st.caption("A crew is one RN seat and one medic seat with at least one senior "
                "provider. Two nurses (unless one is a dual in the medic seat), two "
                "medics, or two juniors have the bodies but not a crew. "
-               "Hover a cell for who is on it and why it reads as it does.")
+               "An amber cell names the role still wanted, in bold when the provider "
+               "already on board is junior — so the other has to be the senior of "
+               "the pair. Hover any cell for who is on it and why.")
 
 
 def _counter_block(board):

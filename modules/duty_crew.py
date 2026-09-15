@@ -30,6 +30,14 @@ with three ways to fail it, which are different problems and want different answ
 pairing where both providers are junior. All three have the bodies and still can't
 fly, which is why they read differently from `incomplete`.
 
+The fill was only half of what the sheet said. Its **font** carried a second channel,
+and it is the more useful one: blue for a nurse and red for a medic named the role
+still wanted, and **bold** meant the provider already aboard is junior — so whoever
+fills the other seat has to be the senior of the pair. On a crewed vehicle the same
+bold meant every provider aboard is senior. Both survive here as `needs`
+(`{'role', 'senior_required'}`) and `both_senior`, so a caller can say *who* is wanted
+rather than only that somebody is.
+
 Two things carry over from the sheet unchanged. Senior/junior is `staff.no_matrix`,
 already the rule in `track_bidding.py`. And a nurse can take the *medic* seat when
 they are a dual provider — that is what the sheet's `p` suffix (`D7Bp`) meant, and why
@@ -167,6 +175,11 @@ def crew_status(assigned, staff_lookup, pairs=None):
         'status': None, 'reason': '',
         'rn': rn, 'medic': medic, 'third': third,
         'seniors': len(seniors), 'misseated': misseated, 'restricted': restricted,
+        # Who is still wanted, when one provider is aboard, and whether they have to
+        # be senior: {'role': 'nurse'|'medic', 'senior_required': bool}.
+        'needs': None,
+        # Every provider aboard is senior. Only meaningful on a crewed vehicle.
+        'both_senior': False,
     }
 
     if restricted:
@@ -189,26 +202,38 @@ def crew_status(assigned, staff_lookup, pairs=None):
                       reason='only staff on orientation assigned')
         return result
 
+    # One provider aboard. Name who is still wanted and whether they have to be
+    # senior — which is the whole of the spreadsheet's font encoding: blue for a
+    # nurse, red for a medic, bold when the one already there is junior, so the
+    # other has to be the senior of the pair.
+    if len(rn) + len(medic) == 1:
+        present = (rn + medic)[0]
+        wanted = 'medic' if present['seat'] == SEAT_RN else 'nurse'
+        senior_required = not is_senior(present['record'])
+        result.update(
+            status=INCOMPLETE,
+            needs={'role': wanted, 'senior_required': senior_required},
+            reason=f"needs a {'senior ' if senior_required else ''}{wanted}")
+        return result
+
     if not rn:
-        if len(medic) > 1:
-            result.update(status=NO_CREW, reason='two medics, no nurse')
-        else:
-            result.update(status=INCOMPLETE, reason='needs a medic seat filled')
+        result.update(status=NO_CREW, reason='two medics, no nurse')
         return result
 
     if not medic:
-        if len(rn) > 1:
-            result.update(status=NO_CREW,
-                          reason='two nurses, neither in the medic seat')
-        else:
-            result.update(status=INCOMPLETE, reason='needs a medic')
+        result.update(status=NO_CREW,
+                      reason='two nurses, neither in the medic seat')
         return result
 
     if not seniors:
         result.update(status=NO_CREW, reason='both providers are junior')
         return result
 
-    result.update(status=CREWED, reason='')
+    # On a crewed vehicle the spreadsheet's bold meant every provider is senior —
+    # worth keeping, because it is what tells a scheduler which crews have slack to
+    # give up a senior somewhere else.
+    result.update(status=CREWED, reason='',
+                  both_senior=len(seniors) == len(rn) + len(medic))
     return result
 
 

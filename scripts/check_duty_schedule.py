@@ -122,6 +122,36 @@ def main():
         check(f"{label} -> {want}", got['status'] == want,
               f"got {got['status']} ({got['reason']})")
 
+    section("Who is still wanted — what the sheet put in the font")
+    # Blue for a nurse and red for a medic named the role wanted; bold meant the
+    # provider already aboard is junior, so the other has to be the senior one.
+    wants = [
+        ("9      senior RN aboard", (('Senior RN', 'rn'),), 'medic', False),
+        ("900    junior RN aboard", (('Junior RN', 'rn'),), 'medic', True),
+        ("90     senior medic aboard", (('Senior Medic', 'medic'),), 'nurse', False),
+        ("9000   junior medic aboard", (('Junior Medic', 'medic'),), 'nurse', True),
+    ]
+    for label, rows, role, senior in wants:
+        got = status(*rows)
+        need = got.get('needs') or {}
+        check(f"{label} -> wants a {'senior ' if senior else ''}{role}",
+              need.get('role') == role and need.get('senior_required') is senior,
+              f"got {need} ({got['reason']})")
+    check("the reason names who is wanted, not just that somebody is",
+          status(('Junior Medic', 'medic'))['reason'] == 'needs a senior nurse',
+          status(('Junior Medic', 'medic'))['reason'])
+    check("a lone medic wants a nurse, not another medic",
+          'nurse' in status(('Senior Medic', 'medic'))['reason'],
+          status(('Senior Medic', 'medic'))['reason'])
+
+    # Bold on a crewed vehicle meant every provider aboard is senior.
+    check("99     both senior -> both_senior",
+          status(('Senior RN', 'rn'), ('Senior Medic', 'medic'))['both_senior'] is True)
+    check("990    one junior -> not both_senior",
+          status(('Junior RN', 'rn'), ('Senior Medic', 'medic'))['both_senior'] is False)
+    check("9009   one junior -> not both_senior",
+          status(('Senior RN', 'rn'), ('Junior Medic', 'medic'))['both_senior'] is False)
+
     section("The p suffix — a dual provider in the medic seat")
     got = status(('Senior RN', 'rn'), ('Dual RN', 'medic'))
     check("two nurses crew when one is a dual in the medic seat",
@@ -246,6 +276,27 @@ def main():
     check("date headings avoid the non-portable %-d strftime", portable)
     check("date headings read as the sheet's did", _fmt('2026-10-04') == 'Sun 4 Oct',
           _fmt('2026-10-04'))
+
+    from modules.duty_board_ui import MEDIC_INK, NURSE_INK, _cell_mark
+    check("an empty cell shows nothing is on it",
+          _cell_mark(status())[0] == '—')
+    check("a cell wanting a medic marks it in the medic colour",
+          _cell_mark(status(('Senior RN', 'rn')))[:2] == ('MED', MEDIC_INK),
+          str(_cell_mark(status(('Senior RN', 'rn')))))
+    check("a cell wanting a senior medic says so, in bold",
+          _cell_mark(status(('Junior RN', 'rn'))) == ('Sr MED', MEDIC_INK, True),
+          str(_cell_mark(status(('Junior RN', 'rn')))))
+    check("a cell wanting a nurse marks it in the nurse colour",
+          _cell_mark(status(('Senior Medic', 'medic')))[:2] == ('RN', NURSE_INK))
+    check("a cell wanting a senior nurse says so, in bold",
+          _cell_mark(status(('Junior Medic', 'medic'))) == ('Sr RN', NURSE_INK, True),
+          str(_cell_mark(status(('Junior Medic', 'medic')))))
+    check("a crew of two seniors is bold",
+          _cell_mark(status(('Senior RN', 'rn'), ('Senior Medic', 'medic')))
+          == ('✓', '', True))
+    check("a crew carrying a junior is not bold",
+          _cell_mark(status(('Junior RN', 'rn'), ('Senior Medic', 'medic')))
+          == ('✓', '', False))
 
     ddb.set_assignment(block['id'], 'Dual RN', start, 'GR', seat='medic')
     frame = export_frame(duty_board.build_board(start, include_training=False))
