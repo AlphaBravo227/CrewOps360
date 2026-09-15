@@ -174,6 +174,8 @@ def initialize_staff_tables():
             shifts_per_pay_period INTEGER,
             night_minimum INTEGER,
             weekend_minimum INTEGER,
+            date_of_hire TEXT,
+            on_orientation INTEGER NOT NULL DEFAULT 0,
             manager TEXT,
             email TEXT,
             is_active INTEGER NOT NULL DEFAULT 1,
@@ -195,6 +197,13 @@ def initialize_staff_tables():
             ('weekend_minimum', 'INTEGER'),
             ('manager', 'TEXT'),
             ('email', 'TEXT'),
+            # The duty schedule needs both: date of hire is what the old 2-week
+            # template carried in column I, and on_orientation marks somebody who
+            # rides as an uncounted third rather than filling a crew seat. It
+            # defaults to 0 so adding the column does not take the whole roster off
+            # the board.
+            ('date_of_hire', 'TEXT'),
+            ('on_orientation', 'INTEGER NOT NULL DEFAULT 0'),
         ):
             if column not in staff_columns:
                 cursor.execute(f"ALTER TABLE staff ADD COLUMN {column} {definition}")
@@ -683,6 +692,33 @@ def to_flag(value):
     return 0
 
 
+def to_date(value):
+    """
+    Coerce a date of hire to YYYY-MM-DD, or None when blank.
+
+    Accepts what a roster import is likely to carry: a real date from Excel, an
+    ISO string, or the US ordering people type by hand.
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if hasattr(value, 'strftime'):
+        return value.strftime('%Y-%m-%d')
+    text = str(value).strip()
+    if not text or text.upper() in ('NAN', 'NONE'):
+        return None
+    for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y', '%Y-%m-%d %H:%M:%S', '%m-%d-%Y'):
+        try:
+            return datetime.strptime(text, fmt).strftime('%Y-%m-%d')
+        except ValueError:
+            continue
+    return None
+
+
 def to_seniority(value):
     """Coerce a seniority value to int, or None when blank/unparseable."""
     if value is None:
@@ -821,7 +857,7 @@ def _select_staff_rows():
         SELECT id, staff_name, role, is_management, is_dual, is_educator_at,
                no_matrix, seniority, is_active, notes, created_date, modified_date,
                shifts_per_pay_period, night_minimum, weekend_minimum,
-               manager, email
+               manager, email, date_of_hire, on_orientation
         FROM staff
     ''')
     return cursor.fetchall()
@@ -871,6 +907,8 @@ def _roster():
                     'weekend_minimum': row[14],
                     'manager': row[15],
                     'email': row[16],
+                    'date_of_hire': row[17],
+                    'on_orientation': bool(row[18]),
                 }
                 record['clinical_role'] = clinical_role_of(record)
                 record['effective_role'] = effective_role_of(record)
@@ -912,7 +950,7 @@ def get_staff(staff_name):
         dict or None: keys staff_name, role, clinical_role, effective_role,
         is_management, is_dual, is_educator_at, no_matrix, seniority,
         shifts_per_pay_period, night_minimum, weekend_minimum, manager, email,
-        is_active, notes.
+        date_of_hire, on_orientation, is_active, notes.
     """
     record = _lookup(staff_name)
     return dict(record) if record else None
@@ -1463,13 +1501,14 @@ def build_preferences_df(include_inactive=False, clinical_only=True):
 
 _EDITABLE_FIELDS = ['role', 'is_management', 'is_dual', 'is_educator_at', 'no_matrix',
                     'seniority', 'shifts_per_pay_period', 'night_minimum',
-                    'weekend_minimum', 'manager', 'email',
-                    'is_active', 'notes']
+                    'weekend_minimum', 'manager', 'email', 'date_of_hire',
+                    'on_orientation', 'is_active', 'notes']
 
 # Fields where NULL is a meaningful value, so an update passing None clears them.
 _NULLABLE_INT_FIELDS = ['shifts_per_pay_period', 'night_minimum', 'weekend_minimum']
 
-_BOOLEAN_FIELDS = ['is_management', 'is_dual', 'is_educator_at', 'no_matrix', 'is_active']
+_BOOLEAN_FIELDS = ['is_management', 'is_dual', 'is_educator_at', 'no_matrix',
+                   'on_orientation', 'is_active']
 
 
 def _log_audit(cursor, staff_name, action, changes=None, changed_by=None):
@@ -1562,6 +1601,7 @@ def validate_staff_fields(staff_name, role, seniority=None, exclude_name=None,
 def add_staff(staff_name, role, is_management=False, is_dual=False, is_educator_at=False,
               no_matrix=False, seniority=None, shifts_per_pay_period=None,
               night_minimum=None, weekend_minimum=None, manager=None, email=None,
+              date_of_hire=None, on_orientation=False,
               is_active=True, notes=None, changed_by=None, validate=True):
     """
     Add a staff member to the roster.
@@ -1601,12 +1641,14 @@ def add_staff(staff_name, role, is_management=False, is_dual=False, is_educator_
             INSERT INTO staff (staff_name, role, is_management, is_dual, is_educator_at,
                                no_matrix, seniority, shifts_per_pay_period,
                                night_minimum, weekend_minimum, manager, email,
+                               date_of_hire, on_orientation,
                                is_active, notes, created_date, modified_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (name, canonical, to_flag(is_management), to_flag(is_dual),
               to_flag(is_educator_at), to_flag(no_matrix), to_seniority(seniority),
               to_optional_int(shifts_per_pay_period), to_optional_int(night_minimum),
               to_optional_int(weekend_minimum), to_manager(manager), to_email(email),
+              to_date(date_of_hire), to_flag(on_orientation),
               to_flag(is_active), notes, now, now))
         _log_audit(cursor, name, 'added', {
             'role': canonical,
@@ -1637,7 +1679,8 @@ def update_staff(staff_name, changed_by=None, validate=True, **fields):
 
     Accepted fields: role, is_management, is_dual, is_educator_at, no_matrix, seniority,
     shifts_per_pay_period, night_minimum, weekend_minimum, manager, email,
-    is_active, notes. Use rename_staff() to change the name.
+    date_of_hire, on_orientation, is_active, notes. Use rename_staff() to change
+    the name.
 
     Passing None for seniority, a requirements number, the manager or the email clears
     that field — blank is a meaningful value for all of them.
@@ -1674,6 +1717,13 @@ def update_staff(staff_name, changed_by=None, validate=True, **fields):
             if number is None and str(value if value is not None else '').strip():
                 return False, f"'{value}' is not a whole number ({key.replace('_', ' ')})."
             updates[key] = number
+        elif key == 'date_of_hire':
+            # A date that doesn't parse would coerce to None and quietly clear the
+            # field, so a typo is reported rather than silently dropped.
+            parsed = to_date(value)
+            if parsed is None and str(value if value is not None else '').strip():
+                return False, f"'{value}' is not a date we recognize (date of hire)."
+            updates['date_of_hire'] = parsed
         elif key == 'manager':
             updates['manager'] = to_manager(value)
         elif key == 'email':

@@ -58,6 +58,9 @@ ADMIN_SECTIONS = [
     ("track_bidding", "🗳️ Track Bidding",
      "Track configs, bid access, analysis, rosters and needs swaps",
      "#E65100", False),
+    ("duty_schedule", "🚑 Duty Schedule",
+     "Two-week vehicle assignments, built from tracks and training",
+     "#00838F", False),
     ("training", "📚 Training & Events",
      "Enrollment, classes, educators, training years and reporting",
      "#9C27B0", True),
@@ -241,6 +244,9 @@ def _render_section(section):
     elif key == "track_bidding":
         from .track_bidding import display_bidding_admin_interface
         display_bidding_admin_interface()
+    elif key == "duty_schedule":
+        from .duty_board_ui import display_duty_schedule_admin
+        display_duty_schedule_admin()
     elif key == "exports":
         _render_exports()
     elif key == "system":

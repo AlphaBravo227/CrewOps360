@@ -230,6 +230,8 @@ def _roster_tab():
         'Dual': r['is_dual'],
         'Educator AT': r['is_educator_at'],
         'No Matrix': r['no_matrix'],
+        'On Orientation': r.get('on_orientation', False),
+        'Date of Hire': r.get('date_of_hire') or '',
         'Seniority': r['seniority'],
         'Shifts/Pay Period': r['shifts_per_pay_period'],
         'Night Min': r['night_minimum'],
@@ -816,7 +818,13 @@ def _add_tab():
             is_dual = st.checkbox("Dual provider (DUAL)")
             is_educator_at = st.checkbox("Educator AT (may sign up to teach)")
             no_matrix = st.checkbox("No Matrix")
+            on_orientation = st.checkbox(
+                "On orientation",
+                help="Still on orientation, so they ride as an uncounted third seat "
+                     "on the duty schedule rather than filling a crew seat.")
             is_active = st.checkbox("Active", value=True)
+            date_of_hire = st.text_input("Date of hire",
+                                         placeholder="YYYY-MM-DD", help="When they started. The duty schedule carries it; blank is fine.")
 
         st.markdown("**Shift Requirements**")
         req_cols = st.columns(3)
@@ -858,6 +866,8 @@ def _add_tab():
             is_dual=is_dual,
             is_educator_at=is_educator_at,
             no_matrix=no_matrix,
+            date_of_hire=date_of_hire or None,
+            on_orientation=on_orientation,
             seniority=seniority if seniority else None,
             shifts_per_pay_period=shifts,
             night_minimum=nights,
@@ -947,6 +957,12 @@ def _edit_tab():
             is_educator_at = st.checkbox("Educator AT (may sign up to teach)",
                                          value=record['is_educator_at'])
             no_matrix = st.checkbox("No Matrix", value=record['no_matrix'])
+            on_orientation = st.checkbox("On orientation",
+                                         value=record.get('on_orientation', False),
+                                         help="Still on orientation, so they ride as an uncounted third seat on the duty schedule rather than filling a crew seat.")
+            date_of_hire = st.text_input("Date of hire",
+                                         value=record.get('date_of_hire') or '',
+                                         placeholder="YYYY-MM-DD", help="When they started. The duty schedule carries it; blank is fine.")
 
         st.markdown("**Shift Requirements**")
         req_cols = st.columns(3)
@@ -1000,6 +1016,8 @@ def _edit_tab():
             is_dual=is_dual,
             is_educator_at=is_educator_at,
             no_matrix=no_matrix,
+            date_of_hire=date_of_hire or None,
+            on_orientation=on_orientation,
             seniority=seniority if seniority else None,
             shifts_per_pay_period=shifts,
             night_minimum=nights,
