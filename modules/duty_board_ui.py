@@ -554,8 +554,9 @@ def _render_vehicles_tab():
                                      format_func=str.capitalize)
             cols = st.columns(4)
             priority = cols[0].number_input("Priority", 1, 99, 1)
-            base = cols[1].selectbox("Base", [''] + list(ddb.BASES),
-                                     format_func=lambda b: ddb.BASE_LABELS.get(b, '—'))
+            base_names = ddb.base_labels()
+            base = cols[1].selectbox("Base", [''] + ddb.bases(),
+                                     format_func=lambda b: base_names.get(b, '—'))
             rw = cols[2].number_input("Rotor-wing weight", 0.0, 1.0, 1.0, step=0.5)
             gr = cols[3].number_input("Ground weight", 0.0, 1.0, 0.0, step=0.5)
             active = st.checkbox("Active", value=True)

@@ -17,7 +17,8 @@ from and [staff_database.md](staff_database.md) for the roster it reads.
 | One dated tab per cycle (`11 Oct 2026`) | `duty_blocks` — one row per two-week block, draft until published |
 | The assignment grid, rows 39–122 | `duty_assignments` — one row per person per date |
 | The COUPLES block and custom matrix, rows 248–264 | `duty_restricted_pairs` |
-| `Updated Prefs` over the SharePoint link | `user_location_preferences`, already a column-for-column match |
+| `Updated Prefs` over the SharePoint link | `staff_base_preferences` — a row per person, base and shift kind |
+| The base list, hardcoded in five modules | `duty_bases` |
 | Senior/junior, column B | `staff.no_matrix`, already the rule in track bidding |
 | Drive time, columns AW:BA | Not carried. `staff.zip_code` is stored if it is ever wanted |
 
@@ -48,8 +49,32 @@ Stated plainly, the rule those sums encode is:
 
 > A crew is one RN seat and one medic seat, and at least one of the two is senior.
 
-`modules/duty_crew.crew_status()` evaluates that directly, and returns a reason as well
-as a status:
+That is one crew among many, so it is **data** rather than something written in code.
+A vehicle carries a `crew_spec` naming its seats, the roles each accepts, and how many
+of the people seated must be senior:
+
+```json
+{"seats": [{"key": "rn",    "label": "RN",    "short": "RN",  "roles": ["nurse"]},
+           {"key": "medic", "label": "Medic", "short": "MED", "roles": ["medic"]}],
+ "min_senior": 1}
+```
+
+`DEFAULT_CREW_SPEC` is exactly that, and a NULL column means it — so every vehicle here
+behaves as it always did. A BLS ambulance crewed by two EMTs with no seniority rule is
+the same shape with different values, and nothing in `duty_crew` knows what an EMT is.
+A seat can be `"required": false`, for a third rider who may or may not be there.
+
+A seat names plain roles and never mentions dual providers. `provider_roles()` gives a
+dual nurse both `nurse` and `medic`, so a seat asking for `["medic"]` accepts one
+without the spec having to know duals exist. The dual-to-second-role mapping is one
+dict, `DUAL_GRANTS`.
+
+Specs are validated on write rather than on read — a bad one is refused at the editor
+instead of colouring a board wrongly for a fortnight — and an unreadable stored spec
+falls back to the default rather than taking the board down.
+
+`modules/duty_crew.crew_status()` evaluates a spec and returns a reason as well as a
+status:
 
 | Status | Means | What to do |
 | --- | --- | --- |
@@ -58,10 +83,16 @@ as a status:
 | `no_crew` | enough people, but they don't make a crew | swap somebody |
 | `unstaffed` | nobody on it | fill it |
 
-`no_crew` covers two nurses with neither in the medic seat, two medics, and a pairing
-where both providers are junior. All three have the bodies and still cannot fly, which
-is why they read differently from `incomplete` — one needs an extra person, the other
-needs a different one.
+The split is general rather than enumerated: **fewer providers than required seats**
+means somebody is missing, and **enough providers with a seat still unfilled** means
+the ones present cannot make a crew between them. Add a person, or swap one.
+
+So `no_crew` covers two nurses with neither in the medic seat, two medics, and a
+pairing where both providers are junior. Where the seats as declared do not cover the
+crew, the same people are re-seated by Kuhn's augmenting path — the algorithm
+`nondisplacing_assignment.py` already uses for the volunteer question — to say whether
+a swap between seats would do it. "Two nurses" and "two nurses, and one of them could
+take the medic seat" are different amounts of work.
 
 ### Who is wanted, not just that somebody is
 
@@ -87,15 +118,19 @@ tells a scheduler which crews have a senior to spare for somewhere that is short
 
 ### Seats, and the `p` suffix
 
-A crew is one RN seat and one medic seat. Who may sit where:
+Who may sit where follows from the spec, not from a rule written per role. A seat
+lists the roles it accepts, and `provider_roles()` says which roles a person carries:
 
-- a **medic** takes the medic seat
-- a **nurse** takes the RN seat
-- a **dual provider** takes either — and a dual nurse in the medic seat is what the
-  spreadsheet wrote as `D7Bp`. That is why its helper counted a nurse on the p-variant
-  toward the medic slot; the arithmetic was right.
+- a **medic** carries `medic`, so they take the medic seat
+- a **nurse** carries `nurse`, so they take the RN seat
+- a **dual provider** carries both, so they take either — and a dual nurse in the medic
+  seat is what the spreadsheet wrote as `D7Bp`. That is why its helper counted a nurse
+  on the p-variant toward the medic slot; the arithmetic was right.
 - somebody **on orientation** rides as an uncounted third seat, whichever seat the row
   says
+
+The `p` is likewise derived rather than special-cased: somebody in a seat their hired
+role is not listed for reached it on a second credential, whatever the two roles are.
 
 The board and the export both write the `p` back out, so `GRp` still means what it
 always meant.
@@ -121,11 +156,28 @@ Un-publishing clears the snapshot and the block goes back to reading live.
 A block published before snapshots existed has no context behind it. The board says so
 rather than passing it off as frozen; re-publishing fixes it.
 
-## Vehicles
+## Vehicles and bases
 
 The inventory is seeded from the sheet and then owned by an admin — add, retire and
 re-prioritize on the **Vehicles** tab rather than in code. Retiring keeps a vehicle
 readable in past blocks instead of deleting it.
+
+Bases are rows too, in `duty_bases` (see `modules/bases.py`). They used to be columns:
+`user_location_preferences` carried `day_kbed`, `day_klwm`, `day_kmht`, `day_1b9`,
+`day_kpym`, `night_klwm`, `night_kbed` and `night_kpym`, and `track_configs` carried
+the same eight, so a sixth base meant a schema migration. Per-staff base preferences
+now live in `staff_base_preferences`, a row per person per base per shift kind. The
+interface callers already had was base-keyed dicts, so nothing they see changed shape;
+the eight columns are still written for the five bases they can name, and are no
+longer read.
+
+**How many vehicles sit at a base is derived** from the inventory rather than declared.
+`get_base_shift_counts()` used to unpack those columns and hardcode `'night': 0` for
+Manchester and Mansfield — "Manchester has no night shift" was a property of a Python
+function rather than of the fleet. It now counts vehicles, and the numbers it produces
+are identical to the historical hardcoded defaults, because those defaults were only
+ever a count of where the vehicles are. A track config can still override a base's
+counts for a cycle.
 
 | Base | Airport | Day | Night |
 | --- | --- | --- | --- |
@@ -138,6 +190,9 @@ readable in past blocks instead of deleting it.
 `D7P`, `N7P` and `N9L` each count as half rotor-wing and half ground, which is how
 `AP39`/`AQ39` counted them. Minimum staffing is day 5 rotor-wing and 2 ground, night 3
 and 1 — held in `modules/duty_schedule_db.py` as policy rather than inventory.
+
+Adding a base is now data entry: `bases.set_base('KORH', 'Worcester')`, then put a
+vehicle there. No migration, and its day and night presence follows from the vehicles.
 
 One to check: **`NP`** is the only vehicle the spreadsheet never counted in either the
 rotor-wing or the ground column. It is seeded as ground, to match `PG`.
@@ -183,12 +238,19 @@ Senior/junior needed nothing: it is `staff.no_matrix`, which
 
 ```bash
 python scripts/check_duty_schedule.py
+python scripts/check_bases.py
 ```
 
 Runs against a throwaway database and verifies the crew rules against the spreadsheet
 totals they replace — 99 and 990 and 9009 crew, 9900 and 909 and 9090 do not — along
 with the vehicle inventory, availability filtering, restricted pairs, and that
-publishing actually freezes a block against a track change.
+publishing actually freezes a block against a track change. It also runs a BLS crew
+spec — two EMTs, no seniority rule — to prove the rule really is data: two people of
+one role crew that truck while the same two are not a crew here.
+
+`check_bases.py` covers the registry, including the part that matters: a sixth base
+round-trips through the interface the bidding screens read, which the eight columns
+could not have held.
 
 ## Not carried over
 

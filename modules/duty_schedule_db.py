@@ -55,15 +55,21 @@ MIN_GR_NIGHT = 1
 NIGHT_SURGE_THRESHOLD = 8   # days crewed at or above this call for a fifth night
 NIGHT_SURGE_TARGET = 5
 
-# The bases, by their airport identifier. FLOAT belongs to no base.
-BASES = ('KBED', 'KMHT', 'KLWM', 'KPYM', '1B9')
-BASE_LABELS = {
-    'KBED': 'Bedford',
-    'KMHT': 'Manchester',
-    'KLWM': 'Lawrence',
-    'KPYM': 'Plymouth',
-    '1B9': 'Mansfield',
-}
+# The bases a vehicle can sit at live in `modules.bases` — a table, not a tuple, so
+# a service with six of them does not need a schema change. These two read through
+# to it; FLOAT belongs to no base at all.
+
+
+def bases():
+    """Every base code an admin can put a vehicle at."""
+    from .bases import base_codes
+    return base_codes()
+
+
+def base_labels():
+    """{code: label} for the bases."""
+    from .bases import base_labels as _labels
+    return _labels()
 
 # The starting inventory, read off the sheet's priority column and its RW/GR counting
 # formulas at AP39/AQ39. D7P, N7P and N9L each count as half rotor-wing and half

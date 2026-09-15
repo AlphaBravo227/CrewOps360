@@ -22,8 +22,23 @@ _DEFAULT_BASE_SHIFT_COUNTS = {
     'KPYM': {'day': 2, 'night': 2},
 }
 
+# Kept as the answer when the base registry cannot be read. Which bases exist, and
+# which of them run at night, is `modules.bases` — derived from where the vehicles
+# are rather than listed here.
 _DAY_BASES = ['KMHT', 'KLWM', 'KBED', '1B9', 'KPYM']
 _NIGHT_BASES = ['KLWM', 'KBED', 'KPYM']
+
+
+def _bases_for(shift_type):
+    """The bases with a presence on this shift kind, from the registry."""
+    from .bases import base_codes
+    try:
+        codes = base_codes('day' if shift_type == 'day' else 'night')
+        if codes:
+            return codes
+    except Exception as e:
+        print(f"Falling back to the built-in base list: {e}")
+    return _DAY_BASES if shift_type == 'day' else _NIGHT_BASES
 
 
 def _build_available_slots(shift_type, base_shift_counts):
@@ -38,7 +53,7 @@ def _build_available_slots(shift_type, base_shift_counts):
     """
     counts = base_shift_counts if base_shift_counts is not None else _DEFAULT_BASE_SHIFT_COUNTS
     key = 'day' if shift_type == 'day' else 'night'
-    bases = _DAY_BASES if shift_type == 'day' else _NIGHT_BASES
+    bases = _bases_for(shift_type)
 
     available_slots = []
     slot_to_base = {}

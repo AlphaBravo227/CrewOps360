@@ -1607,7 +1607,13 @@ def save_location_preferences_to_db(staff_name, day_locations, night_locations, 
         # Convert boolean to integer for storage
         reduced_rest_value = 1 if reduced_rest_ok else 0
 
-        # Insert or replace the location preferences
+        # Rows are the truth. The eight day_*/night_* columns are legacy and are
+        # kept written for the five bases they can hold, so anything not yet reading
+        # through modules.bases still works; a sixth base simply will not appear in
+        # them. See bases.py.
+        from .bases import set_preferences as _set_base_preferences
+        _set_base_preferences(staff_name, day_locations, night_locations)
+
         cursor.execute("""
             INSERT OR REPLACE INTO user_location_preferences
             (staff_name, day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
@@ -1671,15 +1677,21 @@ def get_location_preferences_from_db(staff_name):
              night_klwm, night_kbed, night_kpym, zip_code,
              reduced_rest_ok, n_to_d_flex, modified_date) = result
 
+            # Base preferences live in staff_base_preferences now; the columns
+            # read here are the legacy copy and stand in only for a staff member
+            # whose rows have not been written yet.
+            from .bases import get_preferences as _base_preferences
+            _rows = _base_preferences(staff_name)
+
             preferences = {
-                'day_locations': {
+                'day_locations': _rows['day'] or {
                     'KMHT': day_kmht,
                     'KLWM': day_klwm,
                     'KBED': day_kbed,
                     '1B9': day_1b9,
                     'KPYM': day_kpym
                 },
-                'night_locations': {
+                'night_locations': _rows['night'] or {
                     'KLWM': night_klwm,
                     'KBED': night_kbed,
                     'KPYM': night_kpym
@@ -1725,22 +1737,26 @@ def get_all_location_preferences():
         results = cursor.fetchall()
 
         if results:
+            # One query for everybody's rows rather than one per staff member.
+            from .bases import get_all_preferences
+            _all_base_preferences = get_all_preferences()
             preferences_list = []
             for row in results:
                 (staff_name, day_kmht, day_klwm, day_kbed, day_1b9, day_kpym,
                  night_klwm, night_kbed, night_kpym, zip_code,
                  reduced_rest_ok, n_to_d_flex, modified_date) = row
 
+                _rows = _all_base_preferences.get(staff_name) or {}
                 preferences_list.append({
                     'staff_name': staff_name,
-                    'day_locations': {
+                    'day_locations': _rows.get('day') or {
                         'KMHT': day_kmht,
                         'KLWM': day_klwm,
                         'KBED': day_kbed,
                         '1B9': day_1b9,
                         'KPYM': day_kpym
                     },
-                    'night_locations': {
+                    'night_locations': _rows.get('night') or {
                         'KLWM': night_klwm,
                         'KBED': night_kbed,
                         'KPYM': night_kpym
@@ -2524,24 +2540,43 @@ _DEFAULT_BASE_SHIFT_COUNTS = {
 def get_base_shift_counts(track_name):
     """
     Return {base_name: {'day': N, 'night': N}} shift-slot counts for a track config,
-    used by the hypothetical scheduler to size competition for each base. Falls back
-    to the historical fixed defaults for any track config not found or not yet
-    carrying these columns.
+    used by the hypothetical scheduler to size competition for each base.
+
+    Derived from the vehicle inventory (`duty_vehicles`, via modules.bases), because
+    that is what a base's day and night presence actually is. A track config may
+    still override a base's counts for a cycle; where it does not, the fleet answers.
+
+    This used to unpack eight columns and hardcode `'night': 0` for KMHT and 1B9,
+    which made "Manchester has no night shift" a property of this function rather
+    than of the fleet.
     """
+    from .bases import base_shift_counts
+
+    counts = {base: dict(kinds) for base, kinds in base_shift_counts().items()}
+
     config = get_track_config_by_name(track_name)
     if not config:
-        return _DEFAULT_BASE_SHIFT_COUNTS
-    return {
-        'KMHT': {'day': config.get('day_kmht', _DEFAULT_BASE_SHIFT_COUNTS['KMHT']['day']), 'night': 0},
-        'KLWM': {'day': config.get('day_klwm', _DEFAULT_BASE_SHIFT_COUNTS['KLWM']['day']),
-                 'night': config.get('night_klwm', _DEFAULT_BASE_SHIFT_COUNTS['KLWM']['night'])},
-        'KBED': {'day': config.get('day_kbed', _DEFAULT_BASE_SHIFT_COUNTS['KBED']['day']),
-                 'night': config.get('night_kbed', _DEFAULT_BASE_SHIFT_COUNTS['KBED']['night'])},
-        '1B9':  {'day': config.get('day_1b9', _DEFAULT_BASE_SHIFT_COUNTS['1B9']['day']), 'night': 0},
-        'KPYM': {'day': config.get('day_kpym', _DEFAULT_BASE_SHIFT_COUNTS['KPYM']['day']),
-                 'night': config.get('night_kpym', _DEFAULT_BASE_SHIFT_COUNTS['KPYM']['night'])},
-    }
+        return counts or _DEFAULT_BASE_SHIFT_COUNTS
 
+    # A cycle may size a base differently from the standing fleet. Only the five
+    # bases the legacy columns can name are overridable this way; anything else
+    # takes its count from the inventory.
+    overrides = {
+        'KMHT': ('day_kmht', None),
+        'KLWM': ('day_klwm', 'night_klwm'),
+        'KBED': ('day_kbed', 'night_kbed'),
+        '1B9': ('day_1b9', None),
+        'KPYM': ('day_kpym', 'night_kpym'),
+    }
+    for base, (day_col, night_col) in overrides.items():
+        if base not in counts:
+            continue
+        if day_col and config.get(day_col) is not None:
+            counts[base]['day'] = config[day_col]
+        if night_col and config.get(night_col) is not None:
+            counts[base]['night'] = config[night_col]
+
+    return counts or _DEFAULT_BASE_SHIFT_COUNTS
 
 def promote_bid_to_active(bid_track_name):
     """
