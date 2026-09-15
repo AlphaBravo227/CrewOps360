@@ -138,11 +138,14 @@ def main():
               need.get('role') == role and need.get('senior_required') is senior,
               f"got {need} ({got['reason']})")
     check("the reason names who is wanted, not just that somebody is",
-          status(('Junior Medic', 'medic'))['reason'] == 'needs a senior nurse',
+          status(('Junior Medic', 'medic'))['reason'] == 'needs a senior RN',
           status(('Junior Medic', 'medic'))['reason'])
     check("a lone medic wants a nurse, not another medic",
-          'nurse' in status(('Senior Medic', 'medic'))['reason'],
+          status(('Senior Medic', 'medic'))['reason'] == 'needs a RN',
           status(('Senior Medic', 'medic'))['reason'])
+    check("an acronym seat keeps its case, a word does not",
+          status(('Senior RN', 'rn'))['reason'] == 'needs a medic',
+          status(('Senior RN', 'rn'))['reason'])
 
     # Bold on a crewed vehicle meant every provider aboard is senior.
     check("99     both senior -> both_senior",
@@ -160,6 +163,78 @@ def main():
     check("a nurse who is not dual cannot take the medic seat",
           got['status'] == dc.NO_CREW and 'seat' in got['reason'],
           f"{got['status']} ({got['reason']})")
+
+    section("A different organisation's crew — the rule is data, not code")
+    # Nothing in duty_crew knows what an EMT is. A service whose ambulance is two
+    # EMTs with no seniority rule describes that, and the same engine evaluates it.
+    bls = {
+        'seats': [
+            {'key': 'emt_a', 'label': 'EMT', 'short': 'EMT', 'roles': ['emt']},
+            {'key': 'emt_b', 'label': 'EMT', 'short': 'EMT', 'roles': ['emt']},
+        ],
+        'min_senior': 0,
+    }
+    for name in ('EMT One', 'EMT Two'):
+        sdb.add_staff(name, 'EMT', seniority=None, validate=False)
+
+    def bls_status(*rows):
+        return dc.crew_status([{'staff_name': n, 'seat': s} for n, s in rows],
+                              look, spec=bls)
+
+    check("two people of the same role crew a BLS truck",
+          bls_status(('EMT One', 'emt_a'), ('EMT Two', 'emt_b'))['status'] == dc.CREWED,
+          bls_status(('EMT One', 'emt_a'), ('EMT Two', 'emt_b'))['reason'])
+    check("one of them is still incomplete",
+          bls_status(('EMT One', 'emt_a'))['status'] == dc.INCOMPLETE)
+    check("min_senior 0 means two juniors are fine",
+          bls_status(('EMT One', 'emt_a'), ('EMT Two', 'emt_b'))['both_senior'] is False)
+    check("a nurse cannot take an EMT seat",
+          bls_status(('Senior RN', 'emt_a'))['status'] == dc.NO_CREW,
+          bls_status(('Senior RN', 'emt_a'))['reason'])
+    check("the same two people are NOT a crew under this service's spec",
+          status(('Senior RN', 'rn'), ('Junior RN', 'rn'))['status'] == dc.NO_CREW)
+
+    # An optional third seat: present or not, the vehicle still crews.
+    three = {
+        'seats': [
+            {'key': 'rn', 'label': 'RN', 'roles': ['nurse']},
+            {'key': 'medic', 'label': 'Medic', 'roles': ['medic']},
+            {'key': 'rt', 'label': 'RT', 'roles': ['rt'], 'required': False},
+        ],
+        'min_senior': 1,
+    }
+    got = dc.crew_status([{'staff_name': 'Senior RN', 'seat': 'rn'},
+                          {'staff_name': 'Senior Medic', 'seat': 'medic'}],
+                         look, spec=three)
+    check("an optional seat left empty still crews", got['status'] == dc.CREWED,
+          got['reason'])
+
+    section("Crew specs are validated on the way in")
+    for bad, why in [
+        ({'seats': []}, 'no seats'),
+        ({'seats': [{'key': 'a'}]}, 'a seat with no roles'),
+        ({'seats': [{'key': 'third', 'roles': ['x']}]}, 'the reserved rider key'),
+        ({'seats': [{'key': 'a', 'roles': ['x']}, {'key': 'a', 'roles': ['y']}]},
+         'duplicate keys'),
+        ({'seats': [{'key': 'a', 'roles': ['x']}], 'min_senior': 4},
+         'more seniors than seats'),
+    ]:
+        try:
+            ddb.validate_crew_spec(bad)
+            check(f"rejects {why}", False, 'accepted it')
+        except ValueError:
+            check(f"rejects {why}", True)
+    check("an unreadable stored spec falls back rather than breaking the board",
+          ddb.parse_crew_spec('{not json') is None)
+
+    ddb.set_vehicle('BLS1', label='Ambulance 1', shift_kind=ddb.DAY, priority=11,
+                    base='', rw_weight=0.0, gr_weight=1.0, crew_spec=bls)
+    check("a vehicle round-trips its own crew spec",
+          ddb.crew_spec_of(ddb.get_vehicle('BLS1'))['seats'][0]['roles'] == ['emt'],
+          str(ddb.crew_spec_of(ddb.get_vehicle('BLS1'))))
+    check("vehicles without one fall back to the fleet default",
+          ddb.crew_spec_of(ddb.get_vehicle('D7B')) is ddb.DEFAULT_CREW_SPEC)
+    ddb.retire_vehicle('BLS1')
 
     section("Orientation")
     got = status(('Senior Medic', 'medic'), ('Orientee', 'rn'))

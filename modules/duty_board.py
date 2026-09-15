@@ -40,6 +40,7 @@ from .duty_schedule_db import (
     SEAT_RN,
     SEAT_THIRD,
     block_dates,
+    crew_spec_of,
     get_assignments,
     get_block,
     get_block_context,
@@ -155,17 +156,32 @@ def training_by_staff(staff_names, start, end, enrollment_manager=None,
     return overlay
 
 
-def default_seat(record):
+def default_seat(record, spec=None):
     """
     The seat a person takes unless the scheduler says otherwise.
 
-    A medic goes in the medic seat, everyone else in the RN seat. A dual provider is
-    a nurse by role, so they default to the RN seat and are moved across deliberately
-    — which is exactly what the spreadsheet's `p` suffix recorded.
+    The first seat in the spec whose roles match the one role they are hired into —
+    so a medic defaults to the medic seat and a nurse to the RN seat. A dual nurse
+    matches the RN seat first and is moved across deliberately, which is exactly what
+    the spreadsheet's `p` suffix recorded.
+
+    Somebody on orientation always rides third.
     """
+    from .duty_schedule_db import DEFAULT_CREW_SPEC
+
     if duty_crew.on_orientation(record):
         return SEAT_THIRD
-    return SEAT_MEDIC if duty_crew.base_role(record) == 'medic' else SEAT_RN
+
+    spec = spec or DEFAULT_CREW_SPEC
+    base = duty_crew.base_role(record)
+    for seat in spec.get('seats') or []:
+        if base in (seat.get('roles') or []):
+            return seat['key']
+    # No seat is hired for this role; fall back to anything they qualify for at all.
+    for seat in spec.get('seats') or []:
+        if duty_crew.seat_accepts(seat, record):
+            return seat['key']
+    return SEAT_THIRD
 
 
 def _derive_context(dates, staff_records, track_cohort, pattern_start,
@@ -270,7 +286,8 @@ def build_board(start_date, track_cohort=None, pattern_start=None,
 
         grid[iso] = {
             vehicle['code']: duty_crew.crew_status(
-                by_vehicle.get(vehicle['code'], []), lookup, pairs)
+                by_vehicle.get(vehicle['code'], []), lookup, pairs,
+                spec=crew_spec_of(vehicle))
             for vehicle in day_vehicles + night_vehicles
         }
         counters[iso] = {
@@ -299,7 +316,7 @@ def staff_rows_on(staff_rows, iso_date, shift_kind):
             if row['days'].get(iso_date, {}).get('shift_kind') == shift_kind]
 
 
-def available_staff(board, iso_date, shift_kind, unassigned_only=True):
+def available_staff(board, iso_date, shift_kind, unassigned_only=True, spec=None):
     """
     Who the scheduler can still put on a vehicle for this date and shift.
 
@@ -309,6 +326,8 @@ def available_staff(board, iso_date, shift_kind, unassigned_only=True):
 
     Args:
         unassigned_only (bool): drop anyone already on a vehicle that date.
+        spec (dict, optional): the crew spec the default seat is chosen against.
+            None uses the fleet's, which is right until a vehicle is picked.
 
     Returns:
         list[dict]: staff rows, most senior first, each carrying `seat` — the seat
@@ -320,7 +339,7 @@ def available_staff(board, iso_date, shift_kind, unassigned_only=True):
         day = row['days'][iso_date]
         if unassigned_only and day.get('assignment'):
             continue
-        rows.append({**row, 'seat': default_seat(row),
+        rows.append({**row, 'seat': default_seat(row, spec),
                      'training': day.get('training', [])})
     rows.sort(key=lambda r: (r['seniority'] is None, r['seniority'] or 0,
                              r['staff_name'].lower()))

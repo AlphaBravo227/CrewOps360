@@ -104,15 +104,18 @@ def _cell_mark(result):
         need = result.get('needs')
         if not need:
             return '·', '', False          # only orientees aboard
-        role = 'RN' if need['role'] == 'nurse' else 'MED'
-        ink = NURSE_INK if need['role'] == 'nurse' else MEDIC_INK
+        # The seat names itself and picks its own ink, so a service whose seats are
+        # two EMTs gets the same treatment without anything here knowing what an
+        # EMT is.
+        short = need.get('short') or need.get('label') or '?'
+        ink = need.get('ink') or ''
         # The sheet said "and they have to be the senior one" with bold alone. Bold
         # carries it at 12px far less well than it did in Excel, so the weight is
         # backed by the word — nobody should have to consult a key to read a board
         # they are working from.
         if need['senior_required']:
-            return f'Sr {role}', ink, True
-        return role, ink, False
+            return f'Sr {short}', ink, True
+        return short, ink, False
 
     if status == duty_crew.CREWED:
         # Bold on a crewed vehicle meant every provider aboard is senior.
@@ -203,7 +206,7 @@ def need_display_html(board):
             for iso in dates:
                 result = board['grid'][iso][vehicle['code']]
                 style = duty_crew.STATUS_STYLE[result['status']]
-                people = result['rn'] + result['medic']
+                people = result['providers']
                 who = ', '.join(p['staff_name'] for p in people)
                 text, ink, bold = _cell_mark(result)
                 tip = ' — '.join(part for part in
@@ -306,10 +309,10 @@ def _staff_grid(board):
             if day['assignment']:
                 seat = day['assignment']['seat']
                 mark = day['assignment']['vehicle_code']
-                if seat == ddb.SEAT_MEDIC and duty_crew.base_role(row) == 'nurse':
-                    mark += 'p'     # a dual nurse working the medic seat
-                elif seat == ddb.SEAT_THIRD:
+                if seat == ddb.SEAT_THIRD:
                     mark += ' (3rd)'
+                elif _dual_marker(row, seat, _vehicle_spec(board, mark)):
+                    mark += 'p'     # reached that seat on a dual credential
             elif day['training']:
                 mark = day['training'][0]
             else:
@@ -385,7 +388,7 @@ def _render_assign_tab(board, block):
         st.markdown(f"**Vehicles — {_fmt(focus)}, {kind}**")
         for vehicle in vehicles:
             result = board['grid'][focus][vehicle['code']]
-            people = result['rn'] + result['medic'] + result['third']
+            people = result['providers'] + result['riders']
             with st.container(border=True):
                 head, action = st.columns([3, 2])
                 with head:
@@ -394,11 +397,10 @@ def _render_assign_tab(board, block):
                         + (f"<br><span style='font-size:12px;color:#666;'>"
                            f"{result['reason']}</span>" if result['reason'] else ''),
                         unsafe_allow_html=True)
+                    labels = _seat_labels(ddb.crew_spec_of(vehicle))
                     for person in people:
-                        seat = person['seat']
-                        seat_label = {'rn': 'RN', 'medic': 'Medic',
-                                      'third': '3rd'}[seat]
-                        st.caption(f"{person['staff_name']} — {seat_label}")
+                        st.caption(f"{person['staff_name']} — "
+                                   f"{labels.get(person['seat'], person['seat'])}")
                 with action:
                     if people and not board['published']:
                         drop = st.selectbox(
@@ -438,11 +440,11 @@ def _render_assign_tab(board, block):
                         key=f"assign_{person['staff_name']}_{focus}",
                         label_visibility='collapsed')
                 with seat_pick:
-                    seats = _seat_options(person)
+                    seats = _seat_options_across(person, vehicles)
+                    seat_labels = _seat_labels_across(vehicles)
                     seat = st.selectbox(
                         "Seat", seats, key=f"seat_{person['staff_name']}_{focus}",
-                        format_func=lambda s: {'rn': 'RN', 'medic': 'Medic',
-                                               'third': '3rd'}[s],
+                        format_func=lambda key: seat_labels.get(key, key),
                         label_visibility='collapsed')
                 if target != '—':
                     ddb.set_assignment(block['id'], person['staff_name'], focus,
@@ -451,21 +453,82 @@ def _render_assign_tab(board, block):
                     st.rerun()
 
 
-def _seat_options(record):
+def _seat_options(record, spec=None):
     """
-    Which seats this person may take, most likely first.
+    Which seats this person may take on this vehicle, most likely first.
 
-    A medic can only be a medic; a plain nurse can only be an RN; a dual can be
-    either, and putting them in the medic seat is what the sheet wrote as `p`.
+    Read off the crew spec rather than hardcoded: a seat lists the roles it accepts
+    and `provider_roles` gives a dual provider both of theirs, so putting a dual
+    nurse in the medic seat — the sheet's `p` — falls out rather than being a case.
     """
+    spec = spec or ddb.DEFAULT_CREW_SPEC
     if duty_crew.on_orientation(record):
         return [ddb.SEAT_THIRD]
-    role = duty_crew.base_role(record)
-    if role == 'medic':
-        return [ddb.SEAT_MEDIC, ddb.SEAT_THIRD]
-    if duty_crew.is_dual(record):
-        return [ddb.SEAT_RN, ddb.SEAT_MEDIC, ddb.SEAT_THIRD]
-    return [ddb.SEAT_RN, ddb.SEAT_THIRD]
+    base = duty_crew.base_role(record)
+    qualified = [seat for seat in spec.get('seats') or []
+                 if duty_crew.seat_accepts(seat, record)]
+    # The seat they are hired for first, then any a dual credential opens up.
+    qualified.sort(key=lambda seat: base not in (seat.get('roles') or []))
+    return [seat['key'] for seat in qualified] + [ddb.SEAT_THIRD]
+
+
+def _dual_marker(record, seat_key, spec=None):
+    """
+    Whether somebody is in a seat only a second credential opens for them — the
+    spreadsheet's `p` suffix.
+
+    Read off the spec rather than hardcoded as "a nurse in the medic seat": a seat
+    the person's hired role is not listed for is one they reached through a dual
+    credential, whatever the two roles happen to be.
+    """
+    spec = spec or ddb.DEFAULT_CREW_SPEC
+    seat = duty_crew.seat_by_key(spec).get(seat_key)
+    if not seat:
+        return False
+    return duty_crew.base_role(record) not in (seat.get('roles') or [])
+
+
+def _vehicle_spec(board, code):
+    """The crew spec for one vehicle code on this board."""
+    for kind in (ddb.DAY, ddb.NIGHT):
+        for vehicle in board['vehicles'][kind]:
+            if vehicle['code'] == code:
+                return ddb.crew_spec_of(vehicle)
+    return ddb.DEFAULT_CREW_SPEC
+
+
+def _seat_options_across(record, vehicles):
+    """
+    Seats this person could take on any of these vehicles, most likely first.
+
+    The assign tab offers a seat before a vehicle is picked, so the list is the
+    union across the shift's vehicles rather than one vehicle's. A seat that turns
+    out not to exist on the vehicle chosen shows up immediately as a misseat.
+    """
+    seen, options = set(), []
+    for vehicle in vehicles:
+        for key in _seat_options(record, ddb.crew_spec_of(vehicle)):
+            if key not in seen:
+                seen.add(key)
+                options.append(key)
+    return options or [ddb.SEAT_THIRD]
+
+
+def _seat_labels_across(vehicles):
+    """{seat key: label} across these vehicles."""
+    labels = {ddb.SEAT_THIRD: '3rd'}
+    for vehicle in vehicles:
+        labels.update(_seat_labels(ddb.crew_spec_of(vehicle)))
+    return labels
+
+
+def _seat_labels(spec=None):
+    """{seat key: label} for this spec, including the rider seat."""
+    spec = spec or ddb.DEFAULT_CREW_SPEC
+    labels = {seat['key']: seat.get('label') or seat['key']
+              for seat in spec.get('seats') or []}
+    labels[ddb.SEAT_THIRD] = '3rd'
+    return labels
 
 
 # ──────────────────────────────────────────────
@@ -571,8 +634,8 @@ def export_frame(board):
             day = row['days'][iso]
             if day['assignment']:
                 mark = day['assignment']['vehicle_code']
-                if (day['assignment']['seat'] == ddb.SEAT_MEDIC
-                        and duty_crew.base_role(row) == 'nurse'):
+                if _dual_marker(row, day['assignment']['seat'],
+                                _vehicle_spec(board, mark)):
                     mark += 'p'
             else:
                 mark = day['track']

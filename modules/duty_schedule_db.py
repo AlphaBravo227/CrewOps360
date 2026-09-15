@@ -29,6 +29,7 @@ The crew rules that colour the board live in `modules/duty_crew.py`; assembling 
 block from tracks and training lives in `modules/duty_board.py`.
 """
 
+import json
 from datetime import datetime, timedelta
 
 import pytz
@@ -100,8 +101,39 @@ BLOCK_STATUSES = (BLOCK_DRAFT, BLOCK_PUBLISHED)
 # suffix (D7Bp). THIRD is an orientee riding along, who fills neither.
 SEAT_RN = 'rn'
 SEAT_MEDIC = 'medic'
+# Reserved on every vehicle whatever its crew spec: somebody riding along who fills
+# no seat. An orientee lands here.
 SEAT_THIRD = 'third'
 SEATS = (SEAT_RN, SEAT_MEDIC, SEAT_THIRD)
+
+# What makes a crew, as data rather than as code.
+#
+# The rule this service works to — one RN seat, one medic seat, at least one of the
+# two senior — is one crew spec among many. A BLS ambulance is two EMTs and no
+# seniority rule; a critical care truck might be two nurses; a third seat might be
+# optional rather than reserved. All of those are this shape with different values,
+# so `duty_vehicles.crew_spec` carries a spec per vehicle and NULL means the default
+# below.
+#
+# A seat names the roles it accepts. It does not need to know about dual providers:
+# duty_crew.provider_roles() gives a dual nurse both roles, so a plain ['medic'] seat
+# accepts one — which is exactly what the spreadsheet's `p` suffix recorded.
+#
+#   {"seats": [{"key": ..., "label": ..., "short": ..., "roles": [...],
+#               "required": true, "ink": "#rrggbb"}, ...],
+#    "min_senior": 1}
+#
+# `required` defaults to true. `min_senior` is how many of the seated providers must
+# be senior; 0 turns the rule off.
+DEFAULT_CREW_SPEC = {
+    'seats': [
+        {'key': SEAT_RN, 'label': 'RN', 'short': 'RN',
+         'roles': ['nurse'], 'ink': '#0057A3'},
+        {'key': SEAT_MEDIC, 'label': 'Medic', 'short': 'MED',
+         'roles': ['medic'], 'ink': '#B3001B'},
+    ],
+    'min_senior': 1,
+}
 
 # Who decided an assignment. A row in duty_assignments is always a decision about a
 # vehicle — what the track and the training calendar say is context, and lives in
@@ -171,6 +203,7 @@ def initialize_duty_tables(seed_vehicles=True):
             base TEXT,
             rw_weight REAL NOT NULL DEFAULT 0,
             gr_weight REAL NOT NULL DEFAULT 0,
+            crew_spec TEXT,
             is_active INTEGER NOT NULL DEFAULT 1,
             created_date TEXT NOT NULL,
             modified_date TEXT NOT NULL
@@ -251,6 +284,12 @@ def initialize_duty_tables(seed_vehicles=True):
 
         conn.commit()
 
+        # A duty_vehicles created before crew specs existed has no column for one.
+        cursor.execute("PRAGMA table_info(duty_vehicles)")
+        if 'crew_spec' not in [row[1] for row in cursor.fetchall()]:
+            cursor.execute("ALTER TABLE duty_vehicles ADD COLUMN crew_spec TEXT")
+            conn.commit()
+
         if seed_vehicles:
             cursor.execute("SELECT COUNT(*) FROM duty_vehicles")
             if cursor.fetchone()[0] == 0:
@@ -282,6 +321,73 @@ def seed_default_vehicles():
 # Vehicles
 # ──────────────────────────────────────────────
 
+def parse_crew_spec(raw):
+    """
+    A stored crew spec, or None to mean the default.
+
+    Unreadable JSON falls back to the default rather than taking the board down —
+    a vehicle whose spec cannot be parsed is better shown crewing the usual way
+    than not shown at all.
+    """
+    if not raw:
+        return None
+    try:
+        spec = json.loads(raw)
+    except (TypeError, ValueError) as e:
+        print(f"Unreadable crew spec, using the default: {e}")
+        return None
+    try:
+        validate_crew_spec(spec)
+    except ValueError as e:
+        print(f"Invalid crew spec, using the default: {e}")
+        return None
+    return spec
+
+
+def validate_crew_spec(spec):
+    """
+    Raise ValueError unless this spec is one the crew rules can evaluate.
+
+    Checked on the way in rather than on the way out, so a bad spec is refused at
+    the editor instead of colouring a board wrongly for a fortnight.
+    """
+    if not isinstance(spec, dict):
+        raise ValueError("A crew spec is an object.")
+    seats = spec.get('seats')
+    if not isinstance(seats, list) or not seats:
+        raise ValueError("A crew spec needs at least one seat.")
+
+    keys = set()
+    for seat in seats:
+        if not isinstance(seat, dict):
+            raise ValueError("Each seat is an object.")
+        key = str(seat.get('key') or '').strip()
+        if not key:
+            raise ValueError("Each seat needs a key.")
+        if key == SEAT_THIRD:
+            raise ValueError(f"'{SEAT_THIRD}' is reserved for riders who fill no seat.")
+        if key in keys:
+            raise ValueError(f"Two seats share the key '{key}'.")
+        keys.add(key)
+        roles = seat.get('roles')
+        if not isinstance(roles, list) or not roles:
+            raise ValueError(f"Seat '{key}' needs the roles it accepts.")
+
+    minimum = spec.get('min_senior', 0)
+    if not isinstance(minimum, int) or minimum < 0:
+        raise ValueError("min_senior is a count, zero or more.")
+    if minimum > len(seats):
+        raise ValueError(f"min_senior is {minimum} but there are {len(seats)} seats.")
+    return True
+
+
+def crew_spec_of(vehicle):
+    """The spec a vehicle crews to, falling back to the fleet default."""
+    if not vehicle:
+        return DEFAULT_CREW_SPEC
+    return vehicle.get('crew_spec') or DEFAULT_CREW_SPEC
+
+
 def get_vehicles(shift_kind=None, include_inactive=False):
     """
     The vehicle inventory, in the order the board draws it: days then nights, each
@@ -304,14 +410,15 @@ def get_vehicles(shift_kind=None, include_inactive=False):
         clauses.append("is_active = 1")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     cursor.execute(f'''
-        SELECT code, label, shift_kind, priority, base, rw_weight, gr_weight, is_active
+        SELECT code, label, shift_kind, priority, base, rw_weight, gr_weight,
+               is_active, crew_spec
         FROM duty_vehicles {where}
         ORDER BY CASE shift_kind WHEN 'day' THEN 0 ELSE 1 END, priority, code
     ''', params)
     return [
         {'code': r[0], 'label': r[1], 'shift_kind': r[2], 'priority': r[3],
          'base': r[4] or '', 'rw_weight': r[5], 'gr_weight': r[6],
-         'is_active': bool(r[7])}
+         'is_active': bool(r[7]), 'crew_spec': parse_crew_spec(r[8])}
         for r in cursor.fetchall()
     ]
 
@@ -325,13 +432,21 @@ def get_vehicle(code):
 
 
 def set_vehicle(code, label=None, shift_kind=DAY, priority=99, base='',
-                rw_weight=0.0, gr_weight=0.0, is_active=True):
-    """Add a vehicle or update one in place, keyed on its code."""
+                rw_weight=0.0, gr_weight=0.0, is_active=True, crew_spec=None):
+    """
+    Add a vehicle or update one in place, keyed on its code.
+
+    crew_spec: what makes a crew on this vehicle. None keeps DEFAULT_CREW_SPEC,
+    which is the right answer for every vehicle here; pass one when a vehicle
+    crews differently from the rest of the fleet.
+    """
     code = str(code).strip()
     if not code:
         return False
     if shift_kind not in (DAY, NIGHT):
         raise ValueError(f"shift_kind must be '{DAY}' or '{NIGHT}', got {shift_kind!r}")
+    if crew_spec is not None:
+        validate_crew_spec(crew_spec)
 
     conn = _get_conn()
     cursor = conn.cursor()
@@ -339,8 +454,8 @@ def set_vehicle(code, label=None, shift_kind=DAY, priority=99, base='',
     cursor.execute('''
         INSERT INTO duty_vehicles
             (code, label, shift_kind, priority, base, rw_weight, gr_weight,
-             is_active, created_date, modified_date)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             is_active, crew_spec, created_date, modified_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(code) DO UPDATE SET
             label = excluded.label,
             shift_kind = excluded.shift_kind,
@@ -348,10 +463,12 @@ def set_vehicle(code, label=None, shift_kind=DAY, priority=99, base='',
             base = excluded.base,
             rw_weight = excluded.rw_weight,
             gr_weight = excluded.gr_weight,
+            crew_spec = excluded.crew_spec,
             is_active = excluded.is_active,
             modified_date = excluded.modified_date
     ''', (code, label, shift_kind, int(priority), base or '',
-          float(rw_weight), float(gr_weight), 1 if is_active else 0, stamp, stamp))
+          float(rw_weight), float(gr_weight), 1 if is_active else 0,
+          json.dumps(crew_spec) if crew_spec else None, stamp, stamp))
     conn.commit()
     return True
 

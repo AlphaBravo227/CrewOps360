@@ -17,7 +17,13 @@ Stated plainly, the rule those sums encode is:
 
     A crew is one RN seat and one medic seat, and at least one of the two is senior.
 
-with three ways to fail it, which are different problems and want different answers:
+That is one crew among many, so it is **data** rather than something written here: a
+vehicle carries a `crew_spec` naming its seats, the roles each accepts, and how many
+of the people seated must be senior. `DEFAULT_CREW_SPEC` in duty_schedule_db is the
+above; a BLS ambulance crewed by two EMTs with no seniority rule is the same shape
+with different values, and nothing in this module knows what an EMT is.
+
+Three ways to fail a spec, which are different problems and want different answers:
 
 | Status       | Means                                          | What to do |
 | ------------ | ---------------------------------------------- | ---------- |
@@ -41,10 +47,17 @@ rather than only that somebody is.
 Two things carry over from the sheet unchanged. Senior/junior is `staff.no_matrix`,
 already the rule in `track_bidding.py`. And a nurse can take the *medic* seat when
 they are a dual provider — that is what the sheet's `p` suffix (`D7Bp`) meant, and why
-its helper counted a nurse on the p-variant toward the medic slot.
+its helper counted a nurse on the p-variant toward the medic slot. That one lives in
+`provider_roles()`: a dual carries both roles, so a seat asking for `['medic']` takes
+one without the spec having to know duals exist.
 """
 
-from .duty_schedule_db import SEAT_MEDIC, SEAT_RN, SEAT_THIRD
+from .duty_schedule_db import (
+    DEFAULT_CREW_SPEC,
+    SEAT_MEDIC,
+    SEAT_RN,
+    SEAT_THIRD,
+)
 
 CREWED = 'crewed'
 INCOMPLETE = 'incomplete'
@@ -68,13 +81,15 @@ def is_senior(record):
     Senior, in the sense the crew rule means: off the competency matrix.
 
     `no_matrix` reads backwards at first glance — it is the roster's existing column,
-    and `track_bidding._bid_role_and_senior` already treats it this way.
+    and `track_bidding._bid_role_and_senior` already treats it this way. Wrapping it
+    here rather than reading the column at each call site is what will make renaming
+    it one edit rather than twenty.
     """
     return bool(record and record.get('no_matrix'))
 
 
 def is_dual(record):
-    """A nurse credentialed to work the medic seat."""
+    """A provider credentialed to work a second role's seat."""
     return bool(record and record.get('is_dual'))
 
 
@@ -89,7 +104,7 @@ def on_orientation(record):
 
 
 def base_role(record):
-    """'nurse', 'medic' or '' for one staff record."""
+    """The one role a staff record is hired into, lowercased."""
     if not record:
         return ''
     role = str(record.get('role') or '').strip().lower()
@@ -100,30 +115,93 @@ def base_role(record):
     return role
 
 
-def can_fill_seat(record, seat):
-    """
-    Whether a staff member is allowed in a seat.
+# Which second role a dual credential grants. Keeping it here, as one mapping, is
+# what lets a crew spec name plain roles and still get duals for free: a seat asking
+# for ['medic'] accepts a dual nurse without knowing duals exist.
+DUAL_GRANTS = {'nurse': 'medic'}
 
-    A medic takes the medic seat; a nurse takes the RN seat; a dual provider takes
-    either. The third seat is open to anyone — that is where an orientee rides.
+
+def provider_roles(record):
     """
-    if seat == SEAT_THIRD:
+    Every role a person can work.
+
+    A dual nurse carries both, which is why they can take the medic seat — the
+    spreadsheet's `p` suffix. Putting this on the person rather than in the seat is
+    what keeps a spec readable: seats name roles, people carry them.
+    """
+    base = base_role(record)
+    if not base:
+        return set()
+    roles = {base}
+    granted = DUAL_GRANTS.get(base)
+    if granted and is_dual(record):
+        roles.add(granted)
+    return roles
+
+
+def seat_accepts(seat, record):
+    """Whether a staff record may fill this seat."""
+    return bool(set(seat.get('roles') or []) & provider_roles(record))
+
+
+def can_fill_seat(record, seat_key, spec=None):
+    """
+    Whether a staff member may take a seat, by key.
+
+    The third seat is open to anyone — that is where an orientee rides.
+    """
+    if seat_key == SEAT_THIRD:
         return True
-    role = base_role(record)
-    if seat == SEAT_RN:
-        return role == 'nurse'
-    if seat == SEAT_MEDIC:
-        return role == 'medic' or (role == 'nurse' and is_dual(record))
-    return False
+    seat = seat_by_key(spec or DEFAULT_CREW_SPEC).get(seat_key)
+    return bool(seat) and seat_accepts(seat, record)
+
+
+def seat_by_key(spec):
+    """{key: seat} for a spec."""
+    return {seat['key']: seat for seat in spec.get('seats') or []}
+
+
+def required_seats(spec):
+    """The seats that have to be filled for this vehicle to be crewed."""
+    return [seat for seat in spec.get('seats') or [] if seat.get('required', True)]
+
+
+def _best_seating(people, seats):
+    """
+    Seat as many people as possible, each in a seat they qualify for.
+
+    Kuhn's augmenting path — the same algorithm
+    `nondisplacing_assignment._matches_everyone` uses for the volunteer question,
+    asking how many seats can be filled rather than whether everyone fits. Exact,
+    and trivially fast against a handful of people and a handful of seats.
+
+    Returns:
+        dict: seat index -> person index.
+    """
+    holder = {}
+
+    def place(person, tried):
+        for index, seat in enumerate(seats):
+            if index in tried or not seat_accepts(seat, people[person]['record']):
+                continue
+            tried.add(index)
+            if index not in holder or place(holder[index], tried):
+                holder[index] = person
+                return True
+        return False
+
+    for person in range(len(people)):
+        place(person, set())
+    return holder
 
 
 def _name_list(people):
-    return ', '.join(sorted(p['staff_name'] for p in people))
+    return ', '.join(sorted(person['staff_name'] for person in people))
 
 
-def crew_status(assigned, staff_lookup, pairs=None):
+def crew_status(assigned, staff_lookup, pairs=None, spec=None):
     """
-    Evaluate one vehicle on one date.
+    Evaluate one vehicle on one date against its crew spec.
 
     Args:
         assigned (list[dict]): the assignment rows for this vehicle and date — each
@@ -131,56 +209,66 @@ def crew_status(assigned, staff_lookup, pairs=None):
         staff_lookup (callable): staff_name -> staff record dict, or None.
         pairs (list, optional): pre-loaded `get_restricted_pairs()`. Passing it in
             keeps a board of 15 vehicles x 14 dates from re-querying per cell.
+        spec (dict, optional): what makes a crew here. Defaults to the fleet's.
 
     Returns:
-        dict: status, reason, and the parts that produced it —
-            rn / medic / third (lists of records), seniors (int),
-            misseated (list), restricted (list of name pairs).
+        dict: status, reason, and the parts that produced it — `seated` (seat key ->
+        people), `riders`, `seniors`, `misseated`, `restricted`, plus `needs` and
+        `both_senior` for the display.
     """
     from .duty_schedule_db import restricted_partners
+
+    spec = spec or DEFAULT_CREW_SPEC
+    seats = spec.get('seats') or []
+    by_key = seat_by_key(spec)
+    wanted = required_seats(spec)
+    min_senior = spec.get('min_senior', 0)
 
     people = []
     for row in assigned or []:
         record = staff_lookup(row['staff_name']) or {}
         people.append({
             'staff_name': row['staff_name'],
-            'seat': row.get('seat') or SEAT_RN,
+            'seat': row.get('seat') or SEAT_THIRD,
             'record': record,
         })
 
-    # An orientee never counts toward a seat, whichever seat the row says.
+    # An orientee never counts toward a seat, whichever seat the row claims.
     for person in people:
         if on_orientation(person['record']):
             person['seat'] = SEAT_THIRD
 
-    misseated = [p for p in people
-                 if p['seat'] != SEAT_THIRD and not can_fill_seat(p['record'], p['seat'])]
-    rn = [p for p in people if p['seat'] == SEAT_RN]
-    medic = [p for p in people if p['seat'] == SEAT_MEDIC]
-    third = [p for p in people if p['seat'] == SEAT_THIRD]
-    seniors = [p for p in rn + medic if is_senior(p['record'])]
+    riders = [p for p in people if p['seat'] == SEAT_THIRD]
+    providers = [p for p in people if p['seat'] != SEAT_THIRD]
+    misseated = [p for p in providers
+                 if p['seat'] not in by_key or not seat_accepts(by_key[p['seat']],
+                                                                p['record'])]
+
+    seated = {}
+    for person in providers:
+        if person not in misseated:
+            seated.setdefault(person['seat'], []).append(person)
+
+    seniors = [p for p in providers if is_senior(p['record'])]
+
+    result = {
+        'status': None, 'reason': '',
+        'seated': seated, 'riders': riders, 'providers': providers,
+        'seniors': len(seniors), 'misseated': misseated, 'restricted': [],
+        'needs': None, 'both_senior': False, 'spec': spec,
+    }
 
     # Restricted pairs are a hard block wherever they land, so they are checked
     # before the composition — a legal crew of two people who may not fly together
     # is still not a crew.
-    restricted = []
     names = [p['staff_name'] for p in people]
+    restricted = []
     for index, name in enumerate(names):
         partners = restricted_partners(name, pairs)
         for other in names[index + 1:]:
             if other.strip().lower() in partners:
                 restricted.append((name, other))
-
-    result = {
-        'status': None, 'reason': '',
-        'rn': rn, 'medic': medic, 'third': third,
-        'seniors': len(seniors), 'misseated': misseated, 'restricted': restricted,
-        # Who is still wanted, when one provider is aboard, and whether they have to
-        # be senior: {'role': 'nurse'|'medic', 'senior_required': bool}.
-        'needs': None,
-        # Every provider aboard is senior. Only meaningful on a crewed vehicle.
-        'both_senior': False,
-    }
+    result['restricted'] = restricted
 
     if restricted:
         pair_text = '; '.join(f"{a} and {b}" for a, b in restricted)
@@ -188,53 +276,102 @@ def crew_status(assigned, staff_lookup, pairs=None):
         return result
 
     if misseated:
-        who = _name_list(misseated)
         result.update(status=NO_CREW,
-                      reason=f"{who} cannot work the seat assigned")
+                      reason=f"{_name_list(misseated)} cannot work the seat assigned")
         return result
 
     if not people:
         result.update(status=UNSTAFFED, reason='nobody assigned')
         return result
 
-    if not rn and not medic:
+    unfilled = [seat for seat in wanted if not seated.get(seat['key'])]
+    senior_short = len(seniors) < min_senior
+
+    if not unfilled and not senior_short:
+        result.update(status=CREWED, reason='',
+                      both_senior=bool(providers) and len(seniors) == len(providers))
+        return result
+
+    if not providers:
         result.update(status=INCOMPLETE,
-                      reason='only staff on orientation assigned')
+                      reason='only staff on orientation assigned',
+                      needs=_needs(unfilled, senior_short))
         return result
 
-    # One provider aboard. Name who is still wanted and whether they have to be
-    # senior — which is the whole of the spreadsheet's font encoding: blue for a
-    # nurse, red for a medic, bold when the one already there is junior, so the
-    # other has to be the senior of the pair.
-    if len(rn) + len(medic) == 1:
-        present = (rn + medic)[0]
-        wanted = 'medic' if present['seat'] == SEAT_RN else 'nurse'
-        senior_required = not is_senior(present['record'])
-        result.update(
-            status=INCOMPLETE,
-            needs={'role': wanted, 'senior_required': senior_required},
-            reason=f"needs a {'senior ' if senior_required else ''}{wanted}")
+    # Fewer providers than seats to fill means somebody is missing; enough providers
+    # and an unfilled seat means the ones here cannot make a crew between them. The
+    # two want opposite answers — add a person, or swap one — so they read
+    # differently.
+    if unfilled and len(providers) < len(wanted):
+        result.update(status=INCOMPLETE, needs=_needs(unfilled, senior_short),
+                      reason=_wanted_text(unfilled, senior_short))
         return result
 
-    if not rn:
-        result.update(status=NO_CREW, reason='two medics, no nurse')
+    if unfilled:
+        # The people are here. Say whether moving them between seats would do it,
+        # because "two nurses" and "two nurses, and one of them could take the medic
+        # seat" are different amounts of work.
+        moved = _best_seating(providers, seats)
+        covered = {seats[i]['key'] for i in moved}
+        fixable = [seat for seat in wanted if seat['key'] not in covered]
+        if not fixable:
+            movers = _name_list([providers[moved[i]] for i in moved
+                                 if providers[moved[i]]['seat'] != seats[i]['key']])
+            result.update(status=NO_CREW,
+                          reason=f"seats do not cover the crew — {movers} could move")
+        else:
+            short = ' and '.join(_seat_phrase(seat) for seat in fixable)
+            result.update(status=NO_CREW,
+                          reason=f"nobody here can fill the {short} seat")
         return result
 
-    if not medic:
-        result.update(status=NO_CREW,
-                      reason='two nurses, neither in the medic seat')
-        return result
-
-    if not seniors:
-        result.update(status=NO_CREW, reason='both providers are junior')
-        return result
-
-    # On a crewed vehicle the spreadsheet's bold meant every provider is senior —
-    # worth keeping, because it is what tells a scheduler which crews have slack to
-    # give up a senior somewhere else.
-    result.update(status=CREWED, reason='',
-                  both_senior=len(seniors) == len(rn) + len(medic))
+    result.update(status=NO_CREW,
+                  reason=(f"needs {min_senior} senior provider"
+                          f"{'s' if min_senior > 1 else ''}"))
     return result
+
+
+def _seat_name(seat):
+    return seat.get('label') or seat.get('key')
+
+
+def _needs(unfilled, senior_short):
+    """
+    Who is still wanted — the sheet's font, as data.
+
+    Colour named the role and bold meant "and they have to be the senior one". Both
+    come from the spec's own seat, so a service whose seats are two EMTs gets the
+    same treatment without anything here knowing what an EMT is.
+    """
+    if not unfilled:
+        return None
+    seat = unfilled[0]
+    roles = seat.get('roles') or []
+    return {
+        'role': roles[0] if roles else '',
+        'seat': seat.get('key'),
+        'label': _seat_name(seat),
+        'short': seat.get('short') or _seat_name(seat),
+        'ink': seat.get('ink') or '',
+        'senior_required': bool(senior_short),
+        'seats': [s.get('key') for s in unfilled],
+    }
+
+
+def _seat_phrase(seat):
+    """
+    A seat's name as it reads mid-sentence.
+
+    An all-caps label is an acronym and keeps its case — "needs a senior RN", not
+    "needs a senior rn" — while "Medic" reads better lowercased.
+    """
+    name = _seat_name(seat)
+    return name if name.isupper() else name.lower()
+
+
+def _wanted_text(unfilled, senior_short):
+    names = ' and '.join(_seat_phrase(seat) for seat in unfilled)
+    return f"needs a {'senior ' if senior_short else ''}{names}"
 
 
 def possible_crews(seniors, nurses, medics, duals):
