@@ -143,10 +143,15 @@ class ExcelAdminFunctions:
         # table keyed by initials that nothing in the app wrote; staff.manager is now
         # the single source, and the roster's own migration seeded it from that table.
         manager_dict = {}
+        role_dict = {}
         try:
             from modules import staff_database as staffdb
             manager_dict = {name.lower(): manager for name, manager
                             in staffdb.get_manager_map(include_inactive=True).items()}
+            # Base role (NURSE/MEDIC/COMMS/...) so the report can be sorted by role.
+            role_dict = {name.lower(): role for name, role
+                         in staffdb.get_base_role_mapping(include_inactive=True).items()
+                         if role}
         except Exception as e:
             print(f"Error loading manager data: {e}")
         
@@ -307,6 +312,7 @@ class ExcelAdminFunctions:
 
             report_data.append({
                 'Staff Name': staff_name,
+                'Role': role_dict.get(str(staff_name).strip().lower(), 'N/A'),
                 'Manager': manager_dict.get(str(staff_name).strip().lower(), 'N/A'),
                 'Total Assigned': total_assigned,
                 'Total Enrolled': total_enrolled,
